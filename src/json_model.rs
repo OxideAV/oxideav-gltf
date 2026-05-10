@@ -142,6 +142,11 @@ pub struct Mesh {
     pub primitives: Vec<Primitive>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Per-spec §3.7.2.2 morph weights — default per-target weight
+    /// vector used when `node.weights` is undefined. Length must
+    /// match the number of `primitive.targets`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weights: Option<Vec<f32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extras: Option<Value>,
 }
@@ -159,6 +164,12 @@ pub struct Primitive {
     /// Topology (4 = TRIANGLES default per spec §3.7.2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<u32>,
+    /// Per-spec §3.7.2.2 morph targets — each entry is
+    /// `attribute name → accessor index` (POSITION_0, NORMAL_0,
+    /// TANGENT_0 are the standard names). All primitives in a mesh
+    /// MUST have the same number of targets in the same order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<HashMap<String, u32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extras: Option<Value>,
 }

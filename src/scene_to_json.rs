@@ -77,9 +77,23 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
             .primitives
             .first()
             .and_then(|p| p.extras.get("__mesh_extras").cloned());
+        // Mesh-level morph weights default vector (§3.7.2.2) lives on
+        // primitive[0]'s extras under `__mesh_weights`.
+        let mesh_weights = mesh
+            .primitives
+            .first()
+            .and_then(|p| p.extras.get("__mesh_weights"))
+            .and_then(|v| {
+                v.as_array().map(|arr| {
+                    arr.iter()
+                        .filter_map(|x| x.as_f64().map(|f| f as f32))
+                        .collect::<Vec<f32>>()
+                })
+            });
         root.meshes.push(gj::Mesh {
             primitives,
             name: mesh.name.clone(),
+            weights: mesh_weights,
             extras: mesh_extras,
         });
     }
@@ -294,22 +308,97 @@ fn encode_primitive(
         Topology::TriangleFan => Some(gj::MODE_TRIANGLE_FAN),
     };
 
-    // Drop the synthetic mesh-extras sentinel when emitting per-primitive extras.
+    // Drop the synthetic sentinels (`__mesh_extras`, `__mesh_weights`,
+    // `__morph_targets`) when emitting per-primitive extras — they're
+    // re-materialised through their dedicated JSON paths.
     let mut prim_extras = p.extras.clone();
+    let morph_targets_extra = prim_extras.remove("__morph_targets");
     prim_extras.remove("__mesh_extras");
+    prim_extras.remove("__mesh_weights");
     let extras = if prim_extras.is_empty() {
         None
     } else {
         Some(map_to_value(&prim_extras))
     };
 
+    // Re-emit morph targets as accessors per §3.7.2.2. Each target is
+    // an `attribute name → accessor index` map; we write the deltas
+    // into the binary buffer the same way standard attributes are
+    // written and emit one accessor per attribute.
+    let targets = decode_morph_targets_extra(morph_targets_extra.as_ref(), root, bin)?;
+
     Ok(gj::Primitive {
         attributes,
         indices,
         material: p.material.map(|m| m.0),
         mode,
+        targets,
         extras,
     })
+}
+
+/// Pull morph-target deltas out of the `__morph_targets` sentinel and
+/// emit them back into the JSON document as accessors. Returns the
+/// per-target attribute → accessor-index roster ready for inclusion in
+/// `gj::Primitive::targets`.
+fn decode_morph_targets_extra(
+    sentinel: Option<&serde_json::Value>,
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+) -> Result<Vec<HashMap<String, u32>>> {
+    let arr = match sentinel {
+        Some(serde_json::Value::Array(a)) => a,
+        Some(_) => {
+            return Err(invalid(
+                "primitive.extras[__morph_targets]: expected JSON array",
+            ));
+        }
+        None => return Ok(Vec::new()),
+    };
+    let mut out = Vec::with_capacity(arr.len());
+    for (ti, target_val) in arr.iter().enumerate() {
+        let obj = target_val.as_object().ok_or_else(|| {
+            invalid(format!(
+                "primitive.extras[__morph_targets][{ti}]: expected object"
+            ))
+        })?;
+        let mut tgt: HashMap<String, u32> = HashMap::new();
+        for (name, vals) in obj {
+            let arr = vals.as_array().ok_or_else(|| {
+                invalid(format!(
+                    "morph target {name:?}: expected array of [f32; 3] elements"
+                ))
+            })?;
+            let mut deltas: Vec<[f32; 3]> = Vec::with_capacity(arr.len());
+            for elem in arr {
+                let comps = elem.as_array().ok_or_else(|| {
+                    invalid(format!("morph target {name:?}: element must be array"))
+                })?;
+                if comps.len() != 3 {
+                    return Err(invalid(format!(
+                        "morph target {name:?}: VEC3 element expected (got len {})",
+                        comps.len()
+                    )));
+                }
+                let mut a = [0.0f32; 3];
+                for (i, c) in comps.iter().enumerate() {
+                    a[i] = c.as_f64().ok_or_else(|| {
+                        invalid(format!("morph target {name:?}: non-numeric component"))
+                    })? as f32;
+                }
+                deltas.push(a);
+            }
+            // Spec §3.7.2.2: POSITION accessors must have min/max.
+            // The morph delta for POSITION_0 / POSITION still benefits
+            // from the bounds (some validators check it), so emit them
+            // when the attribute starts with POSITION.
+            let with_minmax = name == "POSITION";
+            let acc_idx = push_vec3_accessor(root, bin, &deltas, "MORPH_TARGET", with_minmax)?;
+            tgt.insert(name.clone(), acc_idx);
+        }
+        out.push(tgt);
+    }
+    Ok(out)
 }
 
 /// Push positions / normals into the bin and emit an accessor +

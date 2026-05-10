@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sampler outputs: `Float` (default, lossless), `UByte` (5121
   normalized, ×255), or `UShort` (5123 normalized, ×65535) per spec
   §3.6.2.2 dequantisation. TRANSLATION + SCALE remain FLOAT-only.
+- Morph targets per spec §3.7.2.2 — `mesh.primitives[i].targets[t]`
+  POSITION / NORMAL / TANGENT delta accessors decode + encode. The
+  typed `oxideav_mesh3d::Primitive` model has no dedicated `targets`
+  field yet (cross-crate change deferred to r5), so deltas round-trip
+  via the `primitive.extras["__morph_targets"]` sentinel (and
+  `mesh.weights` via `primitive[0].extras["__mesh_weights"]`) — same
+  pattern as `__mesh_extras` from r2.
 
 ### Added (round 3)
 

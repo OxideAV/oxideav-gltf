@@ -46,6 +46,12 @@ framework but usable standalone.
 - Textures with samplers + images (buffer-view-backed images via
   `BufferViewAsset` for zero-copy slicing into the `.glb` BIN chunk;
   `data:` URI base64 inlining; external URI passthrough)
+- Morph targets per spec §3.7.2.2 — POSITION / NORMAL / TANGENT
+  vertex-delta accessors round-trip through
+  `primitive.extras["__morph_targets"]` (mesh.weights via
+  `primitive[0].extras["__mesh_weights"]`); the typed
+  `oxideav_mesh3d::Primitive` model lacks a dedicated `targets` field
+  pending a cross-crate followup
 - `extras` round-trip on root, scenes, nodes, materials, primitives
 
 ## Round 5 (planned)

@@ -79,6 +79,23 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
                 .extras
                 .insert("__mesh_extras".to_owned(), extras.clone());
         }
+        // Mesh-level `weights` (default morph weights per §3.7.2.2):
+        // mesh3d's `Mesh` has no `weights` field, so stash on
+        // primitive[0].extras["__mesh_weights"] in the same style as
+        // the morph-targets sentinel.
+        if let (Some(weights), Some(prim0)) = (&m.weights, mesh.primitives.first_mut()) {
+            let arr: Vec<serde_json::Value> = weights
+                .iter()
+                .map(|&w| {
+                    serde_json::Number::from_f64(w as f64)
+                        .map(serde_json::Value::Number)
+                        .unwrap_or(serde_json::Value::Null)
+                })
+                .collect();
+            prim0
+                .extras
+                .insert("__mesh_weights".to_owned(), serde_json::Value::Array(arr));
+        }
         let id = scene.add_mesh(mesh);
         mesh_id_map.insert(i as u32, id);
     }
@@ -864,6 +881,58 @@ fn convert_primitive(
     }
     if let Some(extras) = &p.extras {
         extras_into(&mut prim.extras, extras.clone());
+    }
+
+    // Morph targets (§3.7.2.2). The typed `oxideav_mesh3d::Primitive`
+    // model doesn't carry a dedicated field, so we serialise the
+    // resolved per-target attribute deltas into a JSON sentinel under
+    // `prim.extras["__morph_targets"]` — encoder pulls them back out
+    // and re-emits as accessors. Format: an array of objects, one per
+    // target, mapping attribute name → array of [f32; N] values.
+    if !p.targets.is_empty() {
+        let mut targets_json = Vec::with_capacity(p.targets.len());
+        for tgt in &p.targets {
+            let mut obj = serde_json::Map::new();
+            for (name, &acc_idx) in tgt {
+                // POSITION/NORMAL/TANGENT all read as VEC3 FLOAT per
+                // the §3.7.2.2 morph-target table (handedness W is
+                // dropped on TANGENT since it can't be displaced).
+                let acc = root.accessors.get(acc_idx as usize).ok_or_else(|| {
+                    invalid(format!(
+                        "morph target attribute {name:?}: accessor {acc_idx} oob"
+                    ))
+                })?;
+                if acc.kind != "VEC3" || acc.component_type != gj::COMPONENT_TYPE_FLOAT {
+                    return Err(unsupported(format!(
+                        "morph target {name:?}: only VEC3 FLOAT supported in r4 (got {:?} {})",
+                        acc.kind, acc.component_type
+                    )));
+                }
+                let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
+                let view = view_from_materialised(acc, &bytes)?;
+                let deltas = read_vec_f32::<3>(&view)?;
+                let arr: Vec<serde_json::Value> = deltas
+                    .into_iter()
+                    .map(|v| {
+                        serde_json::Value::Array(
+                            v.iter()
+                                .map(|&c| {
+                                    serde_json::Number::from_f64(c as f64)
+                                        .map(serde_json::Value::Number)
+                                        .unwrap_or(serde_json::Value::Null)
+                                })
+                                .collect(),
+                        )
+                    })
+                    .collect();
+                obj.insert(name.clone(), serde_json::Value::Array(arr));
+            }
+            targets_json.push(serde_json::Value::Object(obj));
+        }
+        prim.extras.insert(
+            "__morph_targets".to_owned(),
+            serde_json::Value::Array(targets_json),
+        );
     }
     Ok(prim)
 }
