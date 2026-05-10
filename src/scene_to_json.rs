@@ -1011,6 +1011,20 @@ fn encode_animation(
                         "output",
                         gj::COMPONENT_TYPE_UNSIGNED_SHORT,
                     )?,
+                    QuantizeMode::IByte => push_vec4_accessor_quantized(
+                        root,
+                        bin,
+                        v,
+                        "output",
+                        gj::COMPONENT_TYPE_BYTE,
+                    )?,
+                    QuantizeMode::IShort => push_vec4_accessor_quantized(
+                        root,
+                        bin,
+                        v,
+                        "output",
+                        gj::COMPONENT_TYPE_SHORT,
+                    )?,
                 }
             }
             AnimationValues::Scalar(v) => {
@@ -1046,6 +1060,20 @@ fn encode_animation(
                             v,
                             "output",
                             gj::COMPONENT_TYPE_UNSIGNED_SHORT,
+                        )?,
+                        QuantizeMode::IByte => push_scalar_f32_accessor_quantized(
+                            root,
+                            bin,
+                            v,
+                            "output",
+                            gj::COMPONENT_TYPE_BYTE,
+                        )?,
+                        QuantizeMode::IShort => push_scalar_f32_accessor_quantized(
+                            root,
+                            bin,
+                            v,
+                            "output",
+                            gj::COMPONENT_TYPE_SHORT,
                         )?,
                     }
                 }
@@ -1153,10 +1181,10 @@ fn push_scalar_f32_accessor_with_minmax(
 
 /// Quantise a `Vec<f32>` to a normalised-int component type per spec
 /// §3.6.2.2 dequantisation equations (run in reverse). The decoder
-/// will return `c / 255.0` (UBYTE) or `c / 65535.0` (USHORT), so we
-/// compute `round(f * 255)` / `round(f * 65535)` and clamp to the
-/// representable range. Negative inputs clamp to 0 — UByte/UShort
-/// only cover `[0, 1]`. Width is determined by `component_type`.
+/// will return `c / 255.0` (UBYTE), `c / 65535.0` (USHORT),
+/// `max(c / 127, -1)` (BYTE), or `max(c / 32767, -1)` (SHORT), so we
+/// compute the inverse and clamp to the representable range. Width
+/// is determined by `component_type`.
 fn push_scalar_f32_accessor_quantized(
     root: &mut GltfRoot,
     bin: &mut Vec<u8>,
@@ -1175,6 +1203,16 @@ fn push_scalar_f32_accessor_quantized(
         gj::COMPONENT_TYPE_UNSIGNED_SHORT => {
             for &v in data {
                 bin.extend_from_slice(&quantize_u16(v).to_le_bytes());
+            }
+        }
+        gj::COMPONENT_TYPE_BYTE => {
+            for &v in data {
+                bin.extend_from_slice(&quantize_i8(v).to_le_bytes());
+            }
+        }
+        gj::COMPONENT_TYPE_SHORT => {
+            for &v in data {
+                bin.extend_from_slice(&quantize_i16(v).to_le_bytes());
             }
         }
         other => {
@@ -1211,8 +1249,9 @@ fn push_scalar_f32_accessor_quantized(
 }
 
 /// Quantise a `Vec<[f32; 4]>` (rotation quaternion stream) into
-/// normalised UBYTE / USHORT VEC4 entries. Same per-component
-/// equations as the scalar form, applied four times per element.
+/// normalised UBYTE / USHORT / BYTE / SHORT VEC4 entries. Same
+/// per-component equations as the scalar form, applied four times
+/// per element.
 fn push_vec4_accessor_quantized(
     root: &mut GltfRoot,
     bin: &mut Vec<u8>,
@@ -1234,6 +1273,20 @@ fn push_vec4_accessor_quantized(
             for v in data {
                 for &c in v {
                     bin.extend_from_slice(&quantize_u16(c).to_le_bytes());
+                }
+            }
+        }
+        gj::COMPONENT_TYPE_BYTE => {
+            for v in data {
+                for &c in v {
+                    bin.extend_from_slice(&quantize_i8(c).to_le_bytes());
+                }
+            }
+        }
+        gj::COMPONENT_TYPE_SHORT => {
+            for v in data {
+                for &c in v {
+                    bin.extend_from_slice(&quantize_i16(c).to_le_bytes());
                 }
             }
         }
@@ -1287,6 +1340,27 @@ fn quantize_u16(f: f32) -> u16 {
     }
     let scaled = (f.clamp(0.0, 1.0) * 65535.0).round();
     scaled as u16
+}
+
+/// Round-clamp `f` into an `i8` per `f = max(c / 127, -1)` inverted.
+/// Spec §3.6.2.2 reserves the `-128` slot so the dequantised range
+/// stays symmetric — we clamp to `[-127, 127]`. NaNs map to 0.
+fn quantize_i8(f: f32) -> i8 {
+    if !f.is_finite() {
+        return 0;
+    }
+    let scaled = (f.clamp(-1.0, 1.0) * 127.0).round();
+    scaled.clamp(-127.0, 127.0) as i8
+}
+
+/// Round-clamp `f` into an `i16` per `f = max(c / 32767, -1)` inverted.
+/// Spec §3.6.2.2 reserves `-32768` — clamp to `[-32767, 32767]`.
+fn quantize_i16(f: f32) -> i16 {
+    if !f.is_finite() {
+        return 0;
+    }
+    let scaled = (f.clamp(-1.0, 1.0) * 32767.0).round();
+    scaled.clamp(-32767.0, 32767.0) as i16
 }
 
 fn push_mat4_accessor(

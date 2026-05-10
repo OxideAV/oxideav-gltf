@@ -204,6 +204,223 @@ fn quantize_ushort_round_trip_within_tolerance() {
     }
 }
 
+/// Build a scene whose rotation channel exercises the full `[-1, 1]`
+/// signed range — useful for testing IByte / IShort which are the
+/// only quantize modes that can represent negative components.
+fn scene_with_signed_rotation() -> Scene3D {
+    let mut scene = Scene3D::new();
+    let mut prim = Primitive::new(Topology::Triangles);
+    prim.positions = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+    let mut mesh = Mesh::new(Some("m".to_owned()));
+    mesh.primitives.push(prim);
+    let mid = scene.add_mesh(mesh);
+    let n = scene.add_node(Node::new().with_mesh(mid));
+    scene.add_root(n);
+
+    let mut anim = Animation::new(Some("a".to_owned()));
+    let s = std::f32::consts::FRAC_1_SQRT_2; // ~0.7071
+                                             // Quaternions intentionally include negative components so the
+                                             // signed quantizers actually have signed work to do.
+    anim.channels.push(AnimationChannel {
+        target: AnimationTarget {
+            node: n,
+            property: AnimationProperty::Rotation,
+        },
+        sampler: AnimationSampler {
+            keyframes: vec![0.0, 1.0, 2.0],
+            values: AnimationValues::Quat(vec![
+                [0.0, 0.0, 0.0, 1.0],
+                [0.0, 0.0, s, s],
+                [-s, 0.0, 0.0, s],
+            ]),
+            interpolation: Interpolation::Linear,
+        },
+    });
+    // Morph weights with negative values too — spec allows the BYTE /
+    // SHORT signed forms here.
+    anim.channels.push(AnimationChannel {
+        target: AnimationTarget {
+            node: n,
+            property: AnimationProperty::MorphWeights,
+        },
+        sampler: AnimationSampler {
+            keyframes: vec![0.0, 1.0, 2.0, 3.0],
+            values: AnimationValues::Scalar(vec![-1.0, -0.5, 0.5, 1.0]),
+            interpolation: Interpolation::Linear,
+        },
+    });
+    scene.add_animation(anim);
+    scene
+}
+
+#[test]
+fn quantize_ibyte_round_trip_within_tolerance() {
+    let scene = scene_with_signed_rotation();
+    let mut enc = GltfEncoder::new().with_quantize_animation(QuantizeMode::IByte);
+    let glb = enc.encode(&scene).unwrap();
+    // Both ROTATION (VEC4) and MORPH_WEIGHTS (SCALAR) outputs should
+    // become BYTE (5120) normalized.
+    let n_byte = count_normalized_int_animation_outputs(&glb, 5120);
+    assert_eq!(
+        n_byte, 2,
+        "expected 2 BYTE normalized accessors (rotation + morph), got {n_byte}"
+    );
+
+    let mut dec = GltfDecoder::new();
+    let decoded = dec.decode(&glb).unwrap();
+    let s = std::f32::consts::FRAC_1_SQRT_2;
+    let original_rot = [[0.0f32, 0.0, 0.0, 1.0], [0.0, 0.0, s, s], [-s, 0.0, 0.0, s]];
+    let rot = decoded
+        .animations
+        .iter()
+        .flat_map(|a| a.channels.iter())
+        .find(|c| matches!(c.target.property, AnimationProperty::Rotation))
+        .expect("rotation channel");
+    if let AnimationValues::Quat(v) = &rot.sampler.values {
+        for (got, want) in v.iter().zip(original_rot.iter()) {
+            for c in 0..4 {
+                assert!(
+                    (got[c] - want[c]).abs() <= 1.0 / 127.0,
+                    "ibyte rotation comp {c}: got {} want {}",
+                    got[c],
+                    want[c]
+                );
+            }
+        }
+    } else {
+        panic!("expected Quat rotation values");
+    }
+
+    let original_weights = [-1.0f32, -0.5, 0.5, 1.0];
+    let weights = decoded
+        .animations
+        .iter()
+        .flat_map(|a| a.channels.iter())
+        .find(|c| matches!(c.target.property, AnimationProperty::MorphWeights))
+        .expect("morph channel");
+    if let AnimationValues::Scalar(v) = &weights.sampler.values {
+        for (got, want) in v.iter().zip(original_weights.iter()) {
+            assert!(
+                (got - want).abs() <= 1.0 / 127.0,
+                "ibyte morph weight: got {got}, want {want}"
+            );
+        }
+    } else {
+        panic!("expected Scalar morph values");
+    }
+}
+
+#[test]
+fn quantize_ishort_round_trip_within_tolerance() {
+    let scene = scene_with_signed_rotation();
+    let mut enc = GltfEncoder::new().with_quantize_animation(QuantizeMode::IShort);
+    let glb = enc.encode(&scene).unwrap();
+    let n_short = count_normalized_int_animation_outputs(&glb, 5122);
+    assert_eq!(
+        n_short, 2,
+        "expected 2 SHORT normalized accessors, got {n_short}"
+    );
+
+    let mut dec = GltfDecoder::new();
+    let decoded = dec.decode(&glb).unwrap();
+    let s = std::f32::consts::FRAC_1_SQRT_2;
+    let original_rot = [[0.0f32, 0.0, 0.0, 1.0], [0.0, 0.0, s, s], [-s, 0.0, 0.0, s]];
+    let rot = decoded
+        .animations
+        .iter()
+        .flat_map(|a| a.channels.iter())
+        .find(|c| matches!(c.target.property, AnimationProperty::Rotation))
+        .expect("rotation channel");
+    if let AnimationValues::Quat(v) = &rot.sampler.values {
+        for (got, want) in v.iter().zip(original_rot.iter()) {
+            for c in 0..4 {
+                assert!(
+                    (got[c] - want[c]).abs() <= 1.0 / 32767.0,
+                    "ishort rotation comp {c}: got {} want {}",
+                    got[c],
+                    want[c]
+                );
+            }
+        }
+    } else {
+        panic!("expected Quat rotation values");
+    }
+
+    let original_weights = [-1.0f32, -0.5, 0.5, 1.0];
+    let weights = decoded
+        .animations
+        .iter()
+        .flat_map(|a| a.channels.iter())
+        .find(|c| matches!(c.target.property, AnimationProperty::MorphWeights))
+        .expect("morph channel");
+    if let AnimationValues::Scalar(v) = &weights.sampler.values {
+        for (got, want) in v.iter().zip(original_weights.iter()) {
+            assert!(
+                (got - want).abs() <= 1.0 / 32767.0,
+                "ishort morph weight: got {got}, want {want}"
+            );
+        }
+    } else {
+        panic!("expected Scalar morph values");
+    }
+}
+
+#[test]
+fn quantize_ibyte_reserves_minus_128_slot() {
+    // Spec §3.6.2.2 reserves -128 (the dequantised value would
+    // exceed -1.0). Even an input of -1.0 must round to -127, and
+    // any negative outlier must clamp to -127, never -128.
+    let mut scene = Scene3D::new();
+    let mut prim = Primitive::new(Topology::Triangles);
+    prim.positions = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+    let mut mesh = Mesh::new(Some("m".to_owned()));
+    mesh.primitives.push(prim);
+    let mid = scene.add_mesh(mesh);
+    let n = scene.add_node(Node::new().with_mesh(mid));
+    scene.add_root(n);
+    let mut anim = Animation::new(Some("clamp".to_owned()));
+    anim.channels.push(AnimationChannel {
+        target: AnimationTarget {
+            node: n,
+            property: AnimationProperty::MorphWeights,
+        },
+        sampler: AnimationSampler {
+            // Out-of-range -2.0 must clamp to -127 / 32767, not the
+            // reserved -128 / -32768 slot.
+            keyframes: vec![0.0, 1.0],
+            values: AnimationValues::Scalar(vec![-1.0, -2.0]),
+            interpolation: Interpolation::Linear,
+        },
+    });
+    scene.add_animation(anim);
+
+    let mut enc = GltfEncoder::new().with_quantize_animation(QuantizeMode::IByte);
+    let glb = enc.encode(&scene).unwrap();
+    let mut dec = GltfDecoder::new();
+    let decoded = dec.decode(&glb).unwrap();
+    let weights = decoded
+        .animations
+        .iter()
+        .flat_map(|a| a.channels.iter())
+        .find(|c| matches!(c.target.property, AnimationProperty::MorphWeights))
+        .expect("morph channel");
+    if let AnimationValues::Scalar(v) = &weights.sampler.values {
+        // Both values dequantise to exactly -1.0 (i8 -127 → -127/127 = -1.0).
+        assert!(
+            (v[0] + 1.0).abs() <= f32::EPSILON,
+            "expected -1.0, got {}",
+            v[0]
+        );
+        assert!(
+            (v[1] + 1.0).abs() <= f32::EPSILON,
+            "expected -1.0 (clamped), got {}",
+            v[1]
+        );
+    } else {
+        panic!("expected Scalar morph values");
+    }
+}
+
 #[test]
 fn quantize_does_not_touch_translation_or_scale() {
     // Even with QuantizeMode::UByte, TRANSLATION + SCALE outputs

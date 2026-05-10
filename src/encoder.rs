@@ -29,13 +29,15 @@ pub enum OutputFlavour {
 /// permits in normalised-integer form (ROTATION VEC4, MORPH_WEIGHTS
 /// SCALAR — see glTF 2.0 §3.11 + §3.6.2.2).
 ///
-/// `Float` is the lossless default. `UByte` encodes one f32 per
-/// element to nearest u8 (×255, clamped to `[0, 1]`) with
-/// `normalized: true`; `UShort` does the same with u16 (×65535).
-/// Negative inputs are not representable through these modes and are
-/// clamped at 0; for true signed quaternions the spec also allows the
-/// `i8` / `i16` forms but those aren't currently exposed (decode side
-/// already accepts them — see `read_normalized_*`).
+/// `Float` is the lossless default. The unsigned modes `UByte` /
+/// `UShort` encode each f32 to nearest u8 / u16 (×255 / ×65535,
+/// clamped to `[0, 1]`) with `normalized: true`. The signed modes
+/// `IByte` / `IShort` encode each f32 in `[-1, 1]` to i8 / i16 in
+/// `[-127, 127]` / `[-32767, 32767]` (the `-128` / `-32768` slots
+/// stay reserved per spec §3.6.2.2 so the dequantised range stays
+/// symmetric: `f = max(c / 127, -1)` / `f = max(c / 32767, -1)`).
+/// Use the signed modes for true signed-range data such as rotation
+/// quaternions; the unsigned modes clamp negative inputs to 0.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum QuantizeMode {
     /// Emit FLOAT (5126) — the default, lossless.
@@ -45,6 +47,12 @@ pub enum QuantizeMode {
     UByte,
     /// Emit UNSIGNED_SHORT (5123) `normalized: true` — values × 65535.
     UShort,
+    /// Emit BYTE (5120) `normalized: true` — values × 127, clamp range
+    /// `[-127, 127]` (`-128` stays reserved per spec §3.6.2.2).
+    IByte,
+    /// Emit SHORT (5122) `normalized: true` — values × 32767, clamp
+    /// range `[-32767, 32767]` (`-32768` stays reserved).
+    IShort,
 }
 
 /// Serialise a [`Scene3D`] into glTF bytes.

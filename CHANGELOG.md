@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 5)
+
+- Encoder-side signed normalised-int animation outputs — symmetric to
+  r3 decode (which already accepts BYTE / SHORT). New `QuantizeMode`
+  variants: `IByte` (5120 normalized; `f` × 127 with `-128` reserved
+  per spec §3.6.2.2) and `IShort` (5122 normalized; `f` × 32767 with
+  `-32768` reserved). Useful for rotation quaternions where the
+  components span `[-1, 1]` and the unsigned modes would clamp every
+  negative component to 0. Round-trip tolerance: `1/127` for IByte,
+  `1/32767` for IShort.
+
 ### Added (round 4)
 
 - Encoder-side normalised-int animation outputs — symmetric to r3
