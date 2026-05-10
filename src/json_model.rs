@@ -1,0 +1,540 @@
+//! Serde-derived structs that mirror the Khronos glTF 2.0 JSON
+//! schema 1:1.
+//!
+//! Every field that the spec marks as optional is `Option<...>` plus
+//! `#[serde(skip_serializing_if = "Option::is_none")]` so the encoder
+//! emits exactly the keys the input had — no spurious `null` /
+//! defaulted output. Ditto for collections (`Vec`s default to empty +
+//! `skip_serializing_if = "Vec::is_empty"`).
+//!
+//! Reference: glTF 2.0 spec §3 (`docs/3d/gltf/gltf-2.0-spec.html`).
+
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// Top-level glTF 2.0 document.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct GltfRoot {
+    pub asset: Asset,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scenes: Vec<Scene>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<Node>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub meshes: Vec<Mesh>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accessors: Vec<Accessor>,
+    #[serde(rename = "bufferViews", default, skip_serializing_if = "Vec::is_empty")]
+    pub buffer_views: Vec<BufferView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buffers: Vec<Buffer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub materials: Vec<Material>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub textures: Vec<Texture>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<Image>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub samplers: Vec<Sampler>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cameras: Vec<Camera>,
+    #[serde(
+        rename = "extensionsUsed",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub extensions_used: Vec<String>,
+    #[serde(
+        rename = "extensionsRequired",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub extensions_required: Vec<String>,
+    /// Top-level `extensions` carries object-level extension data —
+    /// notably `KHR_lights_punctual` lives here at root scope (not
+    /// per-node) per the extension spec.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<RootExtensions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<Value>,
+}
+
+/// `asset` block — the only required top-level object per spec §3.2.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Asset {
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generator: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copyright: Option<String>,
+    #[serde(
+        rename = "minVersion",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub min_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<Value>,
+}
+
+impl Default for Asset {
+    fn default() -> Self {
+        Self {
+            version: "2.0".to_owned(),
+            generator: Some(format!("oxideav-gltf {}", env!("CARGO_PKG_VERSION"))),
+            copyright: None,
+            min_version: None,
+            extras: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Scene {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<Value>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Node {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skin: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<u32>,
+    /// `matrix`, when present, is column-major per spec §3.5.2.1 and
+    /// must NOT be combined with TRS. We surface it as-is so the
+    /// scene translator can dispatch on which form was used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matrix: Option<[f32; 16]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translation: Option<[f32; 3]>,
+    /// xyzw quaternion per glTF (Three.js / Unity convention).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<[f32; 4]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<[f32; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<NodeExtensions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<Value>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Mesh {
+    pub primitives: Vec<Primitive>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<Value>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Primitive {
+    /// Attribute name → accessor index. Standard names per spec
+    /// §3.7.2.1: POSITION, NORMAL, TANGENT, TEXCOORD_n, COLOR_n,
+    /// JOINTS_n, WEIGHTS_n.
+    pub attributes: HashMap<String, u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indices: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<u32>,
+    /// Topology (4 = TRIANGLES default per spec §3.7.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<Value>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Accessor {
+    #[serde(
+        rename = "bufferView",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub buffer_view: Option<u32>,
+    #[serde(
+        rename = "byteOffset",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub byte_offset: Option<u32>,
+    #[serde(rename = "componentType")]
+    pub component_type: u32,
+    pub count: u32,
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub normalized: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<Vec<f32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<Vec<f32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct BufferView {
+    pub buffer: u32,
+    #[serde(
+        rename = "byteOffset",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub byte_offset: Option<u32>,
+    #[serde(rename = "byteLength")]
+    pub byte_length: u32,
+    #[serde(
+        rename = "byteStride",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub byte_stride: Option<u32>,
+    /// 34962 = ARRAY_BUFFER, 34963 = ELEMENT_ARRAY_BUFFER (optional
+    /// hint per spec §3.6.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Buffer {
+    #[serde(rename = "byteLength")]
+    pub byte_length: u32,
+    /// `None` here on buffer 0 of a `.glb` means "use the BIN chunk"
+    /// per spec §4.4.3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Material {
+    #[serde(
+        rename = "pbrMetallicRoughness",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub pbr_metallic_roughness: Option<PbrMetallicRoughness>,
+    #[serde(
+        rename = "normalTexture",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub normal_texture: Option<NormalTextureInfo>,
+    #[serde(
+        rename = "occlusionTexture",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub occlusion_texture: Option<OcclusionTextureInfo>,
+    #[serde(
+        rename = "emissiveFactor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub emissive_factor: Option<[f32; 3]>,
+    #[serde(
+        rename = "emissiveTexture",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub emissive_texture: Option<TextureInfo>,
+    #[serde(rename = "alphaMode", default, skip_serializing_if = "Option::is_none")]
+    pub alpha_mode: Option<String>,
+    #[serde(
+        rename = "alphaCutoff",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub alpha_cutoff: Option<f32>,
+    #[serde(
+        rename = "doubleSided",
+        default,
+        skip_serializing_if = "is_default_false"
+    )]
+    pub double_sided: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<Value>,
+}
+
+fn is_default_false(b: &bool) -> bool {
+    !*b
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct PbrMetallicRoughness {
+    #[serde(
+        rename = "baseColorFactor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub base_color_factor: Option<[f32; 4]>,
+    #[serde(
+        rename = "baseColorTexture",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub base_color_texture: Option<TextureInfo>,
+    #[serde(
+        rename = "metallicFactor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub metallic_factor: Option<f32>,
+    #[serde(
+        rename = "roughnessFactor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub roughness_factor: Option<f32>,
+    #[serde(
+        rename = "metallicRoughnessTexture",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub metallic_roughness_texture: Option<TextureInfo>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct TextureInfo {
+    pub index: u32,
+    #[serde(rename = "texCoord", default, skip_serializing_if = "Option::is_none")]
+    pub tex_coord: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct NormalTextureInfo {
+    pub index: u32,
+    #[serde(rename = "texCoord", default, skip_serializing_if = "Option::is_none")]
+    pub tex_coord: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<f32>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct OcclusionTextureInfo {
+    pub index: u32,
+    #[serde(rename = "texCoord", default, skip_serializing_if = "Option::is_none")]
+    pub tex_coord: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strength: Option<f32>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Texture {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampler: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Image {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
+    #[serde(rename = "mimeType", default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(
+        rename = "bufferView",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub buffer_view: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Sampler {
+    #[serde(rename = "magFilter", default, skip_serializing_if = "Option::is_none")]
+    pub mag_filter: Option<u32>,
+    #[serde(rename = "minFilter", default, skip_serializing_if = "Option::is_none")]
+    pub min_filter: Option<u32>,
+    #[serde(rename = "wrapS", default, skip_serializing_if = "Option::is_none")]
+    pub wrap_s: Option<u32>,
+    #[serde(rename = "wrapT", default, skip_serializing_if = "Option::is_none")]
+    pub wrap_t: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Camera {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perspective: Option<CameraPerspective>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orthographic: Option<CameraOrthographic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct CameraPerspective {
+    #[serde(
+        rename = "aspectRatio",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub aspect_ratio: Option<f32>,
+    pub yfov: f32,
+    pub znear: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zfar: Option<f32>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct CameraOrthographic {
+    pub xmag: f32,
+    pub ymag: f32,
+    pub znear: f32,
+    pub zfar: f32,
+}
+
+/// `extensions` block at root scope. Currently we surface
+/// `KHR_lights_punctual` (the punctual-lights light table lives there
+/// per the extension spec); other extensions pass through as `extras`.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct RootExtensions {
+    #[serde(
+        rename = "KHR_lights_punctual",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_lights_punctual: Option<KhrLightsPunctualRoot>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct KhrLightsPunctualRoot {
+    pub lights: Vec<KhrLight>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct KhrLight {
+    /// `"directional"`, `"point"`, or `"spot"` per the extension spec.
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<[f32; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intensity: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spot: Option<KhrLightSpot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct KhrLightSpot {
+    #[serde(
+        rename = "innerConeAngle",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub inner_cone_angle: Option<f32>,
+    #[serde(
+        rename = "outerConeAngle",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub outer_cone_angle: Option<f32>,
+}
+
+/// Per-node `extensions` block. Used by `KHR_lights_punctual` to point
+/// a node at one of the root `lights[]`.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct NodeExtensions {
+    #[serde(
+        rename = "KHR_lights_punctual",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_lights_punctual: Option<NodeLightRef>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct NodeLightRef {
+    pub light: u32,
+}
+
+// ----- componentType + topology constants per spec §3.6.2.2 / §3.7.2.1 -----
+
+pub const COMPONENT_TYPE_BYTE: u32 = 5120;
+pub const COMPONENT_TYPE_UNSIGNED_BYTE: u32 = 5121;
+pub const COMPONENT_TYPE_SHORT: u32 = 5122;
+pub const COMPONENT_TYPE_UNSIGNED_SHORT: u32 = 5123;
+pub const COMPONENT_TYPE_UNSIGNED_INT: u32 = 5125;
+pub const COMPONENT_TYPE_FLOAT: u32 = 5126;
+
+pub const MODE_POINTS: u32 = 0;
+pub const MODE_LINES: u32 = 1;
+pub const MODE_LINE_LOOP: u32 = 2;
+pub const MODE_LINE_STRIP: u32 = 3;
+pub const MODE_TRIANGLES: u32 = 4;
+pub const MODE_TRIANGLE_STRIP: u32 = 5;
+pub const MODE_TRIANGLE_FAN: u32 = 6;
+
+pub const TARGET_ARRAY_BUFFER: u32 = 34962;
+pub const TARGET_ELEMENT_ARRAY_BUFFER: u32 = 34963;
+
+pub const MAG_FILTER_NEAREST: u32 = 9728;
+pub const MAG_FILTER_LINEAR: u32 = 9729;
+pub const MIN_FILTER_NEAREST: u32 = 9728;
+pub const MIN_FILTER_LINEAR: u32 = 9729;
+pub const MIN_FILTER_NEAREST_MIPMAP_NEAREST: u32 = 9984;
+pub const MIN_FILTER_LINEAR_MIPMAP_NEAREST: u32 = 9985;
+pub const MIN_FILTER_NEAREST_MIPMAP_LINEAR: u32 = 9986;
+pub const MIN_FILTER_LINEAR_MIPMAP_LINEAR: u32 = 9987;
+
+pub const WRAP_CLAMP_TO_EDGE: u32 = 33071;
+pub const WRAP_MIRRORED_REPEAT: u32 = 33648;
+pub const WRAP_REPEAT: u32 = 10497;
+
+/// glTF `type` field component-count lookup.
+pub fn type_components(kind: &str) -> Option<u32> {
+    match kind {
+        "SCALAR" => Some(1),
+        "VEC2" => Some(2),
+        "VEC3" => Some(3),
+        "VEC4" => Some(4),
+        "MAT2" => Some(4),
+        "MAT3" => Some(9),
+        "MAT4" => Some(16),
+        _ => None,
+    }
+}
+
+/// Size of one component in bytes.
+pub fn component_size(component_type: u32) -> Option<u32> {
+    match component_type {
+        COMPONENT_TYPE_BYTE | COMPONENT_TYPE_UNSIGNED_BYTE => Some(1),
+        COMPONENT_TYPE_SHORT | COMPONENT_TYPE_UNSIGNED_SHORT => Some(2),
+        COMPONENT_TYPE_UNSIGNED_INT | COMPONENT_TYPE_FLOAT => Some(4),
+        _ => None,
+    }
+}
