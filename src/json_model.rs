@@ -42,6 +42,10 @@ pub struct GltfRoot {
     pub samplers: Vec<Sampler>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cameras: Vec<Camera>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub animations: Vec<Animation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skins: Vec<Skin>,
     #[serde(
         rename = "extensionsUsed",
         default,
@@ -186,6 +190,48 @@ pub struct Accessor {
     pub max: Option<Vec<f32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Sparse-storage block per spec §3.6.2.3. When present alongside
+    /// `bufferView`, the sparse entries override `count` elements at
+    /// `indices` with the matching `values` slot. When `bufferView` is
+    /// `None`, the base array is initialised to zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sparse: Option<AccessorSparse>,
+}
+
+/// `accessor.sparse` block — describes element-level overrides on top
+/// of the (optional) base buffer-view content.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct AccessorSparse {
+    pub count: u32,
+    pub indices: AccessorSparseIndices,
+    pub values: AccessorSparseValues,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct AccessorSparseIndices {
+    #[serde(rename = "bufferView")]
+    pub buffer_view: u32,
+    #[serde(
+        rename = "byteOffset",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub byte_offset: Option<u32>,
+    /// 5121 / 5123 / 5125 (UNSIGNED_BYTE / SHORT / INT).
+    #[serde(rename = "componentType")]
+    pub component_type: u32,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct AccessorSparseValues {
+    #[serde(rename = "bufferView")]
+    pub buffer_view: u32,
+    #[serde(
+        rename = "byteOffset",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub byte_offset: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -480,6 +526,63 @@ pub struct NodeExtensions {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct NodeLightRef {
     pub light: u32,
+}
+
+/// `animations[i]` — a bag of channels played as one timeline.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Animation {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<AnimationChannel>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub samplers: Vec<AnimationSampler>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<Value>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct AnimationChannel {
+    pub sampler: u32,
+    pub target: AnimationChannelTarget,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct AnimationChannelTarget {
+    /// `None` → channel SHOULD be ignored per spec §3.11.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<u32>,
+    /// `"translation"`, `"rotation"`, `"scale"`, or `"weights"`.
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct AnimationSampler {
+    /// Accessor index for the keyframe times (SCALAR float, monotonic).
+    pub input: u32,
+    /// Accessor index for the per-keyframe values.
+    pub output: u32,
+    /// `"LINEAR"` (default), `"STEP"`, or `"CUBICSPLINE"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interpolation: Option<String>,
+}
+
+/// `skins[i]` — joint roster + (optional) inverse-bind-matrix accessor.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Skin {
+    #[serde(
+        rename = "inverseBindMatrices",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub inverse_bind_matrices: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skeleton: Option<u32>,
+    pub joints: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<Value>,
 }
 
 // ----- componentType + topology constants per spec §3.6.2.2 / §3.7.2.1 -----

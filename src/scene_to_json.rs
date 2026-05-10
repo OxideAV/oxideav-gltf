@@ -15,12 +15,14 @@ use std::collections::HashMap;
 use std::io::Read;
 
 use oxideav_mesh3d::{
-    AlphaMode, Camera, ImageData, Indices, Light, MagFilter, Material, Mesh, MinFilter, Node,
-    Primitive, Sampler, Scene3D, Texture, Topology, Transform, WrapMode,
+    AlphaMode, Animation, AnimationProperty, AnimationValues, Camera, ImageData, Indices,
+    Interpolation, Light, MagFilter, Material, Mesh, MinFilter, Node, Primitive, Sampler, Scene3D,
+    Skin, Texture, Topology, Transform, WrapMode,
 };
 
 use crate::accessor::{
-    pad_to_4, smallest_index_component, write_indices, write_vec4_u16, write_vec_f32,
+    pad_to_4, smallest_index_component, write_indices, write_mat4_f32, write_vec4_u16,
+    write_vec_f32,
 };
 use crate::error::{invalid, Result};
 use crate::json_model::{self as gj, GltfRoot};
@@ -87,23 +89,104 @@ pub fn convert(scene: &Scene3D) -> Result<EncodedScene> {
         root.extensions_used.push("KHR_lights_punctual".to_owned());
     }
 
+    // --- skins ---
+    // Each Skin points at a Skeleton; the Skin itself only carries
+    // (skeleton_id, root_node) so we read the joint roster + IBM
+    // matrices off the referenced Skeleton.
+    for skin in &scene.skins {
+        let s_json = encode_skin(skin, scene, &mut root, &mut bin)?;
+        root.skins.push(s_json);
+    }
+
     // --- nodes ---
     for n in &scene.nodes {
         root.nodes.push(encode_node(n, scene));
     }
 
-    // --- scene root ---
-    let scene_extras = if scene.extras.is_empty() {
+    // --- animations ---
+    for a in &scene.animations {
+        let a_json = encode_animation(a, &mut root, &mut bin)?;
+        root.animations.push(a_json);
+    }
+
+    // --- scene root + multi-scene side-channel ---
+    // The decoder stashes secondary scenes under
+    // `scene.extras["__additional_scenes"]` so this round-trip block
+    // pulls them back out and recreates the original `scenes[]` order.
+    let mut effective_extras = scene.extras.clone();
+    let additional_scenes = effective_extras.remove("__additional_scenes");
+    let scene_extras = if effective_extras.is_empty() {
         None
     } else {
-        Some(map_to_value(&scene.extras))
+        Some(map_to_value(&effective_extras))
     };
-    root.scenes.push(gj::Scene {
+    let primary_scene = gj::Scene {
         nodes: scene.roots.iter().map(|r| r.0).collect(),
         name: None,
         extras: scene_extras.clone(),
-    });
-    root.scene = Some(0);
+    };
+    match additional_scenes {
+        Some(serde_json::Value::Array(extras_arr)) => {
+            // Re-thread secondary scenes back into their original
+            // indices; primary slots into the first un-occupied index.
+            let mut entries: Vec<(usize, gj::Scene)> = Vec::with_capacity(extras_arr.len());
+            for v in extras_arr {
+                let obj = match v {
+                    serde_json::Value::Object(o) => o,
+                    _ => continue,
+                };
+                let idx = obj.get("__index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let nodes = obj
+                    .get("nodes")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_u64().map(|n| n as u32))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let name = obj.get("name").and_then(|v| v.as_str()).map(String::from);
+                let extras = obj.get("extras").cloned();
+                entries.push((
+                    idx,
+                    gj::Scene {
+                        nodes,
+                        name,
+                        extras,
+                    },
+                ));
+            }
+            let occupied: std::collections::HashSet<usize> =
+                entries.iter().map(|(i, _)| *i).collect();
+            let mut primary_index = 0usize;
+            while occupied.contains(&primary_index) {
+                primary_index += 1;
+            }
+            let max_idx = entries
+                .iter()
+                .map(|(i, _)| *i)
+                .chain(std::iter::once(primary_index))
+                .max()
+                .unwrap_or(0);
+            let mut slots: Vec<Option<gj::Scene>> = vec![None; max_idx + 1];
+            slots[primary_index] = Some(primary_scene);
+            for (i, s) in entries {
+                if i < slots.len() && slots[i].is_none() {
+                    slots[i] = Some(s);
+                } else {
+                    slots.push(Some(s));
+                }
+            }
+            for slot in slots {
+                root.scenes.push(slot.unwrap_or_else(gj::Scene::default));
+            }
+            root.scene = Some(primary_index as u32);
+        }
+        _ => {
+            root.scenes.push(primary_scene);
+            root.scene = Some(0);
+        }
+    }
     root.extras = scene_extras;
 
     // --- buffer ---
@@ -262,6 +345,7 @@ fn push_vec3_accessor(
         min,
         max,
         name: Some(name.into()),
+        sparse: None,
     };
     let acc_idx = root.accessors.len() as u32;
     root.accessors.push(acc);
@@ -298,6 +382,7 @@ fn push_vec4_accessor(
         min: None,
         max: None,
         name: Some(name.into()),
+        sparse: None,
     });
     Ok(acc_idx)
 }
@@ -327,6 +412,7 @@ fn push_vec2_accessor(root: &mut GltfRoot, bin: &mut Vec<u8>, data: &[[f32; 2]])
         min: None,
         max: None,
         name: Some("TEXCOORD".into()),
+        sparse: None,
     });
     Ok(acc_idx)
 }
@@ -356,6 +442,7 @@ fn push_joints_accessor(root: &mut GltfRoot, bin: &mut Vec<u8>, data: &[[u16; 4]
         min: None,
         max: None,
         name: Some("JOINTS_0".into()),
+        sparse: None,
     });
     Ok(acc_idx)
 }
@@ -387,6 +474,7 @@ fn push_indices_accessor(root: &mut GltfRoot, bin: &mut Vec<u8>, indices: &[u32]
         min: None,
         max: None,
         name: Some("indices".into()),
+        sparse: None,
     });
     Ok(acc_idx)
 }
@@ -716,6 +804,207 @@ fn map_to_value(map: &HashMap<String, serde_json::Value>) -> serde_json::Value {
         out.insert(k.clone(), v.clone());
     }
     serde_json::Value::Object(out)
+}
+
+// --- skin / animation encoders -------------------------------------------
+
+fn encode_skin(
+    skin: &Skin,
+    scene: &Scene3D,
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+) -> Result<gj::Skin> {
+    let skel = scene
+        .skeletons
+        .get(skin.skeleton.0 as usize)
+        .ok_or_else(|| invalid(format!("skin: skeleton {} out of range", skin.skeleton.0)))?;
+
+    // IBM accessor (optional — drop the field when no matrices are stored).
+    let ibm_acc = if skel.inverse_bind_matrices.is_empty() {
+        None
+    } else {
+        if skel.inverse_bind_matrices.len() != skel.joints.len() {
+            return Err(invalid(format!(
+                "skin: IBM count {} != joints count {}",
+                skel.inverse_bind_matrices.len(),
+                skel.joints.len()
+            )));
+        }
+        Some(push_mat4_accessor(
+            root,
+            bin,
+            &skel.inverse_bind_matrices,
+            "inverseBindMatrices",
+        )?)
+    };
+
+    Ok(gj::Skin {
+        inverse_bind_matrices: ibm_acc,
+        skeleton: skin.root_node.map(|n| n.0),
+        joints: skel.joints.iter().map(|j| j.0).collect(),
+        name: skel.name.clone(),
+        extras: None,
+    })
+}
+
+fn encode_animation(
+    a: &Animation,
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+) -> Result<gj::Animation> {
+    let mut samplers: Vec<gj::AnimationSampler> = Vec::with_capacity(a.channels.len());
+    let mut channels: Vec<gj::AnimationChannel> = Vec::with_capacity(a.channels.len());
+
+    for ch in &a.channels {
+        // Each channel becomes one sampler — we don't bother
+        // de-duplicating identical (input, output, interpolation)
+        // samplers; round-trip-faithfulness > tightest JSON.
+        let s = &ch.sampler;
+        if s.values.is_empty() {
+            return Err(invalid("animation channel: sampler has no values"));
+        }
+        // Input — keyframe times. spec §3.11: input accessor MUST have
+        // min/max defined.
+        let input_acc = push_scalar_f32_accessor_with_minmax(root, bin, &s.keyframes, "input")?;
+        // Output, sized per channel path.
+        let output_acc = match &s.values {
+            AnimationValues::Vec3(v) => push_vec3_accessor(root, bin, v, "output", false)?,
+            AnimationValues::Quat(v) => push_vec4_accessor(root, bin, v, "output")?,
+            AnimationValues::Scalar(v) => push_scalar_f32_accessor(root, bin, v, "output")?,
+        };
+        let interpolation = match s.interpolation {
+            // LINEAR is the spec default; omit it for a tighter document.
+            Interpolation::Linear => None,
+            Interpolation::Step => Some("STEP".to_owned()),
+            Interpolation::CubicSpline => Some("CUBICSPLINE".to_owned()),
+        };
+        let sampler_idx = samplers.len() as u32;
+        samplers.push(gj::AnimationSampler {
+            input: input_acc,
+            output: output_acc,
+            interpolation,
+        });
+        let path = match ch.target.property {
+            AnimationProperty::Translation => "translation",
+            AnimationProperty::Rotation => "rotation",
+            AnimationProperty::Scale => "scale",
+            AnimationProperty::MorphWeights => "weights",
+        };
+        channels.push(gj::AnimationChannel {
+            sampler: sampler_idx,
+            target: gj::AnimationChannelTarget {
+                node: Some(ch.target.node.0),
+                path: path.to_owned(),
+            },
+        });
+    }
+
+    Ok(gj::Animation {
+        channels,
+        samplers,
+        name: a.name.clone(),
+        extras: None,
+    })
+}
+
+fn push_scalar_f32_accessor(
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+    data: &[f32],
+    name: &'static str,
+) -> Result<u32> {
+    pad_to_4(bin);
+    let byte_offset = bin.len();
+    for v in data {
+        bin.extend_from_slice(&v.to_le_bytes());
+    }
+    let byte_length = bin.len() - byte_offset;
+    let bv_idx = root.buffer_views.len() as u32;
+    root.buffer_views.push(gj::BufferView {
+        buffer: 0,
+        byte_offset: Some(byte_offset as u32),
+        byte_length: byte_length as u32,
+        byte_stride: None,
+        target: None,
+        name: Some(format!("{name}_view")),
+    });
+    let acc_idx = root.accessors.len() as u32;
+    root.accessors.push(gj::Accessor {
+        buffer_view: Some(bv_idx),
+        byte_offset: None,
+        component_type: gj::COMPONENT_TYPE_FLOAT,
+        count: data.len() as u32,
+        kind: "SCALAR".into(),
+        normalized: false,
+        min: None,
+        max: None,
+        name: Some(name.into()),
+        sparse: None,
+    });
+    Ok(acc_idx)
+}
+
+fn push_scalar_f32_accessor_with_minmax(
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+    data: &[f32],
+    name: &'static str,
+) -> Result<u32> {
+    let acc_idx = push_scalar_f32_accessor(root, bin, data, name)?;
+    if !data.is_empty() {
+        let mut mn = data[0];
+        let mut mx = data[0];
+        for &v in &data[1..] {
+            if v < mn {
+                mn = v;
+            }
+            if v > mx {
+                mx = v;
+            }
+        }
+        let acc = root
+            .accessors
+            .last_mut()
+            .expect("just pushed accessor disappeared");
+        acc.min = Some(vec![mn]);
+        acc.max = Some(vec![mx]);
+    }
+    Ok(acc_idx)
+}
+
+fn push_mat4_accessor(
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+    data: &[[[f32; 4]; 4]],
+    name: &'static str,
+) -> Result<u32> {
+    pad_to_4(bin);
+    let byte_offset = bin.len();
+    write_mat4_f32(bin, data);
+    let byte_length = bin.len() - byte_offset;
+    let bv_idx = root.buffer_views.len() as u32;
+    root.buffer_views.push(gj::BufferView {
+        buffer: 0,
+        byte_offset: Some(byte_offset as u32),
+        byte_length: byte_length as u32,
+        byte_stride: None,
+        target: None,
+        name: Some(format!("{name}_view")),
+    });
+    let acc_idx = root.accessors.len() as u32;
+    root.accessors.push(gj::Accessor {
+        buffer_view: Some(bv_idx),
+        byte_offset: None,
+        component_type: gj::COMPONENT_TYPE_FLOAT,
+        count: data.len() as u32,
+        kind: "MAT4".into(),
+        normalized: false,
+        min: None,
+        max: None,
+        name: Some(name.into()),
+        sparse: None,
+    });
+    Ok(acc_idx)
 }
 
 #[allow(dead_code)]

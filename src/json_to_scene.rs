@@ -10,20 +10,26 @@
 //!   image. For accessor-backing buffers the same buffer is needed
 //!   eagerly; when the URI is unresolvable we return
 //!   [`Error::Unsupported`] rather than guessing.
-//! * Sparse accessors aren't supported — they're an authoring
-//!   optimisation rare in shipping content. Round-2 candidate.
+//! * Sparse accessors are decoded by materialising the base buffer
+//!   and overlaying the per-index overrides per spec §3.6.2.3
+//!   (round 2). The encoder always emits dense storage on the way
+//!   back out.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use oxideav_mesh3d::{
-    AlphaMode, Camera, ImageData, Indices, Light, MagFilter, Material, MaterialId, Mesh, MinFilter,
-    Node, NodeId, Primitive, Sampler, Scene3D, Texture, TextureId, TextureRef, Topology, Transform,
-    WrapMode,
+    AlphaMode, Animation, AnimationChannel, AnimationProperty, AnimationSampler, AnimationTarget,
+    AnimationValues, Camera, ImageData, Indices, Interpolation, Light, MagFilter, Material,
+    MaterialId, Mesh, MinFilter, Node, NodeId, Primitive, Sampler, Scene3D, Skeleton, Skin, SkinId,
+    Texture, TextureId, TextureRef, Topology, Transform, WrapMode,
 };
 use serde_json::Value;
 
-use crate::accessor::{locate, read_indices_u32, read_vec4_u16, read_vec_f32};
+use crate::accessor::{
+    materialise_accessor, read_indices_u32, read_mat4_f32, read_scalar_f32, read_vec4_u16,
+    read_vec_f32, view_from_materialised,
+};
 use crate::asset_source::BufferViewAsset;
 use crate::error::{invalid, unsupported, Error, Result};
 use crate::json_model::{self as gj, GltfRoot};
@@ -95,6 +101,13 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
         }
     }
 
+    // Skins — convert before nodes so node.skin can reference SkinIds.
+    let mut skin_id_map: HashMap<u32, SkinId> = HashMap::new();
+    for (i, s) in root.skins.iter().enumerate() {
+        let id = convert_skin(s, root, &buffers, &mut scene)?;
+        skin_id_map.insert(i as u32, id);
+    }
+
     // Nodes — pre-allocate so child references resolve.
     for n in &root.nodes {
         let mut node = Node::new();
@@ -109,6 +122,9 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
         if let Some(c) = n.camera {
             node.camera = camera_id_map.get(&c).copied();
         }
+        if let Some(s) = n.skin {
+            node.skin = skin_id_map.get(&s).copied();
+        }
         if let Some(ext) = &n.extensions {
             if let Some(lr) = &ext.khr_lights_punctual {
                 node.light = light_id_map.get(&lr.light).copied();
@@ -118,6 +134,11 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
             extras_into(&mut node.extras, extras.clone());
         }
         scene.add_node(node);
+    }
+
+    // Animations — channels target NodeIds, so resolve after nodes are loaded.
+    for a in &root.animations {
+        scene.add_animation(convert_animation(a, root, &buffers)?);
     }
 
     // Roots — explicit `scenes[scene].nodes` if any, otherwise treat
@@ -142,11 +163,181 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
         }
     }
 
+    // Multi-scene preservation: when more than one scene is present we
+    // load the active one as the live scene-graph; secondary scenes (the
+    // node-id rosters + names) round-trip through `scene.extras` so the
+    // encoder can re-emit them. Spec §5.27 lets a glTF asset host
+    // several `scenes[]` and pick one as default via top-level `scene`.
+    if root.scenes.len() > 1 {
+        let secondary: Vec<serde_json::Value> = root
+            .scenes
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != scene_idx)
+            .map(|(i, s)| {
+                let nodes: Vec<serde_json::Value> = s
+                    .nodes
+                    .iter()
+                    .map(|&n| serde_json::Value::from(n))
+                    .collect();
+                let mut obj = serde_json::Map::new();
+                obj.insert("__index".into(), serde_json::Value::from(i as u32));
+                obj.insert("nodes".into(), serde_json::Value::Array(nodes));
+                if let Some(name) = &s.name {
+                    obj.insert("name".into(), serde_json::Value::String(name.clone()));
+                }
+                if let Some(extras) = &s.extras {
+                    obj.insert("extras".into(), extras.clone());
+                }
+                serde_json::Value::Object(obj)
+            })
+            .collect();
+        scene.extras.insert(
+            "__additional_scenes".into(),
+            serde_json::Value::Array(secondary),
+        );
+    }
+
     if let Some(extras) = &root.extras {
         extras_into(&mut scene.extras, extras.clone());
     }
 
     Ok(scene)
+}
+
+// --- skin / animation converters ----------------------------------------
+
+fn convert_skin(
+    s: &gj::Skin,
+    root: &GltfRoot,
+    buffers: &[Arc<Vec<u8>>],
+    scene: &mut Scene3D,
+) -> Result<SkinId> {
+    // Build the skeleton: joint NodeIds + IBM matrices.
+    let mut skeleton = Skeleton::new();
+    skeleton.name = s.name.clone();
+    skeleton.joints = s.joints.iter().map(|&n| NodeId(n)).collect();
+    if let Some(ibm_idx) = s.inverse_bind_matrices {
+        let acc = root
+            .accessors
+            .get(ibm_idx as usize)
+            .ok_or_else(|| invalid(format!("skin: inverseBindMatrices accessor {ibm_idx} oob")))?;
+        if acc.kind != "MAT4" || acc.component_type != gj::COMPONENT_TYPE_FLOAT {
+            return Err(unsupported(format!(
+                "skin.inverseBindMatrices must be MAT4 FLOAT, got {:?} {}",
+                acc.kind, acc.component_type
+            )));
+        }
+        let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
+        let view = view_from_materialised(acc, &bytes)?;
+        skeleton.inverse_bind_matrices = read_mat4_f32(&view)?;
+    }
+    let skel_id = scene.add_skeleton(skeleton);
+    let mut skin = Skin::new(skel_id);
+    if let Some(root_node) = s.skeleton {
+        skin = skin.with_root(NodeId(root_node));
+    }
+    Ok(scene.add_skin(skin))
+}
+
+fn convert_animation(
+    a: &gj::Animation,
+    root: &GltfRoot,
+    buffers: &[Arc<Vec<u8>>],
+) -> Result<Animation> {
+    let mut anim = Animation::new(a.name.clone());
+    anim.channels.reserve(a.channels.len());
+    for ch in &a.channels {
+        let target_node = match ch.target.node {
+            Some(n) => NodeId(n),
+            // Spec §3.11: "When node isn't defined, channel SHOULD be ignored."
+            None => continue,
+        };
+        let property = match ch.target.path.as_str() {
+            "translation" => AnimationProperty::Translation,
+            "rotation" => AnimationProperty::Rotation,
+            "scale" => AnimationProperty::Scale,
+            "weights" => AnimationProperty::MorphWeights,
+            other => {
+                return Err(unsupported(format!(
+                    "animation channel path {other:?} unknown"
+                )));
+            }
+        };
+        let s_idx = ch.sampler as usize;
+        let s = a
+            .samplers
+            .get(s_idx)
+            .ok_or_else(|| invalid(format!("animation: sampler {s_idx} out of range")))?;
+        let interpolation = match s.interpolation.as_deref() {
+            None | Some("LINEAR") => Interpolation::Linear,
+            Some("STEP") => Interpolation::Step,
+            Some("CUBICSPLINE") => Interpolation::CubicSpline,
+            Some(other) => {
+                return Err(unsupported(format!(
+                    "animation sampler interpolation {other:?} unknown"
+                )));
+            }
+        };
+        // Input — keyframe times, SCALAR FLOAT per spec table.
+        let input_acc = root
+            .accessors
+            .get(s.input as usize)
+            .ok_or_else(|| invalid(format!("animation sampler input {} oob", s.input)))?;
+        if input_acc.kind != "SCALAR" || input_acc.component_type != gj::COMPONENT_TYPE_FLOAT {
+            return Err(unsupported(format!(
+                "animation input accessor must be SCALAR FLOAT, got {:?} {}",
+                input_acc.kind, input_acc.component_type
+            )));
+        }
+        let in_bytes = materialise_accessor(input_acc, &root.buffer_views, buffers)?;
+        let in_view = view_from_materialised(input_acc, &in_bytes)?;
+        let keyframes = read_scalar_f32(&in_view)?;
+        // Output — type depends on path. We restrict to FLOAT
+        // component-types in r2; the normalised-int variants the spec
+        // also permits decode after dequantisation, but no shipping
+        // tooling we care about emits them.
+        let output_acc = root
+            .accessors
+            .get(s.output as usize)
+            .ok_or_else(|| invalid(format!("animation sampler output {} oob", s.output)))?;
+        if output_acc.component_type != gj::COMPONENT_TYPE_FLOAT {
+            return Err(unsupported(format!(
+                "animation output accessor: only FLOAT supported in r2, got {}",
+                output_acc.component_type
+            )));
+        }
+        let out_bytes = materialise_accessor(output_acc, &root.buffer_views, buffers)?;
+        let out_view = view_from_materialised(output_acc, &out_bytes)?;
+        let values = match (property, output_acc.kind.as_str()) {
+            (AnimationProperty::Translation | AnimationProperty::Scale, "VEC3") => {
+                AnimationValues::Vec3(read_vec_f32::<3>(&out_view)?)
+            }
+            (AnimationProperty::Rotation, "VEC4") => {
+                AnimationValues::Quat(read_vec_f32::<4>(&out_view)?)
+            }
+            (AnimationProperty::MorphWeights, "SCALAR") => {
+                AnimationValues::Scalar(read_scalar_f32(&out_view)?)
+            }
+            (p, k) => {
+                return Err(invalid(format!(
+                    "animation channel: path {p:?} incompatible with output type {k:?}"
+                )));
+            }
+        };
+        anim.channels.push(AnimationChannel {
+            target: AnimationTarget {
+                node: target_node,
+                property,
+            },
+            sampler: AnimationSampler {
+                keyframes,
+                values,
+                interpolation,
+            },
+        });
+    }
+    Ok(anim)
 }
 
 // --- buffer / accessor resolution ------------------------------------------
@@ -503,29 +694,23 @@ fn convert_primitive(
         color_idx += 1;
     }
     if let Some(&i) = p.attributes.get("JOINTS_0") {
-        let buf = buffers
-            .get(buffer_index_for(root, i)?)
-            .ok_or_else(|| invalid("joints: buffer out of range"))?;
         let acc = &root.accessors[i as usize];
-        let view = locate(acc, &root.buffer_views, buf)?;
+        let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
+        let view = view_from_materialised(acc, &bytes)?;
         prim.joints = Some(read_vec4_u16(&view)?);
     }
     if let Some(&i) = p.attributes.get("WEIGHTS_0") {
-        let buf = buffers
-            .get(buffer_index_for(root, i)?)
-            .ok_or_else(|| invalid("weights: buffer out of range"))?;
         let acc = &root.accessors[i as usize];
-        let view = locate(acc, &root.buffer_views, buf)?;
+        let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
+        let view = view_from_materialised(acc, &bytes)?;
         let raw = read_vec_f32::<4>(&view)?;
         prim.weights = Some(raw);
     }
 
     if let Some(idx_acc) = p.indices {
         let acc = &root.accessors[idx_acc as usize];
-        let buf = buffers
-            .get(buffer_index_for(root, idx_acc)?)
-            .ok_or_else(|| invalid("indices: buffer out of range"))?;
-        let view = locate(acc, &root.buffer_views, buf)?;
+        let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
+        let view = view_from_materialised(acc, &bytes)?;
         let widened = read_indices_u32(acc, &view)?;
         // Pick the narrowest representable width — this is glTF's
         // own convention (5121 / 5123 / 5125 are all valid).
@@ -563,10 +748,8 @@ fn read_attr_vec3(
             acc.kind, acc.component_type
         )));
     }
-    let buf = buffers
-        .get(buffer_index_for(root, accessor_idx)?)
-        .ok_or_else(|| invalid("attribute: buffer out of range"))?;
-    let view = locate(acc, &root.buffer_views, buf)?;
+    let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
+    let view = view_from_materialised(acc, &bytes)?;
     read_vec_f32::<3>(&view)
 }
 
@@ -585,10 +768,8 @@ fn read_attr_vec2(
             acc.kind, acc.component_type
         )));
     }
-    let buf = buffers
-        .get(buffer_index_for(root, accessor_idx)?)
-        .ok_or_else(|| invalid("TEXCOORD: buffer out of range"))?;
-    let view = locate(acc, &root.buffer_views, buf)?;
+    let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
+    let view = view_from_materialised(acc, &bytes)?;
     read_vec_f32::<2>(&view)
 }
 
@@ -607,10 +788,8 @@ fn read_attr_vec4(
             acc.kind, acc.component_type
         )));
     }
-    let buf = buffers
-        .get(buffer_index_for(root, accessor_idx)?)
-        .ok_or_else(|| invalid("TANGENT: buffer out of range"))?;
-    let view = locate(acc, &root.buffer_views, buf)?;
+    let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
+    let view = view_from_materialised(acc, &bytes)?;
     read_vec_f32::<4>(&view)
 }
 
@@ -629,10 +808,8 @@ fn read_attr_color(
             acc.component_type
         )));
     }
-    let buf = buffers
-        .get(buffer_index_for(root, accessor_idx)?)
-        .ok_or_else(|| invalid("COLOR: buffer out of range"))?;
-    let view = locate(acc, &root.buffer_views, buf)?;
+    let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
+    let view = view_from_materialised(acc, &bytes)?;
     match acc.kind.as_str() {
         "VEC3" => {
             let raw = read_vec_f32::<3>(&view)?;
@@ -643,18 +820,6 @@ fn read_attr_color(
             "COLOR accessor: type {other:?} not supported"
         ))),
     }
-}
-
-fn buffer_index_for(root: &GltfRoot, accessor_idx: u32) -> Result<usize> {
-    let acc = &root.accessors[accessor_idx as usize];
-    let bv_idx = acc
-        .buffer_view
-        .ok_or_else(|| invalid("accessor missing bufferView"))?;
-    let bv = root
-        .buffer_views
-        .get(bv_idx as usize)
-        .ok_or_else(|| invalid(format!("bufferView {bv_idx} out of range")))?;
-    Ok(bv.buffer as usize)
 }
 
 fn topology_from_mode(mode: u32) -> Result<Topology> {

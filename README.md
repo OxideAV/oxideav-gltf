@@ -8,7 +8,7 @@ container. Implements the [`oxideav-mesh3d`](https://github.com/OxideAV/oxideav-
 Part of the [oxideav](https://github.com/OxideAV/oxideav-workspace)
 framework but usable standalone.
 
-## What's covered (round 1)
+## What's covered
 
 - `.gltf` JSON document read + write
 - `.glb` binary container read + write (header + JSON chunk + BIN chunk)
@@ -23,20 +23,31 @@ framework but usable standalone.
   narrowest representable
 - Cameras: perspective + orthographic
 - KHR_lights_punctual extension (directional / point / spot)
+- Skins + skeletons (joint roster, inverseBindMatrices accessor,
+  optional skeleton root) per spec §3.7.3 — `node.skin` round-trips
+- Animations (channels + samplers) per spec §3.11 — translation /
+  rotation / scale / weights paths, LINEAR + STEP + CUBICSPLINE
+  interpolation
+- Sparse accessors per spec §3.6.2.3 (decode-only — encoder emits
+  dense storage)
+- Multi-scene documents — secondary `scenes[]` are preserved through
+  round-trip via `Scene3D::extras["__additional_scenes"]`; the active
+  scene index is honoured on both decode and encode
 - Textures with samplers + images (buffer-view-backed images via
   `BufferViewAsset` for zero-copy slicing into the `.glb` BIN chunk;
   `data:` URI base64 inlining; external URI passthrough)
 - `extras` round-trip on root, scenes, nodes, materials, primitives
 
-## Round 2 (planned)
+## Round 3 (planned)
 
-- Skeletal animation (`animations[]`, `skins[]`, `JOINTS_0` / `WEIGHTS_0`
-  already accepted but no Skin/Skeleton wiring yet)
 - KHR_audio_emitter wiring against `oxideav_mesh3d::AudioSource` /
-  `AudioEmitter`
+  `AudioEmitter` (blocked on docs/3d/gltf/extensions/ entries)
 - Material PBR-extension surfaces: KHR_materials_ior,
   _emissive_strength, _clearcoat, _sheen, _transmission
-- Sparse accessors (rare; r1 returns `Unsupported`)
+  (blocked on docs/3d/gltf/extensions/ entries)
+- KHR_texture_transform UV transform on texture references
+- Sparse-encoding heuristic — auto-detect when a re-emitted accessor
+  would benefit from sparse storage
 
 ## Installation
 
