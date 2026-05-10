@@ -24,6 +24,7 @@ use crate::accessor::{
     pad_to_4, smallest_index_component, write_indices, write_mat4_f32, write_vec4_u16,
     write_vec_f32,
 };
+use crate::encoder::QuantizeMode;
 use crate::error::{invalid, Result};
 use crate::json_model::{self as gj, GltfRoot};
 
@@ -42,6 +43,10 @@ pub struct EncodeOptions {
     /// storage (zero base + per-index overrides). Clamped to `[0.0, 1.0]`
     /// at construction time on [`crate::GltfEncoder`].
     pub sparse_threshold: Option<f32>,
+    /// Quantisation mode for animation sampler outputs that the spec
+    /// allows in normalised-int form (ROTATION VEC4 + MORPH_WEIGHTS
+    /// SCALAR). See [`QuantizeMode`].
+    pub quantize_animation: QuantizeMode,
 }
 
 /// Translate `scene` into a glTF JSON document + the matching packed
@@ -896,9 +901,65 @@ fn encode_animation(
             AnimationValues::Vec3(v) => {
                 push_vec3_accessor_maybe_sparse(root, bin, v, "output", false, opts, allow_sparse)?
             }
-            AnimationValues::Quat(v) => push_vec4_accessor(root, bin, v, "output")?,
+            AnimationValues::Quat(v) => {
+                // Sparse takes precedence: the heuristic only applies
+                // to TRANSLATION + MORPH_WEIGHTS (allow_sparse is false
+                // here for ROTATION) so we can quantise unconditionally
+                // when the mode requests it.
+                match opts.quantize_animation {
+                    QuantizeMode::Float => push_vec4_accessor(root, bin, v, "output")?,
+                    QuantizeMode::UByte => push_vec4_accessor_quantized(
+                        root,
+                        bin,
+                        v,
+                        "output",
+                        gj::COMPONENT_TYPE_UNSIGNED_BYTE,
+                    )?,
+                    QuantizeMode::UShort => push_vec4_accessor_quantized(
+                        root,
+                        bin,
+                        v,
+                        "output",
+                        gj::COMPONENT_TYPE_UNSIGNED_SHORT,
+                    )?,
+                }
+            }
             AnimationValues::Scalar(v) => {
-                push_scalar_f32_accessor_maybe_sparse(root, bin, v, "output", opts, allow_sparse)?
+                // Quantisation and sparse are mutually exclusive: a
+                // zero-base sparse accessor with overrides as
+                // normalised ints would mix two different value
+                // representations. When sparse fires, prefer it (it
+                // already discards the zero entries entirely); when it
+                // doesn't fire, honour the quantize mode.
+                let take_sparse = allow_sparse && opts.sparse_threshold.is_some();
+                if take_sparse {
+                    push_scalar_f32_accessor_maybe_sparse(
+                        root,
+                        bin,
+                        v,
+                        "output",
+                        opts,
+                        allow_sparse,
+                    )?
+                } else {
+                    match opts.quantize_animation {
+                        QuantizeMode::Float => push_scalar_f32_accessor(root, bin, v, "output")?,
+                        QuantizeMode::UByte => push_scalar_f32_accessor_quantized(
+                            root,
+                            bin,
+                            v,
+                            "output",
+                            gj::COMPONENT_TYPE_UNSIGNED_BYTE,
+                        )?,
+                        QuantizeMode::UShort => push_scalar_f32_accessor_quantized(
+                            root,
+                            bin,
+                            v,
+                            "output",
+                            gj::COMPONENT_TYPE_UNSIGNED_SHORT,
+                        )?,
+                    }
+                }
             }
         };
         let interpolation = match s.interpolation {
@@ -999,6 +1060,144 @@ fn push_scalar_f32_accessor_with_minmax(
         acc.max = Some(vec![mx]);
     }
     Ok(acc_idx)
+}
+
+/// Quantise a `Vec<f32>` to a normalised-int component type per spec
+/// §3.6.2.2 dequantisation equations (run in reverse). The decoder
+/// will return `c / 255.0` (UBYTE) or `c / 65535.0` (USHORT), so we
+/// compute `round(f * 255)` / `round(f * 65535)` and clamp to the
+/// representable range. Negative inputs clamp to 0 — UByte/UShort
+/// only cover `[0, 1]`. Width is determined by `component_type`.
+fn push_scalar_f32_accessor_quantized(
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+    data: &[f32],
+    name: &'static str,
+    component_type: u32,
+) -> Result<u32> {
+    pad_to_4(bin);
+    let byte_offset = bin.len();
+    match component_type {
+        gj::COMPONENT_TYPE_UNSIGNED_BYTE => {
+            for &v in data {
+                bin.push(quantize_u8(v));
+            }
+        }
+        gj::COMPONENT_TYPE_UNSIGNED_SHORT => {
+            for &v in data {
+                bin.extend_from_slice(&quantize_u16(v).to_le_bytes());
+            }
+        }
+        other => {
+            return Err(invalid(format!(
+                "quantized scalar accessor: unsupported componentType {other}"
+            )));
+        }
+    }
+    let byte_length = bin.len() - byte_offset;
+    pad_to_4(bin);
+    let bv_idx = root.buffer_views.len() as u32;
+    root.buffer_views.push(gj::BufferView {
+        buffer: 0,
+        byte_offset: Some(byte_offset as u32),
+        byte_length: byte_length as u32,
+        byte_stride: None,
+        target: None,
+        name: Some(format!("{name}_view")),
+    });
+    let acc_idx = root.accessors.len() as u32;
+    root.accessors.push(gj::Accessor {
+        buffer_view: Some(bv_idx),
+        byte_offset: None,
+        component_type,
+        count: data.len() as u32,
+        kind: "SCALAR".into(),
+        normalized: true,
+        min: None,
+        max: None,
+        name: Some(name.into()),
+        sparse: None,
+    });
+    Ok(acc_idx)
+}
+
+/// Quantise a `Vec<[f32; 4]>` (rotation quaternion stream) into
+/// normalised UBYTE / USHORT VEC4 entries. Same per-component
+/// equations as the scalar form, applied four times per element.
+fn push_vec4_accessor_quantized(
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+    data: &[[f32; 4]],
+    name: &'static str,
+    component_type: u32,
+) -> Result<u32> {
+    pad_to_4(bin);
+    let byte_offset = bin.len();
+    match component_type {
+        gj::COMPONENT_TYPE_UNSIGNED_BYTE => {
+            for v in data {
+                for &c in v {
+                    bin.push(quantize_u8(c));
+                }
+            }
+        }
+        gj::COMPONENT_TYPE_UNSIGNED_SHORT => {
+            for v in data {
+                for &c in v {
+                    bin.extend_from_slice(&quantize_u16(c).to_le_bytes());
+                }
+            }
+        }
+        other => {
+            return Err(invalid(format!(
+                "quantized vec4 accessor: unsupported componentType {other}"
+            )));
+        }
+    }
+    let byte_length = bin.len() - byte_offset;
+    pad_to_4(bin);
+    let bv_idx = root.buffer_views.len() as u32;
+    root.buffer_views.push(gj::BufferView {
+        buffer: 0,
+        byte_offset: Some(byte_offset as u32),
+        byte_length: byte_length as u32,
+        byte_stride: None,
+        target: None,
+        name: Some(format!("{name}_view")),
+    });
+    let acc_idx = root.accessors.len() as u32;
+    root.accessors.push(gj::Accessor {
+        buffer_view: Some(bv_idx),
+        byte_offset: None,
+        component_type,
+        count: data.len() as u32,
+        kind: "VEC4".into(),
+        normalized: true,
+        min: None,
+        max: None,
+        name: Some(name.into()),
+        sparse: None,
+    });
+    Ok(acc_idx)
+}
+
+/// Round-clamp `f` into a `u8` per `f = c / 255` inverted. Negatives
+/// clamp to 0; > 1.0 clamps to 255. NaNs map to 0.
+fn quantize_u8(f: f32) -> u8 {
+    if !f.is_finite() {
+        return 0;
+    }
+    let scaled = (f.clamp(0.0, 1.0) * 255.0).round();
+    scaled as u8
+}
+
+/// Round-clamp `f` into a `u16` per `f = c / 65535` inverted.
+fn quantize_u16(f: f32) -> u16 {
+    if !f.is_finite() {
+        return 0;
+    }
+    let scaled = (f.clamp(0.0, 1.0) * 65535.0).round();
+    scaled as u16
 }
 
 fn push_mat4_accessor(

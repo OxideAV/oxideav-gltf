@@ -51,7 +51,7 @@ pub mod scene_to_json;
 
 pub use asset_source::BufferViewAsset;
 pub use decoder::GltfDecoder;
-pub use encoder::{json_encoder, GltfEncoder, OutputFlavour};
+pub use encoder::{json_encoder, GltfEncoder, OutputFlavour, QuantizeMode};
 pub use error::{Error, Result};
 
 /// Register the `.gltf` + `.glb` decoder and encoder factories with

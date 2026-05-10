@@ -37,7 +37,9 @@ framework but usable standalone.
 - Normalised-integer animation output accessors per spec §3.11 +
   §3.6.2.2 — ROTATION (VEC4) and MORPH_WEIGHTS (SCALAR) sampler
   outputs decode from `BYTE / UBYTE / SHORT / USHORT` with
-  `normalized: true`, dequantising via the spec equations
+  `normalized: true`, dequantising via the spec equations; and encode
+  via `GltfEncoder::with_quantize_animation(QuantizeMode::UByte | UShort)`
+  (round-trips within `1/255` / `1/65535` of the source f32s)
 - Multi-scene documents — secondary `scenes[]` are preserved through
   round-trip via `Scene3D::extras["__additional_scenes"]`; the active
   scene index is honoured on both decode and encode
@@ -46,7 +48,7 @@ framework but usable standalone.
   `data:` URI base64 inlining; external URI passthrough)
 - `extras` round-trip on root, scenes, nodes, materials, primitives
 
-## Round 4 (planned)
+## Round 5 (planned)
 
 - KHR_audio_emitter wiring against `oxideav_mesh3d::AudioSource` /
   `AudioEmitter` (blocked on docs/3d/gltf/extensions/ entries)
@@ -54,9 +56,7 @@ framework but usable standalone.
   _emissive_strength, _clearcoat, _sheen, _transmission
   (blocked on docs/3d/gltf/extensions/ entries)
 - KHR_texture_transform UV transform on texture references
-- Encoder support for normalised-integer animation outputs (currently
-  decode-only) — re-emit float quaternions / morph weights as the
-  more compact int forms
+- Sparse-encoding heuristic for MAT4 IBM accessors and mesh attributes
 
 ## Installation
 

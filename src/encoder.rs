@@ -25,6 +25,28 @@ pub enum OutputFlavour {
     JsonEmbedded,
 }
 
+/// Quantisation mode for animation output accessors that the spec
+/// permits in normalised-integer form (ROTATION VEC4, MORPH_WEIGHTS
+/// SCALAR — see glTF 2.0 §3.11 + §3.6.2.2).
+///
+/// `Float` is the lossless default. `UByte` encodes one f32 per
+/// element to nearest u8 (×255, clamped to `[0, 1]`) with
+/// `normalized: true`; `UShort` does the same with u16 (×65535).
+/// Negative inputs are not representable through these modes and are
+/// clamped at 0; for true signed quaternions the spec also allows the
+/// `i8` / `i16` forms but those aren't currently exposed (decode side
+/// already accepts them — see `read_normalized_*`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum QuantizeMode {
+    /// Emit FLOAT (5126) — the default, lossless.
+    #[default]
+    Float,
+    /// Emit UNSIGNED_BYTE (5121) `normalized: true` — values × 255.
+    UByte,
+    /// Emit UNSIGNED_SHORT (5123) `normalized: true` — values × 65535.
+    UShort,
+}
+
 /// Serialise a [`Scene3D`] into glTF bytes.
 #[derive(Debug, Default)]
 pub struct GltfEncoder {
@@ -39,6 +61,10 @@ pub struct GltfEncoder {
     /// default) emits dense storage unconditionally — matches r2
     /// behaviour.
     pub sparse_threshold: Option<f32>,
+    /// Quantisation mode for ROTATION + MORPH_WEIGHTS animation
+    /// sampler outputs. `Float` (default) emits FLOAT (5126); the
+    /// other modes pick a normalised-int component type per spec §3.11.
+    pub quantize_animation: QuantizeMode,
 }
 
 impl GltfEncoder {
@@ -46,6 +72,7 @@ impl GltfEncoder {
         Self {
             output: OutputFlavour::Glb,
             sparse_threshold: None,
+            quantize_animation: QuantizeMode::Float,
         }
     }
 
@@ -53,6 +80,7 @@ impl GltfEncoder {
         Self {
             output,
             sparse_threshold: None,
+            quantize_animation: QuantizeMode::Float,
         }
     }
 
@@ -67,12 +95,24 @@ impl GltfEncoder {
         self.sparse_threshold = Some(threshold.clamp(0.0, 1.0));
         self
     }
+
+    /// Pick a quantisation mode for ROTATION (VEC4) and MORPH_WEIGHTS
+    /// (SCALAR) animation sampler outputs. See [`QuantizeMode`].
+    /// Sparse storage takes precedence: when an output also satisfies
+    /// the sparse threshold, the encoder still emits FLOAT sparse
+    /// (mixing quantisation with sparse-base-zero would lose the f32
+    /// rest values for non-zero overrides).
+    pub fn with_quantize_animation(mut self, mode: QuantizeMode) -> Self {
+        self.quantize_animation = mode;
+        self
+    }
 }
 
 impl Mesh3DEncoder for GltfEncoder {
     fn encode(&mut self, scene: &Scene3D) -> Result<Vec<u8>> {
         let opts = EncodeOptions {
             sparse_threshold: self.sparse_threshold,
+            quantize_animation: self.quantize_animation,
         };
         let EncodedScene { mut root, bin } = convert_with_options(scene, &opts)?;
         match self.output {

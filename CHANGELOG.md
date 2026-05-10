@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 4)
+
+- Encoder-side normalised-int animation outputs — symmetric to r3
+  decode. `GltfEncoder::with_quantize_animation(QuantizeMode)` selects
+  the component type for ROTATION (VEC4) + MORPH_WEIGHTS (SCALAR)
+  sampler outputs: `Float` (default, lossless), `UByte` (5121
+  normalized, ×255), or `UShort` (5123 normalized, ×65535) per spec
+  §3.6.2.2 dequantisation. TRANSLATION + SCALE remain FLOAT-only.
+
 ### Added (round 3)
 
 - Sparse-encoding heuristic on `GltfEncoder` — opt in via
