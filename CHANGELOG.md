@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.1](https://github.com/OxideAV/oxideav-gltf/compare/v0.0.0...v0.0.1) - 2026-05-10
+
+### Other
+
+- Validate vertex-attribute data per spec §3.6.2.4 + §3.7.2.1 (r6)
+- Sparse-encode mesh vertex attribute accessors (r5 item b)
+- Sparse-encode skin.inverseBindMatrices accessors (r5 item a)
+- Add encoder-side signed normalised-int animation outputs (r5 item c)
+- Validate accessor min/max bounds per spec §3.6.2.1.5 (r4 item c)
+- Add morph targets round-trip per spec §3.7.2.2 (r4 item b)
+- Add encoder-side normalised-int animation outputs (r4 item a)
+- Add sparse-encoding heuristic + normalised-int animation decode (r3)
+- Add skins, animations, sparse accessors, multi-scene round-trip (r2)
+
 ### Added (round 6)
 
 - Vertex-attribute compression validation per glTF 2.0 §3.6.2.4
