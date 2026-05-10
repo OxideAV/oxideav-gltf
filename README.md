@@ -28,8 +28,16 @@ framework but usable standalone.
 - Animations (channels + samplers) per spec §3.11 — translation /
   rotation / scale / weights paths, LINEAR + STEP + CUBICSPLINE
   interpolation
-- Sparse accessors per spec §3.6.2.3 (decode-only — encoder emits
-  dense storage)
+- Sparse accessors per spec §3.6.2.3 — decode + opt-in encode (the
+  `GltfEncoder::with_sparse_threshold(f32)` heuristic re-emits FLOAT
+  animation outputs as `accessor.sparse` storage when their
+  zero-element fraction meets the threshold; identity-quaternion
+  rotation and identity-`[1,1,1]` scale outputs stay dense to avoid
+  mis-representing the implicit values)
+- Normalised-integer animation output accessors per spec §3.11 +
+  §3.6.2.2 — ROTATION (VEC4) and MORPH_WEIGHTS (SCALAR) sampler
+  outputs decode from `BYTE / UBYTE / SHORT / USHORT` with
+  `normalized: true`, dequantising via the spec equations
 - Multi-scene documents — secondary `scenes[]` are preserved through
   round-trip via `Scene3D::extras["__additional_scenes"]`; the active
   scene index is honoured on both decode and encode
@@ -38,7 +46,7 @@ framework but usable standalone.
   `data:` URI base64 inlining; external URI passthrough)
 - `extras` round-trip on root, scenes, nodes, materials, primitives
 
-## Round 3 (planned)
+## Round 4 (planned)
 
 - KHR_audio_emitter wiring against `oxideav_mesh3d::AudioSource` /
   `AudioEmitter` (blocked on docs/3d/gltf/extensions/ entries)
@@ -46,8 +54,9 @@ framework but usable standalone.
   _emissive_strength, _clearcoat, _sheen, _transmission
   (blocked on docs/3d/gltf/extensions/ entries)
 - KHR_texture_transform UV transform on texture references
-- Sparse-encoding heuristic — auto-detect when a re-emitted accessor
-  would benefit from sparse storage
+- Encoder support for normalised-integer animation outputs (currently
+  decode-only) — re-emit float quaternions / morph weights as the
+  more compact int forms
 
 ## Installation
 

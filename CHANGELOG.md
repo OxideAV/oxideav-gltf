@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 3)
+
+- Sparse-encoding heuristic on `GltfEncoder` — opt in via
+  `GltfEncoder::with_sparse_threshold(f32)`. FLOAT animation outputs
+  whose zero-element fraction meets the threshold are re-emitted as
+  zero-base + `accessor.sparse` overrides per glTF 2.0 §3.6.2.3.
+  Applies to TRANSLATION (VEC3) and MORPH_WEIGHTS (SCALAR) outputs;
+  ROTATION (VEC4) and SCALE (VEC3) stay dense because their semantic
+  identity (`[0,0,0,1]` / `[1,1,1]`) isn't all-zero.
+- Normalised-integer animation output accessors decode — ROTATION
+  (VEC4) and MORPH_WEIGHTS (SCALAR) sampler outputs may carry
+  `componentType` BYTE / UBYTE / SHORT / USHORT with `normalized: true`
+  and are dequantised via the §3.6.2.2 equations
+  (`f = max(c/127, -1)` / `f = c/255` / `f = max(c/32767, -1)` /
+  `f = c/65535`). TRANSLATION + SCALE remain FLOAT-only per spec.
+- New encoder knob: `EncodeOptions { sparse_threshold }` plus the
+  helper `convert_with_options(scene, &opts)` next to the existing
+  `convert(scene)`.
+
 ### Added (round 2)
 
 - Skins + skeletons (`skins[]`, `inverseBindMatrices` accessor, joint

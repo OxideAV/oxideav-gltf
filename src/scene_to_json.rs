@@ -34,10 +34,25 @@ pub struct EncodedScene {
     pub bin: Vec<u8>,
 }
 
+/// Knobs the encoder hands down into accessor-emission helpers.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EncodeOptions {
+    /// When set, a FLOAT vec/scalar accessor whose zero-element
+    /// fraction is at least this value is emitted using `accessor.sparse`
+    /// storage (zero base + per-index overrides). Clamped to `[0.0, 1.0]`
+    /// at construction time on [`crate::GltfEncoder`].
+    pub sparse_threshold: Option<f32>,
+}
+
 /// Translate `scene` into a glTF JSON document + the matching packed
 /// binary buffer (used as the `.glb` BIN chunk or as an external
 /// `<basename>.bin` file in JSON form).
 pub fn convert(scene: &Scene3D) -> Result<EncodedScene> {
+    convert_with_options(scene, &EncodeOptions::default())
+}
+
+/// Translate `scene` with the given encoder knobs.
+pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<EncodedScene> {
     let mut root = GltfRoot {
         asset: gj::Asset::default(),
         ..Default::default()
@@ -105,7 +120,7 @@ pub fn convert(scene: &Scene3D) -> Result<EncodedScene> {
 
     // --- animations ---
     for a in &scene.animations {
-        let a_json = encode_animation(a, &mut root, &mut bin)?;
+        let a_json = encode_animation(a, &mut root, &mut bin, opts)?;
         root.animations.push(a_json);
     }
 
@@ -851,6 +866,7 @@ fn encode_animation(
     a: &Animation,
     root: &mut GltfRoot,
     bin: &mut Vec<u8>,
+    opts: &EncodeOptions,
 ) -> Result<gj::Animation> {
     let mut samplers: Vec<gj::AnimationSampler> = Vec::with_capacity(a.channels.len());
     let mut channels: Vec<gj::AnimationChannel> = Vec::with_capacity(a.channels.len());
@@ -866,11 +882,24 @@ fn encode_animation(
         // Input — keyframe times. spec §3.11: input accessor MUST have
         // min/max defined.
         let input_acc = push_scalar_f32_accessor_with_minmax(root, bin, &s.keyframes, "input")?;
-        // Output, sized per channel path.
+        // Output, sized per channel path. Sparse-encoding heuristic
+        // applies to outputs whose semantic identity is "all zero":
+        // translation Vec3 and morph-weight Scalar. Rotation
+        // (identity quaternion is `[0,0,0,1]`) and scale (identity
+        // `[1,1,1]`) keep dense storage so a zero-base sparse
+        // accessor doesn't mis-represent the implicit values.
+        let allow_sparse = matches!(
+            ch.target.property,
+            AnimationProperty::Translation | AnimationProperty::MorphWeights
+        );
         let output_acc = match &s.values {
-            AnimationValues::Vec3(v) => push_vec3_accessor(root, bin, v, "output", false)?,
+            AnimationValues::Vec3(v) => {
+                push_vec3_accessor_maybe_sparse(root, bin, v, "output", false, opts, allow_sparse)?
+            }
             AnimationValues::Quat(v) => push_vec4_accessor(root, bin, v, "output")?,
-            AnimationValues::Scalar(v) => push_scalar_f32_accessor(root, bin, v, "output")?,
+            AnimationValues::Scalar(v) => {
+                push_scalar_f32_accessor_maybe_sparse(root, bin, v, "output", opts, allow_sparse)?
+            }
         };
         let interpolation = match s.interpolation {
             // LINEAR is the spec default; omit it for a tighter document.
@@ -1009,3 +1038,244 @@ fn push_mat4_accessor(
 
 #[allow(dead_code)]
 fn _silence(_: &Mesh) {}
+
+// --- sparse-encoding heuristic helpers -----------------------------------
+
+/// Decide whether `data` should be sparse-encoded given the threshold.
+/// Returns `Some(zero_indices)` if sparse should be used (the indices
+/// of the *non-zero* elements — i.e., the slots that need overrides);
+/// `None` for dense.
+fn maybe_sparse_indices_scalar(data: &[f32], opts: &EncodeOptions) -> Option<Vec<u32>> {
+    let threshold = opts.sparse_threshold?;
+    if data.is_empty() {
+        return None;
+    }
+    let nonzero: Vec<u32> = data
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &v)| if v != 0.0 { Some(i as u32) } else { None })
+        .collect();
+    let zero_fraction = 1.0 - (nonzero.len() as f32 / data.len() as f32);
+    // Spec §3.6.2.3: sparse `count` must be > 0 (the schema marks it
+    // `minimum: 1`). All-zero accessors stay dense — no overrides
+    // means the sparse block would be invalid.
+    if !nonzero.is_empty() && zero_fraction >= threshold {
+        Some(nonzero)
+    } else {
+        None
+    }
+}
+
+/// VEC3 variant — an element is "zero" iff all three components are 0.0.
+fn maybe_sparse_indices_vec3(data: &[[f32; 3]], opts: &EncodeOptions) -> Option<Vec<u32>> {
+    let threshold = opts.sparse_threshold?;
+    if data.is_empty() {
+        return None;
+    }
+    let nonzero: Vec<u32> = data
+        .iter()
+        .enumerate()
+        .filter_map(|(i, v)| {
+            if v[0] != 0.0 || v[1] != 0.0 || v[2] != 0.0 {
+                Some(i as u32)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let zero_fraction = 1.0 - (nonzero.len() as f32 / data.len() as f32);
+    if !nonzero.is_empty() && zero_fraction >= threshold {
+        Some(nonzero)
+    } else {
+        None
+    }
+}
+
+/// Pick the smallest spec-allowed componentType for a sparse-indices
+/// array of `count` displaced elements. Mirrors the dense
+/// [`smallest_index_component`] helper but with the indices' own
+/// upper-bound (sparse indices are 0..base.count − 1).
+fn smallest_sparse_index_component(max_index: u32) -> u32 {
+    if max_index <= u8::MAX as u32 {
+        crate::json_model::COMPONENT_TYPE_UNSIGNED_BYTE
+    } else if max_index <= u16::MAX as u32 {
+        crate::json_model::COMPONENT_TYPE_UNSIGNED_SHORT
+    } else {
+        crate::json_model::COMPONENT_TYPE_UNSIGNED_INT
+    }
+}
+
+/// Push the indices+values bufferViews for a sparse accessor whose
+/// base is implicit-zero, then return the constructed `Sparse` block.
+fn build_sparse_block_scalar(
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+    indices: &[u32],
+    nonzero_values: &[f32],
+) -> gj::AccessorSparse {
+    let max_idx = indices.iter().copied().max().unwrap_or(0);
+    let idx_ct = smallest_sparse_index_component(max_idx);
+    pad_to_4(bin);
+    let idx_offset = bin.len();
+    crate::accessor::write_indices(bin, indices, idx_ct);
+    let idx_len = bin.len() - idx_offset;
+    let idx_bv = root.buffer_views.len() as u32;
+    root.buffer_views.push(gj::BufferView {
+        buffer: 0,
+        byte_offset: Some(idx_offset as u32),
+        byte_length: idx_len as u32,
+        byte_stride: None,
+        target: None,
+        name: Some("sparse_indices_view".into()),
+    });
+    pad_to_4(bin);
+    let val_offset = bin.len();
+    for v in nonzero_values {
+        bin.extend_from_slice(&v.to_le_bytes());
+    }
+    let val_len = bin.len() - val_offset;
+    let val_bv = root.buffer_views.len() as u32;
+    root.buffer_views.push(gj::BufferView {
+        buffer: 0,
+        byte_offset: Some(val_offset as u32),
+        byte_length: val_len as u32,
+        byte_stride: None,
+        target: None,
+        name: Some("sparse_values_view".into()),
+    });
+    gj::AccessorSparse {
+        count: indices.len() as u32,
+        indices: gj::AccessorSparseIndices {
+            buffer_view: idx_bv,
+            byte_offset: None,
+            component_type: idx_ct,
+        },
+        values: gj::AccessorSparseValues {
+            buffer_view: val_bv,
+            byte_offset: None,
+        },
+    }
+}
+
+/// VEC3 variant — same layout, three f32 per non-zero entry.
+fn build_sparse_block_vec3(
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+    indices: &[u32],
+    source: &[[f32; 3]],
+) -> gj::AccessorSparse {
+    let max_idx = indices.iter().copied().max().unwrap_or(0);
+    let idx_ct = smallest_sparse_index_component(max_idx);
+    pad_to_4(bin);
+    let idx_offset = bin.len();
+    crate::accessor::write_indices(bin, indices, idx_ct);
+    let idx_len = bin.len() - idx_offset;
+    let idx_bv = root.buffer_views.len() as u32;
+    root.buffer_views.push(gj::BufferView {
+        buffer: 0,
+        byte_offset: Some(idx_offset as u32),
+        byte_length: idx_len as u32,
+        byte_stride: None,
+        target: None,
+        name: Some("sparse_indices_view".into()),
+    });
+    pad_to_4(bin);
+    let val_offset = bin.len();
+    for &i in indices {
+        let v = source[i as usize];
+        for c in v {
+            bin.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    let val_len = bin.len() - val_offset;
+    let val_bv = root.buffer_views.len() as u32;
+    root.buffer_views.push(gj::BufferView {
+        buffer: 0,
+        byte_offset: Some(val_offset as u32),
+        byte_length: val_len as u32,
+        byte_stride: None,
+        target: None,
+        name: Some("sparse_values_view".into()),
+    });
+    gj::AccessorSparse {
+        count: indices.len() as u32,
+        indices: gj::AccessorSparseIndices {
+            buffer_view: idx_bv,
+            byte_offset: None,
+            component_type: idx_ct,
+        },
+        values: gj::AccessorSparseValues {
+            buffer_view: val_bv,
+            byte_offset: None,
+        },
+    }
+}
+
+/// Sparse-aware scalar f32 accessor emitter — falls back to dense when
+/// the heuristic decides not to (or when `allow_sparse` is false).
+fn push_scalar_f32_accessor_maybe_sparse(
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+    data: &[f32],
+    name: &'static str,
+    opts: &EncodeOptions,
+    allow_sparse: bool,
+) -> Result<u32> {
+    if allow_sparse {
+        if let Some(nonzero) = maybe_sparse_indices_scalar(data, opts) {
+            let nz_values: Vec<f32> = nonzero.iter().map(|&i| data[i as usize]).collect();
+            let sparse = build_sparse_block_scalar(root, bin, &nonzero, &nz_values);
+            let acc_idx = root.accessors.len() as u32;
+            root.accessors.push(gj::Accessor {
+                buffer_view: None,
+                byte_offset: None,
+                component_type: gj::COMPONENT_TYPE_FLOAT,
+                count: data.len() as u32,
+                kind: "SCALAR".into(),
+                normalized: false,
+                min: None,
+                max: None,
+                name: Some(name.into()),
+                sparse: Some(sparse),
+            });
+            return Ok(acc_idx);
+        }
+    }
+    push_scalar_f32_accessor(root, bin, data, name)
+}
+
+/// Sparse-aware VEC3 accessor emitter (used by animation translation
+/// outputs). Min/max are dropped on the sparse path — spec only
+/// mandates them for POSITION attributes, and a zero-base accessor's
+/// bounds would be misleading anyway. The dense path retains them when
+/// `with_minmax` is true.
+fn push_vec3_accessor_maybe_sparse(
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+    data: &[[f32; 3]],
+    name: &'static str,
+    with_minmax: bool,
+    opts: &EncodeOptions,
+    allow_sparse: bool,
+) -> Result<u32> {
+    if allow_sparse {
+        if let Some(nonzero) = maybe_sparse_indices_vec3(data, opts) {
+            let sparse = build_sparse_block_vec3(root, bin, &nonzero, data);
+            let acc_idx = root.accessors.len() as u32;
+            root.accessors.push(gj::Accessor {
+                buffer_view: None,
+                byte_offset: None,
+                component_type: gj::COMPONENT_TYPE_FLOAT,
+                count: data.len() as u32,
+                kind: "VEC3".into(),
+                normalized: false,
+                min: None,
+                max: None,
+                name: Some(name.into()),
+                sparse: Some(sparse),
+            });
+            return Ok(acc_idx);
+        }
+    }
+    push_vec3_accessor(root, bin, data, name, with_minmax)
+}

@@ -28,7 +28,7 @@ use serde_json::Value;
 
 use crate::accessor::{
     materialise_accessor, read_indices_u32, read_mat4_f32, read_scalar_f32, read_vec4_u16,
-    read_vec_f32, view_from_materialised,
+    read_vec_f32, view_from_materialised, AccessorView,
 };
 use crate::asset_source::BufferViewAsset;
 use crate::error::{invalid, unsupported, Error, Result};
@@ -293,38 +293,20 @@ fn convert_animation(
         let in_bytes = materialise_accessor(input_acc, &root.buffer_views, buffers)?;
         let in_view = view_from_materialised(input_acc, &in_bytes)?;
         let keyframes = read_scalar_f32(&in_view)?;
-        // Output — type depends on path. We restrict to FLOAT
-        // component-types in r2; the normalised-int variants the spec
-        // also permits decode after dequantisation, but no shipping
-        // tooling we care about emits them.
+        // Output — type depends on path. FLOAT components decode
+        // directly; for ROTATION (VEC4) and MORPH_WEIGHTS (SCALAR) the
+        // spec also permits the four normalised-integer
+        // component-types (BYTE / UBYTE / SHORT / USHORT) — see spec
+        // §3.11 animation-sampler-output table. They MUST carry
+        // `normalized: true` and dequantise via the equations in
+        // §3.6.2.2 (e.g. ubyte: f = c/255.0).
         let output_acc = root
             .accessors
             .get(s.output as usize)
             .ok_or_else(|| invalid(format!("animation sampler output {} oob", s.output)))?;
-        if output_acc.component_type != gj::COMPONENT_TYPE_FLOAT {
-            return Err(unsupported(format!(
-                "animation output accessor: only FLOAT supported in r2, got {}",
-                output_acc.component_type
-            )));
-        }
         let out_bytes = materialise_accessor(output_acc, &root.buffer_views, buffers)?;
         let out_view = view_from_materialised(output_acc, &out_bytes)?;
-        let values = match (property, output_acc.kind.as_str()) {
-            (AnimationProperty::Translation | AnimationProperty::Scale, "VEC3") => {
-                AnimationValues::Vec3(read_vec_f32::<3>(&out_view)?)
-            }
-            (AnimationProperty::Rotation, "VEC4") => {
-                AnimationValues::Quat(read_vec_f32::<4>(&out_view)?)
-            }
-            (AnimationProperty::MorphWeights, "SCALAR") => {
-                AnimationValues::Scalar(read_scalar_f32(&out_view)?)
-            }
-            (p, k) => {
-                return Err(invalid(format!(
-                    "animation channel: path {p:?} incompatible with output type {k:?}"
-                )));
-            }
-        };
+        let values = decode_animation_output(property, output_acc, &out_view)?;
         anim.channels.push(AnimationChannel {
             target: AnimationTarget {
                 node: target_node,
@@ -338,6 +320,159 @@ fn convert_animation(
         });
     }
     Ok(anim)
+}
+
+/// Decode an animation sampler's output accessor into the typed
+/// [`AnimationValues`] variant for `property`. Handles the FLOAT
+/// path plus the four normalised-int component-types the spec allows
+/// for ROTATION and MORPH_WEIGHTS outputs.
+fn decode_animation_output(
+    property: AnimationProperty,
+    acc: &gj::Accessor,
+    view: &AccessorView<'_>,
+) -> Result<AnimationValues> {
+    use gj::{
+        COMPONENT_TYPE_BYTE, COMPONENT_TYPE_FLOAT, COMPONENT_TYPE_SHORT,
+        COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_SHORT,
+    };
+
+    // Spec §3.11: per the channel-target / accessor-format table,
+    // ROTATION VEC4 and MORPH_WEIGHTS SCALAR may use one of:
+    //   FLOAT (5126) — direct
+    //   BYTE (5120) normalized — f = max(c/127, -1)
+    //   UBYTE (5121) normalized — f = c/255
+    //   SHORT (5122) normalized — f = max(c/32767, -1)
+    //   USHORT (5123) normalized — f = c/65535
+    // TRANSLATION + SCALE only allow FLOAT.
+    let is_normalized_int = matches!(
+        acc.component_type,
+        COMPONENT_TYPE_BYTE
+            | COMPONENT_TYPE_UNSIGNED_BYTE
+            | COMPONENT_TYPE_SHORT
+            | COMPONENT_TYPE_UNSIGNED_SHORT
+    );
+    if is_normalized_int && !acc.normalized {
+        return Err(invalid(format!(
+            "animation output: integer componentType {} requires `normalized: true`",
+            acc.component_type
+        )));
+    }
+
+    match (property, acc.kind.as_str(), acc.component_type) {
+        (AnimationProperty::Translation | AnimationProperty::Scale, "VEC3", COMPONENT_TYPE_FLOAT) => {
+            Ok(AnimationValues::Vec3(read_vec_f32::<3>(view)?))
+        }
+        (AnimationProperty::Translation | AnimationProperty::Scale, _, ct)
+            if ct != COMPONENT_TYPE_FLOAT =>
+        {
+            Err(unsupported(format!(
+                "animation output: TRANSLATION/SCALE only allow FLOAT (5126), got componentType {ct}"
+            )))
+        }
+        (AnimationProperty::Rotation, "VEC4", COMPONENT_TYPE_FLOAT) => {
+            Ok(AnimationValues::Quat(read_vec_f32::<4>(view)?))
+        }
+        (AnimationProperty::Rotation, "VEC4", ct) if is_normalized_int => Ok(
+            AnimationValues::Quat(read_normalized_vec4(view, ct)?),
+        ),
+        (AnimationProperty::MorphWeights, "SCALAR", COMPONENT_TYPE_FLOAT) => {
+            Ok(AnimationValues::Scalar(read_scalar_f32(view)?))
+        }
+        (AnimationProperty::MorphWeights, "SCALAR", ct) if is_normalized_int => Ok(
+            AnimationValues::Scalar(read_normalized_scalar(view, ct)?),
+        ),
+        (p, k, ct) => Err(invalid(format!(
+            "animation channel: path {p:?} incompatible with output type {k:?} componentType {ct}"
+        ))),
+    }
+}
+
+/// Dequantise a SCALAR normalised-integer accessor view into `Vec<f32>`
+/// per spec §3.6.2.2 equations.
+fn read_normalized_scalar(view: &AccessorView<'_>, component_type: u32) -> Result<Vec<f32>> {
+    let expected = component_byte_size(component_type)?;
+    if view.element_size != expected {
+        return Err(invalid(format!(
+            "normalized scalar accessor: element size {} != {expected}",
+            view.element_size
+        )));
+    }
+    let mut out = Vec::with_capacity(view.count);
+    for elem in view.elements() {
+        out.push(decode_normalized_component(component_type, elem)?);
+    }
+    Ok(out)
+}
+
+/// Dequantise a VEC4 normalised-integer accessor view into `Vec<[f32; 4]>`.
+fn read_normalized_vec4(view: &AccessorView<'_>, component_type: u32) -> Result<Vec<[f32; 4]>> {
+    let csize = component_byte_size(component_type)?;
+    let expected = 4 * csize;
+    if view.element_size != expected {
+        return Err(invalid(format!(
+            "normalized vec4 accessor: element size {} != {expected}",
+            view.element_size
+        )));
+    }
+    let mut out = Vec::with_capacity(view.count);
+    for elem in view.elements() {
+        let mut a = [0.0f32; 4];
+        for (i, slot) in a.iter_mut().enumerate() {
+            *slot = decode_normalized_component(component_type, &elem[i * csize..(i + 1) * csize])?;
+        }
+        out.push(a);
+    }
+    Ok(out)
+}
+
+fn component_byte_size(component_type: u32) -> Result<usize> {
+    use gj::{
+        COMPONENT_TYPE_BYTE, COMPONENT_TYPE_SHORT, COMPONENT_TYPE_UNSIGNED_BYTE,
+        COMPONENT_TYPE_UNSIGNED_SHORT,
+    };
+    Ok(match component_type {
+        COMPONENT_TYPE_BYTE | COMPONENT_TYPE_UNSIGNED_BYTE => 1,
+        COMPONENT_TYPE_SHORT | COMPONENT_TYPE_UNSIGNED_SHORT => 2,
+        other => {
+            return Err(invalid(format!(
+                "normalized accessor: componentType {other} not allowed"
+            )));
+        }
+    })
+}
+
+/// Decode one component per spec §3.6.2.2 dequantisation table.
+fn decode_normalized_component(component_type: u32, bytes: &[u8]) -> Result<f32> {
+    use gj::{
+        COMPONENT_TYPE_BYTE, COMPONENT_TYPE_SHORT, COMPONENT_TYPE_UNSIGNED_BYTE,
+        COMPONENT_TYPE_UNSIGNED_SHORT,
+    };
+    Ok(match component_type {
+        COMPONENT_TYPE_BYTE => {
+            // i8 normalized: f = max(c / 127, -1)
+            let c = i8::from_le_bytes([bytes[0]]) as f32;
+            (c / 127.0).max(-1.0)
+        }
+        COMPONENT_TYPE_UNSIGNED_BYTE => {
+            // u8 normalized: f = c / 255
+            (bytes[0] as f32) / 255.0
+        }
+        COMPONENT_TYPE_SHORT => {
+            // i16 normalized: f = max(c / 32767, -1)
+            let c = i16::from_le_bytes([bytes[0], bytes[1]]) as f32;
+            (c / 32767.0).max(-1.0)
+        }
+        COMPONENT_TYPE_UNSIGNED_SHORT => {
+            // u16 normalized: f = c / 65535
+            let c = u16::from_le_bytes([bytes[0], bytes[1]]) as f32;
+            c / 65535.0
+        }
+        other => {
+            return Err(invalid(format!(
+                "normalized componentType {other} unsupported here"
+            )));
+        }
+    })
 }
 
 // --- buffer / accessor resolution ------------------------------------------

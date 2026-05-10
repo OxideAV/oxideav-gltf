@@ -13,7 +13,7 @@ use oxideav_mesh3d::{Mesh3DEncoder, Scene3D};
 
 use crate::error::{invalid, Result};
 use crate::glb;
-use crate::scene_to_json::{convert, EncodedScene};
+use crate::scene_to_json::{convert_with_options, EncodeOptions, EncodedScene};
 
 /// Container flavour for [`GltfEncoder::encode`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -29,23 +29,52 @@ pub enum OutputFlavour {
 #[derive(Debug, Default)]
 pub struct GltfEncoder {
     pub output: OutputFlavour,
+    /// When set, FLOAT vec/scalar accessors whose zero-element fraction
+    /// is at least this value (in `[0.0, 1.0]`) are emitted using
+    /// `accessor.sparse` storage (no base bufferView; the decoder
+    /// initialises to zero and overlays the indices+values pairs) per
+    /// glTF 2.0 §3.6.2.3.
+    ///
+    /// Tune via [`GltfEncoder::with_sparse_threshold`]. `None` (the
+    /// default) emits dense storage unconditionally — matches r2
+    /// behaviour.
+    pub sparse_threshold: Option<f32>,
 }
 
 impl GltfEncoder {
     pub fn new() -> Self {
         Self {
             output: OutputFlavour::Glb,
+            sparse_threshold: None,
         }
     }
 
     pub fn with_output(output: OutputFlavour) -> Self {
-        Self { output }
+        Self {
+            output,
+            sparse_threshold: None,
+        }
+    }
+
+    /// Enable the sparse-encoding heuristic. `threshold` is the
+    /// fraction of base-value (zero) entries above which a FLOAT
+    /// accessor is emitted using `accessor.sparse` storage. A value
+    /// of `0.5` is a sensible default; accessors where more than half
+    /// the entries are zero almost always shrink under sparse
+    /// encoding. `threshold` is clamped to `[0.0, 1.0]`. `0.0` means
+    /// "always sparse"; `1.0` means "only when every entry is zero".
+    pub fn with_sparse_threshold(mut self, threshold: f32) -> Self {
+        self.sparse_threshold = Some(threshold.clamp(0.0, 1.0));
+        self
     }
 }
 
 impl Mesh3DEncoder for GltfEncoder {
     fn encode(&mut self, scene: &Scene3D) -> Result<Vec<u8>> {
-        let EncodedScene { mut root, bin } = convert(scene)?;
+        let opts = EncodeOptions {
+            sparse_threshold: self.sparse_threshold,
+        };
+        let EncodedScene { mut root, bin } = convert_with_options(scene, &opts)?;
         match self.output {
             OutputFlavour::Glb => {
                 // Buffer 0 has no `uri` — its bytes ARE the BIN chunk.
