@@ -954,7 +954,72 @@ fn read_attr_vec3(
     }
     let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
     let view = view_from_materialised(acc, &bytes)?;
-    read_vec_f32::<3>(&view)
+    let data = read_vec_f32::<3>(&view)?;
+    // Spec §3.6.2.1.5: when accessor.min/max are declared they MUST
+    // match the actual component-wise extrema. (Animation input + the
+    // POSITION attribute REQUIRE them to be declared, but any accessor
+    // that DOES declare them must agree with the data.) Validate here
+    // for VEC3 attributes (covers POSITION + NORMAL + TANGENT base
+    // attributes; morph targets are read by a separate path).
+    validate_vec3_bounds(acc, &data)?;
+    Ok(data)
+}
+
+/// Spec §3.6.2.1.5 bounds check: when an accessor declares `min` /
+/// `max` the values MUST match the component-wise extrema of the
+/// stored data. Returns an `AccessorBoundsMismatch`-prefixed
+/// `InvalidData` (the typed `Error` enum lives in `oxideav-core` and
+/// can't gain a new variant from a sibling crate; the prefix lets
+/// callers grep for the condition without an enum check).
+fn validate_vec3_bounds(acc: &gj::Accessor, data: &[[f32; 3]]) -> Result<()> {
+    let (Some(declared_min), Some(declared_max)) = (&acc.min, &acc.max) else {
+        return Ok(());
+    };
+    if declared_min.len() != 3 || declared_max.len() != 3 {
+        return Err(invalid(format!(
+            "AccessorBoundsMismatch: VEC3 accessor min/max must have 3 components (got {} / {})",
+            declared_min.len(),
+            declared_max.len()
+        )));
+    }
+    if data.is_empty() {
+        return Ok(());
+    }
+    let mut mn = data[0];
+    let mut mx = data[0];
+    for v in &data[1..] {
+        for c in 0..3 {
+            if v[c] < mn[c] {
+                mn[c] = v[c];
+            }
+            if v[c] > mx[c] {
+                mx[c] = v[c];
+            }
+        }
+    }
+    // Tolerance: bounds are stored as f32 in our document; round-trip
+    // through JSON serialisation can introduce sub-ulp drift, so
+    // accept differences below an absolute epsilon scaled by the
+    // value magnitude (1e-5 relative or 1e-6 absolute, whichever
+    // wins).
+    for c in 0..3 {
+        let dmin = declared_min[c];
+        let dmax = declared_max[c];
+        let tol = (mn[c].abs().max(mx[c].abs()) * 1e-5).max(1e-6);
+        if (dmin - mn[c]).abs() > tol {
+            return Err(invalid(format!(
+                "AccessorBoundsMismatch: declared min[{c}] = {dmin}, actual = {}",
+                mn[c]
+            )));
+        }
+        if (dmax - mx[c]).abs() > tol {
+            return Err(invalid(format!(
+                "AccessorBoundsMismatch: declared max[{c}] = {dmax}, actual = {}",
+                mx[c]
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn read_attr_vec2(

@@ -22,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   via the `primitive.extras["__morph_targets"]` sentinel (and
   `mesh.weights` via `primitive[0].extras["__mesh_weights"]`) — same
   pattern as `__mesh_extras` from r2.
+- Accessor `min` / `max` bounds validation per spec §3.6.2.1.5. The
+  encoder fills missing POSITION min/max from the data (already true
+  in earlier rounds, now also applied to morph-target POSITION
+  deltas); the decoder validates declared bounds on VEC3 attribute
+  accessors and surfaces a mismatch via an `AccessorBoundsMismatch`
+  prefix on the `Error::InvalidData` message. (The shared
+  `oxideav_core::Error` enum can't gain a new variant from a sibling
+  crate; the prefix lets callers grep for the condition without an
+  enum check — r5 followup is the typed variant.)
 
 ### Added (round 3)
 

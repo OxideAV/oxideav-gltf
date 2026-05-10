@@ -52,6 +52,10 @@ framework but usable standalone.
   `primitive[0].extras["__mesh_weights"]`); the typed
   `oxideav_mesh3d::Primitive` model lacks a dedicated `targets` field
   pending a cross-crate followup
+- Accessor `min` / `max` bounds per spec §3.6.2.1.5 — encoder fills
+  missing POSITION min/max from the data; decoder validates declared
+  bounds on VEC3 attribute accessors and rejects mismatches with an
+  `AccessorBoundsMismatch`-prefixed error message
 - `extras` round-trip on root, scenes, nodes, materials, primitives
 
 ## Round 5 (planned)
