@@ -235,11 +235,16 @@ fn sparse_skipped_for_rotation_and_scale() {
     let json_chunk = extract_json_chunk(&glb);
     let v: serde_json::Value = serde_json::from_slice(&json_chunk).unwrap();
     let accessors = v["accessors"].as_array().unwrap();
-    // No VEC4 (rotation) or VEC3 (scale) FLOAT accessor should have
-    // sparse storage because their semantic identity isn't zero.
+    // Animation sampler outputs carry the encoder-assigned name
+    // "output" (see push_*_accessor helpers). Mesh attribute
+    // accessors get names like "POSITION" and are out of scope for
+    // this test (they may be sparse in their own right since r5).
     for acc in accessors {
+        if acc.get("name").and_then(|n| n.as_str()) != Some("output") {
+            continue;
+        }
         if acc.get("sparse").is_some() {
-            panic!("rotation/scale accessors must stay dense, got sparse on {acc}");
+            panic!("rotation/scale animation accessors must stay dense, got sparse on {acc}");
         }
     }
 }

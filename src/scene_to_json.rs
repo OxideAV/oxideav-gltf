@@ -69,7 +69,7 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
         let primitives = mesh
             .primitives
             .iter()
-            .map(|p| encode_primitive(p, &mut root, &mut bin))
+            .map(|p| encode_primitive(p, &mut root, &mut bin, opts))
             .collect::<Result<Vec<_>>>()?;
         // Lift primitive[0]'s `__mesh_extras` sentinel back to mesh-level
         // extras (matches the decoder's stash; loss-tolerant if absent).
@@ -241,25 +241,28 @@ fn encode_primitive(
     p: &Primitive,
     root: &mut GltfRoot,
     bin: &mut Vec<u8>,
+    opts: &EncodeOptions,
 ) -> Result<gj::Primitive> {
     let mut attributes: HashMap<String, u32> = HashMap::new();
 
-    // POSITION
-    let pos_acc = push_vec3_accessor(root, bin, &p.positions, "POSITION", true)?;
+    // POSITION — spec §3.6.2.1.5 mandates min/max; the sparse path
+    // recomputes them from `data` so they remain correct.
+    let pos_acc =
+        push_vec3_accessor_maybe_sparse(root, bin, &p.positions, "POSITION", true, opts, true)?;
     attributes.insert("POSITION".into(), pos_acc);
 
     if let Some(normals) = &p.normals {
         if normals.len() != p.positions.len() {
             return Err(invalid("primitive: NORMAL count != POSITION count"));
         }
-        let acc = push_vec3_accessor(root, bin, normals, "NORMAL", false)?;
+        let acc = push_vec3_accessor_maybe_sparse(root, bin, normals, "NORMAL", false, opts, true)?;
         attributes.insert("NORMAL".into(), acc);
     }
     if let Some(tangents) = &p.tangents {
         if tangents.len() != p.positions.len() {
             return Err(invalid("primitive: TANGENT count != POSITION count"));
         }
-        let acc = push_vec4_accessor(root, bin, tangents, "TANGENT")?;
+        let acc = push_vec4_accessor_maybe_sparse(root, bin, tangents, "TANGENT", opts, true)?;
         attributes.insert("TANGENT".into(), acc);
     }
     for (i, set) in p.uvs.iter().enumerate() {
@@ -273,7 +276,7 @@ fn encode_primitive(
         if set.len() != p.positions.len() {
             return Err(invalid("primitive: COLOR count != POSITION count"));
         }
-        let acc = push_vec4_accessor(root, bin, set, "COLOR")?;
+        let acc = push_vec4_accessor_maybe_sparse(root, bin, set, "COLOR", opts, true)?;
         attributes.insert(format!("COLOR_{i}"), acc);
     }
     if let Some(joints) = &p.joints {
@@ -287,7 +290,7 @@ fn encode_primitive(
         if weights.len() != p.positions.len() {
             return Err(invalid("primitive: WEIGHTS_0 count != POSITION count"));
         }
-        let acc = push_vec4_accessor(root, bin, weights, "WEIGHTS_0")?;
+        let acc = push_vec4_accessor_maybe_sparse(root, bin, weights, "WEIGHTS_0", opts, true)?;
         attributes.insert("WEIGHTS_0".into(), acc);
     }
 
@@ -1400,6 +1403,39 @@ fn push_mat4_accessor(
     Ok(acc_idx)
 }
 
+/// Sparse-aware VEC4 accessor emitter (mesh TANGENT / COLOR_0 /
+/// WEIGHTS_0 attributes). Falls back to dense when the heuristic
+/// decides not to or when `allow_sparse` is false.
+fn push_vec4_accessor_maybe_sparse(
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+    data: &[[f32; 4]],
+    name: &'static str,
+    opts: &EncodeOptions,
+    allow_sparse: bool,
+) -> Result<u32> {
+    if allow_sparse {
+        if let Some(nonzero) = maybe_sparse_indices_vec4(data, opts) {
+            let sparse = build_sparse_block_vec4(root, bin, &nonzero, data);
+            let acc_idx = root.accessors.len() as u32;
+            root.accessors.push(gj::Accessor {
+                buffer_view: None,
+                byte_offset: None,
+                component_type: gj::COMPONENT_TYPE_FLOAT,
+                count: data.len() as u32,
+                kind: "VEC4".into(),
+                normalized: false,
+                min: None,
+                max: None,
+                name: Some(name.into()),
+                sparse: Some(sparse),
+            });
+            return Ok(acc_idx);
+        }
+    }
+    push_vec4_accessor(root, bin, data, name)
+}
+
 /// MAT4 sparse-encoding heuristic — an element is "zero" iff every
 /// one of its 16 components is exactly 0.0. When the zero fraction
 /// crosses the configured threshold, emit using `accessor.sparse`
@@ -1554,6 +1590,31 @@ fn maybe_sparse_indices_scalar(data: &[f32], opts: &EncodeOptions) -> Option<Vec
     }
 }
 
+/// VEC4 variant — an element is "zero" iff all four components are 0.0.
+fn maybe_sparse_indices_vec4(data: &[[f32; 4]], opts: &EncodeOptions) -> Option<Vec<u32>> {
+    let threshold = opts.sparse_threshold?;
+    if data.is_empty() {
+        return None;
+    }
+    let nonzero: Vec<u32> = data
+        .iter()
+        .enumerate()
+        .filter_map(|(i, v)| {
+            if v[0] != 0.0 || v[1] != 0.0 || v[2] != 0.0 || v[3] != 0.0 {
+                Some(i as u32)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let zero_fraction = 1.0 - (nonzero.len() as f32 / data.len() as f32);
+    if !nonzero.is_empty() && zero_fraction >= threshold {
+        Some(nonzero)
+    } else {
+        None
+    }
+}
+
 /// VEC3 variant — an element is "zero" iff all three components are 0.0.
 fn maybe_sparse_indices_vec3(data: &[[f32; 3]], opts: &EncodeOptions) -> Option<Vec<u32>> {
     let threshold = opts.sparse_threshold?;
@@ -1699,6 +1760,60 @@ fn build_sparse_block_vec3(
     }
 }
 
+/// VEC4 variant — same layout, four f32 per non-zero entry.
+fn build_sparse_block_vec4(
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+    indices: &[u32],
+    source: &[[f32; 4]],
+) -> gj::AccessorSparse {
+    let max_idx = indices.iter().copied().max().unwrap_or(0);
+    let idx_ct = smallest_sparse_index_component(max_idx);
+    pad_to_4(bin);
+    let idx_offset = bin.len();
+    crate::accessor::write_indices(bin, indices, idx_ct);
+    let idx_len = bin.len() - idx_offset;
+    let idx_bv = root.buffer_views.len() as u32;
+    root.buffer_views.push(gj::BufferView {
+        buffer: 0,
+        byte_offset: Some(idx_offset as u32),
+        byte_length: idx_len as u32,
+        byte_stride: None,
+        target: None,
+        name: Some("sparse_indices_view".into()),
+    });
+    pad_to_4(bin);
+    let val_offset = bin.len();
+    for &i in indices {
+        let v = source[i as usize];
+        for c in v {
+            bin.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    let val_len = bin.len() - val_offset;
+    let val_bv = root.buffer_views.len() as u32;
+    root.buffer_views.push(gj::BufferView {
+        buffer: 0,
+        byte_offset: Some(val_offset as u32),
+        byte_length: val_len as u32,
+        byte_stride: None,
+        target: None,
+        name: Some("sparse_values_view".into()),
+    });
+    gj::AccessorSparse {
+        count: indices.len() as u32,
+        indices: gj::AccessorSparseIndices {
+            buffer_view: idx_bv,
+            byte_offset: None,
+            component_type: idx_ct,
+        },
+        values: gj::AccessorSparseValues {
+            buffer_view: val_bv,
+            byte_offset: None,
+        },
+    }
+}
+
 /// Sparse-aware scalar f32 accessor emitter — falls back to dense when
 /// the heuristic decides not to (or when `allow_sparse` is false).
 fn push_scalar_f32_accessor_maybe_sparse(
@@ -1733,10 +1848,12 @@ fn push_scalar_f32_accessor_maybe_sparse(
 }
 
 /// Sparse-aware VEC3 accessor emitter (used by animation translation
-/// outputs). Min/max are dropped on the sparse path — spec only
-/// mandates them for POSITION attributes, and a zero-base accessor's
-/// bounds would be misleading anyway. The dense path retains them when
-/// `with_minmax` is true.
+/// outputs and mesh POSITION/NORMAL/TANGENT attributes). On the
+/// sparse path the data still flows through the decoder as
+/// zero-base + overrides, so the min/max bounds — which describe
+/// the dequantised result, not the buffer layout — stay correct
+/// when computed from `data` directly. POSITION accessors must
+/// keep them per spec §3.6.2.1.5.
 fn push_vec3_accessor_maybe_sparse(
     root: &mut GltfRoot,
     bin: &mut Vec<u8>,
@@ -1749,6 +1866,26 @@ fn push_vec3_accessor_maybe_sparse(
     if allow_sparse {
         if let Some(nonzero) = maybe_sparse_indices_vec3(data, opts) {
             let sparse = build_sparse_block_vec3(root, bin, &nonzero, data);
+            // Compute min/max from the *post-overlay* data (which is
+            // exactly `data` itself — zero base + overrides reproduces
+            // the dense values). POSITION attributes need them per spec.
+            let (min, max) = if with_minmax && !data.is_empty() {
+                let mut mn = data[0];
+                let mut mx = data[0];
+                for v in &data[1..] {
+                    for c in 0..3 {
+                        if v[c] < mn[c] {
+                            mn[c] = v[c];
+                        }
+                        if v[c] > mx[c] {
+                            mx[c] = v[c];
+                        }
+                    }
+                }
+                (Some(mn.to_vec()), Some(mx.to_vec()))
+            } else {
+                (None, None)
+            };
             let acc_idx = root.accessors.len() as u32;
             root.accessors.push(gj::Accessor {
                 buffer_view: None,
@@ -1757,8 +1894,8 @@ fn push_vec3_accessor_maybe_sparse(
                 count: data.len() as u32,
                 kind: "VEC3".into(),
                 normalized: false,
-                min: None,
-                max: None,
+                min,
+                max,
                 name: Some(name.into()),
                 sparse: Some(sparse),
             });
