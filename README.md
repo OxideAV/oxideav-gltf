@@ -60,6 +60,18 @@ framework but usable standalone.
   missing POSITION min/max from the data; decoder validates declared
   bounds on VEC3 attribute accessors and rejects mismatches with an
   `AccessorBoundsMismatch`-prefixed error message
+- Vertex-attribute compression validation per spec §3.6.2.4 (data
+  alignment) + §3.7.2.1 (semantic constraints) — the decoder rejects
+  six classes of spec-non-conformant attribute layouts with stable
+  `VertexAttribute…`-prefixed errors: misaligned `accessor.byteOffset`
+  / `bufferView.byteStride` (`VertexAttributeAlignment`), attribute
+  count mismatch across a primitive (`VertexAttributeCount`), the
+  primitive-restart sentinel showing up in an indices accessor
+  (`VertexAttributeIndexRestart`), TANGENT.w not exactly ±1.0
+  (`VertexAttributeTangentW`), and COLOR_0 components outside `[0, 1]`
+  (`VertexAttributeColor0Range`). The encoder also keeps TANGENT
+  dense regardless of sparse threshold to honour the same TANGENT.w
+  constraint
 - `extras` round-trip on root, scenes, nodes, materials, primitives
 
 ## Round 6 (planned)

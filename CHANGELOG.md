@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 6)
+
+- Vertex-attribute compression validation per glTF 2.0 §3.6.2.4
+  (data alignment) + §3.7.2.1 (semantic constraints). The decoder now
+  rejects spec-non-conformant attribute layouts up-front with a stable
+  `VertexAttribute…`-prefixed `Error::InvalidData` message. Six MUSTs
+  enforced:
+  - `accessor.byteOffset` MUST be a multiple of the component size
+    (`VertexAttributeAlignment`);
+  - vertex-attribute `accessor.byteOffset` and the optional
+    `bufferView.byteStride` MUST also be multiples of 4
+    (`VertexAttributeAlignment`);
+  - all attribute accessors of one primitive MUST share `count`
+    (`VertexAttributeCount`);
+  - indices accessor MUST NOT contain the primitive-restart sentinel
+    (255 / 65535 / 4294967295) for its component type
+    (`VertexAttributeIndexRestart`);
+  - TANGENT.w MUST be exactly ±1.0 (`VertexAttributeTangentW`);
+  - all components of every COLOR_0 element MUST be in `[0.0, 1.0]`
+    (`VertexAttributeColor0Range`).
+- `crate::validation` module exposes the individual validators as
+  reusable helpers (`validate_alignment`, `validate_attribute_counts`,
+  `validate_index_no_restart`, `validate_tangent_w`,
+  `validate_color0_range`) with their own unit tests.
+
+### Changed (round 6)
+
+- TANGENT no longer participates in the sparse-encoding heuristic.
+  Spec §3.7.2.1 mandates `TANGENT.w == ±1.0`, so a zero-base sparse
+  block (which would synthesise w=0 for every non-overridden slot) is
+  inherently spec-non-conformant. The encoder now keeps TANGENT dense
+  regardless of the sparse threshold, undoing one corner of r5 item b.
+
 ### Added (round 5)
 
 - Sparse-encoding heuristic extended to mesh vertex-attribute

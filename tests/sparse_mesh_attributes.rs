@@ -147,15 +147,27 @@ fn normal_and_color_sparse_at_threshold() {
 
 #[test]
 fn tangent_vec4_sparse_round_trip() {
-    // Build a primitive whose TANGENT data is mostly zero. TANGENT is
-    // VEC4 so it exercises the new push_vec4_accessor_maybe_sparse path.
+    // TANGENT is VEC4 with the W component constrained to ±1.0 by
+    // spec §3.7.2.1. The zero-base sparse path would synthesise w=0
+    // elements at every non-overridden slot, which is a hard spec
+    // violation — so TANGENT always stays dense regardless of the
+    // sparse threshold (round 6 fix; r5 emitted sparse here and the
+    // resulting document failed VertexAttributeTangentW validation
+    // when re-decoded). This test pins the contract.
     let mut scene = Scene3D::new();
     let mut prim = Primitive::new(Topology::Triangles);
     prim.positions = vec![[1.0, 0.0, 0.0]; 4]; // all non-zero so POSITION stays dense
     prim.normals = Some(vec![[0.0, 1.0, 0.0]; 4]);
-    let mut tangents = vec![[0.0f32; 4]; 4];
-    tangents[1] = [1.0, 0.0, 0.0, 1.0];
-    prim.tangents = Some(tangents);
+    // All TANGENT elements carry spec-valid w = ±1.0 even when xyz is
+    // (0,0,0); the encoder must NOT try to compress them with a
+    // zero-base sparse block.
+    let tangents = vec![
+        [0.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [0.0, 0.0, 0.0, 1.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    prim.tangents = Some(tangents.clone());
     let mut mesh = Mesh::new(Some("t".to_owned()));
     mesh.primitives.push(prim);
     let mid = scene.add_mesh(mesh);
@@ -171,20 +183,15 @@ fn tangent_vec4_sparse_round_trip() {
         .find(|a| a.get("name").and_then(|n| n.as_str()) == Some("TANGENT"))
         .expect("TANGENT accessor");
     assert!(
-        tangent.get("sparse").is_some(),
-        "TANGENT should be sparse at threshold 0.5"
+        tangent.get("sparse").is_none(),
+        "TANGENT MUST stay dense regardless of threshold (w must be ±1.0 per spec §3.7.2.1)"
     );
-    // The other VEC4 attribute slots that carried no extra data must
-    // not be invented as sparse.
 
     let mut dec = GltfDecoder::new();
     let decoded = dec.decode(&glb).unwrap();
     let prim = &decoded.meshes[0].primitives[0];
-    let tangents = prim.tangents.as_ref().expect("TANGENT");
-    assert_eq!(tangents[0], [0.0, 0.0, 0.0, 0.0]);
-    assert_eq!(tangents[1], [1.0, 0.0, 0.0, 1.0]);
-    assert_eq!(tangents[2], [0.0, 0.0, 0.0, 0.0]);
-    assert_eq!(tangents[3], [0.0, 0.0, 0.0, 0.0]);
+    let decoded_tangents = prim.tangents.as_ref().expect("TANGENT");
+    assert_eq!(decoded_tangents, &tangents);
 }
 
 #[test]

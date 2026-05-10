@@ -33,6 +33,10 @@ use crate::accessor::{
 use crate::asset_source::BufferViewAsset;
 use crate::error::{invalid, unsupported, Error, Result};
 use crate::json_model::{self as gj, GltfRoot};
+use crate::validation::{
+    validate_alignment, validate_attribute_counts, validate_color0_range,
+    validate_index_no_restart, validate_tangent_w,
+};
 
 /// Decode a parsed [`GltfRoot`] into a [`Scene3D`], using `glb_bin`
 /// (when present) as the backing buffer for buffers with no URI.
@@ -376,9 +380,11 @@ fn decode_animation_output(
     }
 
     match (property, acc.kind.as_str(), acc.component_type) {
-        (AnimationProperty::Translation | AnimationProperty::Scale, "VEC3", COMPONENT_TYPE_FLOAT) => {
-            Ok(AnimationValues::Vec3(read_vec_f32::<3>(view)?))
-        }
+        (
+            AnimationProperty::Translation | AnimationProperty::Scale,
+            "VEC3",
+            COMPONENT_TYPE_FLOAT,
+        ) => Ok(AnimationValues::Vec3(read_vec_f32::<3>(view)?)),
         (AnimationProperty::Translation | AnimationProperty::Scale, _, ct)
             if ct != COMPONENT_TYPE_FLOAT =>
         {
@@ -389,15 +395,15 @@ fn decode_animation_output(
         (AnimationProperty::Rotation, "VEC4", COMPONENT_TYPE_FLOAT) => {
             Ok(AnimationValues::Quat(read_vec_f32::<4>(view)?))
         }
-        (AnimationProperty::Rotation, "VEC4", ct) if is_normalized_int => Ok(
-            AnimationValues::Quat(read_normalized_vec4(view, ct)?),
-        ),
+        (AnimationProperty::Rotation, "VEC4", ct) if is_normalized_int => {
+            Ok(AnimationValues::Quat(read_normalized_vec4(view, ct)?))
+        }
         (AnimationProperty::MorphWeights, "SCALAR", COMPONENT_TYPE_FLOAT) => {
             Ok(AnimationValues::Scalar(read_scalar_f32(view)?))
         }
-        (AnimationProperty::MorphWeights, "SCALAR", ct) if is_normalized_int => Ok(
-            AnimationValues::Scalar(read_normalized_scalar(view, ct)?),
-        ),
+        (AnimationProperty::MorphWeights, "SCALAR", ct) if is_normalized_int => {
+            Ok(AnimationValues::Scalar(read_normalized_scalar(view, ct)?))
+        }
         (p, k, ct) => Err(invalid(format!(
             "animation channel: path {p:?} incompatible with output type {k:?} componentType {ct}"
         ))),
@@ -820,6 +826,16 @@ fn convert_primitive(
     let topology = topology_from_mode(p.mode.unwrap_or(gj::MODE_TRIANGLES))?;
     let mut prim = Primitive::new(topology);
 
+    // Spec §3.7.2.1 — all attribute accessors of a primitive MUST share
+    // a single `count`. Spec §3.6.2.4 — attribute accessor byteOffset +
+    // bufferView byteStride alignment.
+    validate_attribute_counts(&p.attributes, &root.accessors)?;
+    for (name, &acc_idx) in &p.attributes {
+        if let Some(acc) = root.accessors.get(acc_idx as usize) {
+            validate_alignment(acc, &root.buffer_views, true, name)?;
+        }
+    }
+
     // POSITION is mandatory per spec §3.7.2.1.
     let position_idx = *p
         .attributes
@@ -831,7 +847,10 @@ fn convert_primitive(
         prim.normals = Some(read_attr_vec3(root, buffers, i)?);
     }
     if let Some(&i) = p.attributes.get("TANGENT") {
-        prim.tangents = Some(read_attr_vec4(root, buffers, i)?);
+        let tangents = read_attr_vec4(root, buffers, i)?;
+        // Spec §3.7.2.1: TANGENT.w MUST be ±1.0.
+        validate_tangent_w(&tangents)?;
+        prim.tangents = Some(tangents);
     }
     // TEXCOORD_n
     let mut texcoord_idx = 0;
@@ -842,7 +861,13 @@ fn convert_primitive(
     // COLOR_n — accept VEC3 or VEC4 (we promote VEC3 to VEC4 with alpha=1.0).
     let mut color_idx = 0;
     while let Some(&i) = p.attributes.get(&format!("COLOR_{color_idx}")) {
-        prim.colors.push(read_attr_color(root, buffers, i)?);
+        let colors = read_attr_color(root, buffers, i)?;
+        // Spec §3.7.2.1: COLOR_0 components MUST be in [0.0, 1.0].
+        // Higher COLOR_n sets are not constrained.
+        if color_idx == 0 {
+            validate_color0_range(&colors)?;
+        }
+        prim.colors.push(colors);
         color_idx += 1;
     }
     if let Some(&i) = p.attributes.get("JOINTS_0") {
@@ -861,9 +886,17 @@ fn convert_primitive(
 
     if let Some(idx_acc) = p.indices {
         let acc = &root.accessors[idx_acc as usize];
+        // Spec §3.6.2.4: index accessor byteOffset must be aligned to
+        // its component-type size (the 4-byte vertex-attribute rule
+        // does NOT apply to indices — they're tightly packed per
+        // §3.6.2 for non-vertex-attribute accessors).
+        validate_alignment(acc, &root.buffer_views, false, "indices")?;
         let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
         let view = view_from_materialised(acc, &bytes)?;
         let widened = read_indices_u32(acc, &view)?;
+        // Spec §3.7.2.1: index value MUST NOT equal the max value for
+        // the chosen componentType (reserved for primitive-restart).
+        validate_index_no_restart(acc, &widened)?;
         // Pick the narrowest representable width — this is glTF's
         // own convention (5121 / 5123 / 5125 are all valid).
         let max = widened.iter().copied().max().unwrap_or(0);

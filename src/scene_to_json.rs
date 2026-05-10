@@ -262,7 +262,10 @@ fn encode_primitive(
         if tangents.len() != p.positions.len() {
             return Err(invalid("primitive: TANGENT count != POSITION count"));
         }
-        let acc = push_vec4_accessor_maybe_sparse(root, bin, tangents, "TANGENT", opts, true)?;
+        // Spec §3.7.2.1: TANGENT.w MUST be ±1.0 — the sparse path
+        // initialises non-overridden slots to the zero vector, which
+        // would yield a w=0 element and fail validation. Stay dense.
+        let acc = push_vec4_accessor_maybe_sparse(root, bin, tangents, "TANGENT", opts, false)?;
         attributes.insert("TANGENT".into(), acc);
     }
     for (i, set) in p.uvs.iter().enumerate() {
