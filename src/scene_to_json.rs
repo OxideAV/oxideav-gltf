@@ -128,7 +128,7 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     // (skeleton_id, root_node) so we read the joint roster + IBM
     // matrices off the referenced Skeleton.
     for skin in &scene.skins {
-        let s_json = encode_skin(skin, scene, &mut root, &mut bin)?;
+        let s_json = encode_skin(skin, scene, &mut root, &mut bin, opts)?;
         root.skins.push(s_json);
     }
 
@@ -922,6 +922,7 @@ fn encode_skin(
     scene: &Scene3D,
     root: &mut GltfRoot,
     bin: &mut Vec<u8>,
+    opts: &EncodeOptions,
 ) -> Result<gj::Skin> {
     let skel = scene
         .skeletons
@@ -939,11 +940,12 @@ fn encode_skin(
                 skel.joints.len()
             )));
         }
-        Some(push_mat4_accessor(
+        Some(push_mat4_accessor_maybe_sparse(
             root,
             bin,
             &skel.inverse_bind_matrices,
             "inverseBindMatrices",
+            opts,
         )?)
     };
 
@@ -1396,6 +1398,130 @@ fn push_mat4_accessor(
         sparse: None,
     });
     Ok(acc_idx)
+}
+
+/// MAT4 sparse-encoding heuristic — an element is "zero" iff every
+/// one of its 16 components is exactly 0.0. When the zero fraction
+/// crosses the configured threshold, emit using `accessor.sparse`
+/// storage (zero-base, no bufferView; the decoder initialises every
+/// matrix to the all-zero MAT4 and overlays only the non-zero entries).
+///
+/// Note: per spec §3.6.2.3 the sparse `count` MUST be > 0, so an
+/// all-zero accessor stays dense.
+fn maybe_sparse_indices_mat4(data: &[[[f32; 4]; 4]], opts: &EncodeOptions) -> Option<Vec<u32>> {
+    let threshold = opts.sparse_threshold?;
+    if data.is_empty() {
+        return None;
+    }
+    let nonzero: Vec<u32> = data
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| {
+            let any_nonzero = m.iter().any(|row| row.iter().any(|&c| c != 0.0));
+            if any_nonzero {
+                Some(i as u32)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let zero_fraction = 1.0 - (nonzero.len() as f32 / data.len() as f32);
+    if !nonzero.is_empty() && zero_fraction >= threshold {
+        Some(nonzero)
+    } else {
+        None
+    }
+}
+
+/// Push the indices+values bufferViews for a sparse MAT4 accessor
+/// (zero-base) and return the constructed `Sparse` block. Values are
+/// written column-major to match the dense path (spec §3.6.2.4).
+fn build_sparse_block_mat4(
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+    indices: &[u32],
+    source: &[[[f32; 4]; 4]],
+) -> gj::AccessorSparse {
+    let max_idx = indices.iter().copied().max().unwrap_or(0);
+    let idx_ct = smallest_sparse_index_component(max_idx);
+    pad_to_4(bin);
+    let idx_offset = bin.len();
+    crate::accessor::write_indices(bin, indices, idx_ct);
+    let idx_len = bin.len() - idx_offset;
+    let idx_bv = root.buffer_views.len() as u32;
+    root.buffer_views.push(gj::BufferView {
+        buffer: 0,
+        byte_offset: Some(idx_offset as u32),
+        byte_length: idx_len as u32,
+        byte_stride: None,
+        target: None,
+        name: Some("sparse_indices_view".into()),
+    });
+    pad_to_4(bin);
+    let val_offset = bin.len();
+    // Same column-major layout as the dense `write_mat4_f32` helper.
+    for &i in indices {
+        let m = &source[i as usize];
+        for c in 0..4 {
+            for row in m.iter().take(4) {
+                bin.extend_from_slice(&row[c].to_le_bytes());
+            }
+        }
+    }
+    let val_len = bin.len() - val_offset;
+    let val_bv = root.buffer_views.len() as u32;
+    root.buffer_views.push(gj::BufferView {
+        buffer: 0,
+        byte_offset: Some(val_offset as u32),
+        byte_length: val_len as u32,
+        byte_stride: None,
+        target: None,
+        name: Some("sparse_values_view".into()),
+    });
+    gj::AccessorSparse {
+        count: indices.len() as u32,
+        indices: gj::AccessorSparseIndices {
+            buffer_view: idx_bv,
+            byte_offset: None,
+            component_type: idx_ct,
+        },
+        values: gj::AccessorSparseValues {
+            buffer_view: val_bv,
+            byte_offset: None,
+        },
+    }
+}
+
+/// Sparse-aware MAT4 accessor emitter — falls back to dense when the
+/// heuristic decides not to. Used for `skin.inverseBindMatrices`
+/// where a heavily-symmetric rig may carry many all-zero rows for
+/// unused joints; emitting sparse for that case shrinks the buffer
+/// roughly proportionally to the zero fraction.
+fn push_mat4_accessor_maybe_sparse(
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+    data: &[[[f32; 4]; 4]],
+    name: &'static str,
+    opts: &EncodeOptions,
+) -> Result<u32> {
+    if let Some(nonzero) = maybe_sparse_indices_mat4(data, opts) {
+        let sparse = build_sparse_block_mat4(root, bin, &nonzero, data);
+        let acc_idx = root.accessors.len() as u32;
+        root.accessors.push(gj::Accessor {
+            buffer_view: None,
+            byte_offset: None,
+            component_type: gj::COMPONENT_TYPE_FLOAT,
+            count: data.len() as u32,
+            kind: "MAT4".into(),
+            normalized: false,
+            min: None,
+            max: None,
+            name: Some(name.into()),
+            sparse: Some(sparse),
+        });
+        return Ok(acc_idx);
+    }
+    push_mat4_accessor(root, bin, data, name)
 }
 
 #[allow(dead_code)]

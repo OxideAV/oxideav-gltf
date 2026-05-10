@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added (round 5)
 
+- Sparse-encoding heuristic extended to `skin.inverseBindMatrices`
+  (MAT4 FLOAT) accessors per glTF 2.0 §3.6.2.3. The same threshold
+  set via `GltfEncoder::with_sparse_threshold(f32)` now also gates
+  IBM accessors: an IBM matrix counts as "zero" iff every one of its
+  16 components is exactly 0.0; when the all-zero fraction crosses
+  the threshold the accessor is re-emitted as zero-base sparse with
+  per-index overrides for the non-zero matrices. Heavily-symmetric
+  rigs that carry placeholder zero matrices for unused joint slots
+  shrink roughly proportionally to the zero fraction.
 - Encoder-side signed normalised-int animation outputs — symmetric to
   r3 decode (which already accepts BYTE / SHORT). New `QuantizeMode`
   variants: `IByte` (5120 normalized; `f` × 127 with `-128` reserved

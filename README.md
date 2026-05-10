@@ -30,10 +30,11 @@ framework but usable standalone.
   interpolation
 - Sparse accessors per spec §3.6.2.3 — decode + opt-in encode (the
   `GltfEncoder::with_sparse_threshold(f32)` heuristic re-emits FLOAT
-  animation outputs as `accessor.sparse` storage when their
-  zero-element fraction meets the threshold; identity-quaternion
-  rotation and identity-`[1,1,1]` scale outputs stay dense to avoid
-  mis-representing the implicit values)
+  animation outputs and `skin.inverseBindMatrices` accessors as
+  `accessor.sparse` storage when their zero-element fraction meets
+  the threshold; identity-quaternion rotation and identity-`[1,1,1]`
+  scale outputs stay dense to avoid mis-representing the implicit
+  values)
 - Normalised-integer animation output accessors per spec §3.11 +
   §3.6.2.2 — ROTATION (VEC4) and MORPH_WEIGHTS (SCALAR) sampler
   outputs decode from `BYTE / UBYTE / SHORT / USHORT` with
