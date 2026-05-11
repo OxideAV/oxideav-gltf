@@ -27,6 +27,9 @@ fn build_glb_or_json_with_animation(
 ) -> String {
     // Layout the binary buffer:
     //   [0..pos_len) : 9 floats POSITION (3 VEC3) so the mesh is well-formed
+    //   then the same 3-vertex VEC3 again as a POSITION morph-target delta
+    //   (the §3.11 weights-channel validator wants the mesh to declare at
+    //   least one target — see `morph_target_accessor`)
     //   [pos_len..) : keyframe times (SCALAR FLOAT) — 2 keyframes
     //   then the output payload
     let mut bin: Vec<u8> = Vec::new();
@@ -37,6 +40,18 @@ fn build_glb_or_json_with_animation(
         }
     }
     let pos_byte_len = bin.len();
+
+    // Morph-target delta accessor — 3 zero VEC3s. Backs the
+    // mesh.primitives[0].targets[0].POSITION accessor below so the
+    // §3.11 "weights" channel target validation (new in r7) finds at
+    // least one declared morph target.
+    let morph_offset = bin.len();
+    for _ in 0..3 {
+        bin.extend_from_slice(&0.0f32.to_le_bytes());
+        bin.extend_from_slice(&0.0f32.to_le_bytes());
+        bin.extend_from_slice(&0.0f32.to_le_bytes());
+    }
+    let morph_byte_len = bin.len() - morph_offset;
 
     // Two keyframes — `(0.0, 1.0)`. min/max required.
     let key_offset = bin.len();
@@ -64,6 +79,7 @@ fn build_glb_or_json_with_animation(
         ],
         "bufferViews": [
             {{ "buffer": 0, "byteOffset": 0, "byteLength": {pos_byte_len} }},
+            {{ "buffer": 0, "byteOffset": {morph_offset}, "byteLength": {morph_byte_len} }},
             {{ "buffer": 0, "byteOffset": {key_offset}, "byteLength": {key_byte_len} }},
             {{ "buffer": 0, "byteOffset": {out_offset}, "byteLength": {out_byte_len} }}
         ],
@@ -73,17 +89,21 @@ fn build_glb_or_json_with_animation(
                 "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0]
             }},
             {{
-                "bufferView": 1, "componentType": 5126, "count": 2, "type": "SCALAR",
+                "bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3",
+                "min": [0.0, 0.0, 0.0], "max": [0.0, 0.0, 0.0]
+            }},
+            {{
+                "bufferView": 2, "componentType": 5126, "count": 2, "type": "SCALAR",
                 "min": [0.0], "max": [1.0]
             }},
             {{
-                "bufferView": 2, "componentType": {component_type},
+                "bufferView": 3, "componentType": {component_type},
                 "count": {output_count}, "type": "{output_type}",
                 "normalized": true
             }}
         ],
         "meshes": [
-            {{ "primitives": [ {{ "attributes": {{ "POSITION": 0 }} }} ] }}
+            {{ "primitives": [ {{ "attributes": {{ "POSITION": 0 }}, "targets": [ {{ "POSITION": 1 }} ] }} ] }}
         ],
         "nodes": [ {{ "mesh": 0 }} ],
         "scenes": [ {{ "nodes": [0] }} ],
@@ -97,13 +117,15 @@ fn build_glb_or_json_with_animation(
                     }}
                 ],
                 "samplers": [
-                    {{ "input": 1, "output": 2 }}
+                    {{ "input": 2, "output": 3 }}
                 ]
             }}
         ]
     }}"#,
         component_type = component_type,
         pos_byte_len = pos_byte_len,
+        morph_offset = morph_offset,
+        morph_byte_len = morph_byte_len,
         key_offset = key_offset,
         key_byte_len = key_byte_len,
         out_offset = out_offset,

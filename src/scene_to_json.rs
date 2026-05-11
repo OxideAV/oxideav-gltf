@@ -327,11 +327,24 @@ fn encode_primitive(
         Some(map_to_value(&prim_extras))
     };
 
-    // Re-emit morph targets as accessors per §3.7.2.2. Each target is
-    // an `attribute name → accessor index` map; we write the deltas
-    // into the binary buffer the same way standard attributes are
-    // written and emit one accessor per attribute.
-    let targets = decode_morph_targets_extra(morph_targets_extra.as_ref(), root, bin)?;
+    // Re-emit morph targets as accessors per §3.7.2.2. Two paths feed
+    // this:
+    //
+    // * Typed `Primitive.targets` (mesh3d ≥ 0.0.3) — preferred when
+    //   present. The decoder lifts a glTF document's targets into this
+    //   field for forward compat; the legacy extras sentinel keeps
+    //   round-tripping for older callers.
+    // * `__morph_targets` extras sentinel — only consulted when the
+    //   typed field is empty (round 2 compatibility).
+    //
+    // Both paths produce the same `attribute name → accessor index` map
+    // the JSON expects; we write the deltas into the binary buffer the
+    // same way standard attributes are written.
+    let targets = if !p.targets.is_empty() {
+        encode_typed_morph_targets(&p.targets, root, bin)?
+    } else {
+        decode_morph_targets_extra(morph_targets_extra.as_ref(), root, bin)?
+    };
 
     Ok(gj::Primitive {
         attributes,
@@ -341,6 +354,40 @@ fn encode_primitive(
         targets,
         extras,
     })
+}
+
+/// Encode the typed [`oxideav_mesh3d::MorphTarget`] list onto fresh
+/// accessors and produce the per-target `attribute name → accessor`
+/// roster for the JSON `targets` array (spec §3.7.2.2).
+///
+/// Per spec the morph-target attribute set is restricted to POSITION /
+/// NORMAL / TANGENT (TANGENT.w is dropped — handedness can't be
+/// displaced). POSITION targets get min/max bounds since some
+/// validators flag their absence even though the spec only mandates
+/// min/max for the base POSITION accessor.
+fn encode_typed_morph_targets(
+    targets: &[oxideav_mesh3d::MorphTarget],
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+) -> Result<Vec<HashMap<String, u32>>> {
+    let mut out = Vec::with_capacity(targets.len());
+    for t in targets {
+        let mut tgt: HashMap<String, u32> = HashMap::new();
+        if let Some(pos) = &t.position {
+            let acc = push_vec3_accessor(root, bin, pos, "MORPH_POSITION", true)?;
+            tgt.insert("POSITION".into(), acc);
+        }
+        if let Some(nrm) = &t.normal {
+            let acc = push_vec3_accessor(root, bin, nrm, "MORPH_NORMAL", false)?;
+            tgt.insert("NORMAL".into(), acc);
+        }
+        if let Some(tan) = &t.tangent {
+            let acc = push_vec3_accessor(root, bin, tan, "MORPH_TANGENT", false)?;
+            tgt.insert("TANGENT".into(), acc);
+        }
+        out.push(tgt);
+    }
+    Ok(out)
 }
 
 /// Pull morph-target deltas out of the `__morph_targets` sentinel and

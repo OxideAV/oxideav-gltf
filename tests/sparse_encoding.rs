@@ -9,8 +9,8 @@
 use oxideav_gltf::{GltfDecoder, GltfEncoder};
 use oxideav_mesh3d::{
     Animation, AnimationChannel, AnimationProperty, AnimationSampler, AnimationTarget,
-    AnimationValues, Interpolation, Mesh, Mesh3DDecoder, Mesh3DEncoder, Node, Primitive, Scene3D,
-    Topology,
+    AnimationValues, Interpolation, Mesh, Mesh3DDecoder, Mesh3DEncoder, MorphTarget, Node,
+    Primitive, Scene3D, Topology,
 };
 
 /// Build a scene with a morph-weights animation that's mostly zero —
@@ -20,6 +20,16 @@ fn mostly_zero_morph_scene() -> Scene3D {
     let mut scene = Scene3D::new();
     let mut prim = Primitive::new(Topology::Triangles);
     prim.positions = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+    // r7: a `weights` animation channel requires the mesh to declare
+    // morph targets (spec §3.11). Four zero-delta POSITION targets
+    // match the 4-morph-target stride below.
+    for _ in 0..4 {
+        prim.targets.push(MorphTarget {
+            position: Some(vec![[0.0, 0.0, 0.0]; 3]),
+            normal: None,
+            tangent: None,
+        });
+    }
     let mut mesh = Mesh::new(Some("morph_target_mesh".to_owned()));
     mesh.primitives.push(prim);
     let mid = scene.add_mesh(mesh);

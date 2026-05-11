@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 7)
+
+- Extension-stack consistency validation per glTF 2.0 §3.12. The
+  decoder now rejects documents whose `extensionsRequired` is not a
+  subset of `extensionsUsed`
+  (`ExtensionStackRequiredNotListed`-prefixed `Error::InvalidData`)
+  and documents that carry a `KHR_lights_punctual` data block (either
+  at root scope or on a node) without listing the extension in
+  `extensionsUsed` (`ExtensionStackUsedNotDeclared`).
+- Animation channel target-path validation per glTF 2.0 §3.11. Each
+  channel's `target.path` must be one of `"translation"` /
+  `"rotation"` / `"scale"` / `"weights"`
+  (`AnimationChannelPath`); the sampler index plus sampler.input /
+  sampler.output accessor indices must be in range
+  (`AnimationChannelSampler` / `AnimationChannelSamplerInput` /
+  `AnimationChannelSamplerOutput`); and a `path == "weights"` channel
+  MUST point at a node bound to a mesh whose primitives declare at
+  least one morph target (`AnimationChannelWeightsNoMesh` /
+  `AnimationChannelWeightsNoTargets`).
+- Decoder fuzz hardening — two pre-serde checks bound the JSON
+  payload before the recursive parser runs:
+  - `validation::check_json_byte_length` rejects payloads larger
+    than `MAX_JSON_BYTES` (128 MiB) with a `JsonTooLarge` prefix —
+    binary buffers live in the BIN chunk, so the cap only applies to
+    the textual JSON document.
+  - `validation::check_json_depth` rejects payloads nesting deeper
+    than `MAX_JSON_DEPTH` (256 levels) with a `JsonDepthExceeded`
+    prefix. Linear-time scan that tracks `{`/`[` open + `}`/`]`
+    close while respecting JSON string + escape syntax (a `[`
+    inside `"..."` doesn't count). Defends against malicious
+    1000-deep-array bombs that crash the recursive serde_json
+    parser on stack overflow.
+- Encoder also emits typed `Primitive.targets` (mesh3d ≥ 0.0.3)
+  alongside the existing `__morph_targets` extras sentinel. Typed
+  morph targets take precedence when both are present; the sentinel
+  path stays for round-2 backwards compatibility.
+
 ## [0.0.1](https://github.com/OxideAV/oxideav-gltf/compare/v0.0.0...v0.0.1) - 2026-05-10
 
 ### Other

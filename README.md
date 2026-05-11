@@ -72,9 +72,31 @@ framework but usable standalone.
   (`VertexAttributeColor0Range`). The encoder also keeps TANGENT
   dense regardless of sparse threshold to honour the same TANGENT.w
   constraint
+- Extension-stack consistency validation per spec §3.12 — the decoder
+  rejects documents whose `extensionsRequired` set is not a subset of
+  `extensionsUsed` (`ExtensionStackRequiredNotListed`), and documents
+  that materialise a `KHR_lights_punctual` data block (root or per-node)
+  without declaring the extension in `extensionsUsed`
+  (`ExtensionStackUsedNotDeclared`)
+- Animation channel target-path validation per spec §3.11 — every
+  channel `target.path` must be one of `translation` / `rotation` /
+  `scale` / `weights` (`AnimationChannelPath`); sampler index +
+  `sampler.input` / `sampler.output` accessor indices must resolve
+  (`AnimationChannelSampler` / `AnimationChannelSamplerInput` /
+  `AnimationChannelSamplerOutput`); `weights` channels must target a
+  node bound to a mesh whose primitives declare morph targets
+  (`AnimationChannelWeightsNoMesh` / `AnimationChannelWeightsNoTargets`)
+- Decoder fuzz hardening — two pre-serde caps bound the JSON payload
+  before it reaches the recursive parser. `check_json_byte_length`
+  refuses documents larger than `MAX_JSON_BYTES` (128 MiB) with a
+  `JsonTooLarge` prefix; `check_json_depth` refuses documents nesting
+  deeper than `MAX_JSON_DEPTH` (256 levels) with a `JsonDepthExceeded`
+  prefix. Linear-time scan that respects JSON string + escape syntax
+  so a `[` inside `"..."` doesn't count. Defends against 1000-deep
+  nested-array bombs that crash recursive descent on stack overflow
 - `extras` round-trip on root, scenes, nodes, materials, primitives
 
-## Round 6 (planned)
+## Round 8 (planned)
 
 - KHR_audio_emitter wiring against `oxideav_mesh3d::AudioSource` /
   `AudioEmitter` (blocked on docs/3d/gltf/extensions/ entries)
@@ -82,9 +104,9 @@ framework but usable standalone.
   _emissive_strength, _clearcoat, _sheen, _transmission
   (blocked on docs/3d/gltf/extensions/ entries)
 - KHR_texture_transform UV transform on texture references
-- Migrate morph targets to typed `Primitive.targets` field once
-  `oxideav-mesh3d` 0.0.3+ ships (currently uses the
-  `__morph_targets` extras sentinel)
+- KHR_mesh_quantization int8/int16 quantised POSITION / NORMAL /
+  TANGENT / TEXCOORD (blocked on docs/3d/gltf/extensions/ entries —
+  need the extension schema + dequantisation table)
 
 ## Installation
 

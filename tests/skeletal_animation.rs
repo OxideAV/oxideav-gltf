@@ -9,8 +9,8 @@
 use oxideav_gltf::{GltfDecoder, GltfEncoder};
 use oxideav_mesh3d::{
     Animation, AnimationChannel, AnimationProperty, AnimationSampler, AnimationTarget,
-    AnimationValues, Interpolation, Mesh, Mesh3DDecoder, Mesh3DEncoder, Node, NodeId, Primitive,
-    Scene3D, Skeleton, Skin, Topology, Transform,
+    AnimationValues, Interpolation, Mesh, Mesh3DDecoder, Mesh3DEncoder, MorphTarget, Node, NodeId,
+    Primitive, Scene3D, Skeleton, Skin, Topology, Transform,
 };
 
 /// Build a minimal rigged scene: one mesh node, two joint nodes, two
@@ -221,6 +221,19 @@ fn morph_weights_channel_roundtrip() {
     let mut scene = Scene3D::new();
     let mut prim = Primitive::new(Topology::Triangles);
     prim.positions = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+    // r7: a `weights` animation channel requires the mesh to declare
+    // morph targets (spec §3.11). Two zero-delta POSITION targets
+    // match the 2-weight-per-keyframe stride below.
+    prim.targets.push(MorphTarget {
+        position: Some(vec![[0.0, 0.0, 0.0]; 3]),
+        normal: None,
+        tangent: None,
+    });
+    prim.targets.push(MorphTarget {
+        position: Some(vec![[0.0, 0.0, 0.0]; 3]),
+        normal: None,
+        tangent: None,
+    });
     let mut mesh = Mesh::new(Some("morphy".to_owned()));
     mesh.primitives.push(prim);
     let mid = scene.add_mesh(mesh);

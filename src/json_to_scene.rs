@@ -34,8 +34,8 @@ use crate::asset_source::BufferViewAsset;
 use crate::error::{invalid, unsupported, Error, Result};
 use crate::json_model::{self as gj, GltfRoot};
 use crate::validation::{
-    validate_alignment, validate_attribute_counts, validate_color0_range,
-    validate_index_no_restart, validate_tangent_w,
+    validate_alignment, validate_animation_channels, validate_attribute_counts,
+    validate_color0_range, validate_extension_stack, validate_index_no_restart, validate_tangent_w,
 };
 
 /// Decode a parsed [`GltfRoot`] into a [`Scene3D`], using `glb_bin`
@@ -46,6 +46,19 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
             "gltf: only version 2.0 supported, got {:?}",
             root.asset.version
         )));
+    }
+
+    // Spec §3.12 — extensionsUsed / extensionsRequired stack must be
+    // self-consistent; any extension whose data block appears in the
+    // document MUST be declared in extensionsUsed.
+    validate_extension_stack(root)?;
+
+    // Spec §3.11 — every animation channel must point at a known
+    // path; sampler indices must resolve; "weights" channels must
+    // target a node bound to a mesh with morph targets. Validate
+    // before buffer materialisation so the failure surfaces early.
+    for (i, a) in root.animations.iter().enumerate() {
+        validate_animation_channels(i, a, &root.nodes, &root.meshes, &root.accessors)?;
     }
 
     let buffers = resolve_buffers(root, glb_bin)?;
