@@ -34,19 +34,21 @@ use crate::asset_source::BufferViewAsset;
 use crate::error::{invalid, unsupported, Error, Result};
 use crate::json_model::{self as gj, GltfRoot};
 use crate::validation::{
-    validate_alignment, validate_animation_channels, validate_attribute_counts,
-    validate_color0_range, validate_extension_stack, validate_index_no_restart, validate_tangent_w,
+    check_asset_version, validate_alignment, validate_animation_channels,
+    validate_attribute_counts, validate_color0_range, validate_extension_stack,
+    validate_index_no_restart, validate_tangent_w,
 };
 
 /// Decode a parsed [`GltfRoot`] into a [`Scene3D`], using `glb_bin`
 /// (when present) as the backing buffer for buffers with no URI.
 pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
-    if root.asset.version != "2.0" {
-        return Err(unsupported(format!(
-            "gltf: only version 2.0 supported, got {:?}",
-            root.asset.version
-        )));
-    }
+    // Spec §3.2 + §5.9 — asset.version MUST follow <major>.<minor>;
+    // asset.minVersion (when present) MUST NOT exceed asset.version and
+    // MUST be within an edition this decoder implements. Round 8
+    // replaces the old `version == "2.0"` exact-string check that
+    // wrongly rejected forward-compatible 2.1 assets that only used 2.0
+    // features.
+    check_asset_version(&root.asset)?;
 
     // Spec §3.12 — extensionsUsed / extensionsRequired stack must be
     // self-consistent; any extension whose data block appears in the

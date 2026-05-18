@@ -53,12 +53,25 @@
 //!   1000-deep-array inputs that would otherwise crash the recursive
 //!   serde_json parser on stack overflow.
 //!
+//! Asset version (round 8):
+//!
+//! * §3.2 + §5.9.3 — `asset.version` MUST match the
+//!   `<major>.<minor>` pattern (JSON schema `^[0-9]+\.[0-9]+$`); this
+//!   decoder additionally accepts only `major == 2` because the only
+//!   spec edition we implement is 2.x.
+//! * §3.2 + §5.9.4 — `asset.minVersion`, when present, MUST also match
+//!   the `<major>.<minor>` pattern, MUST NOT be greater than
+//!   `asset.version` (a spec MUST), and MUST be `≤ 2.0` because that's
+//!   the highest 2.x edition the spec has defined; anything larger
+//!   means the asset author requires features this decoder cannot
+//!   guarantee.
+//!
 //! All failures surface as `Error::InvalidData` with a stable
 //! `VertexAttribute…` / `ExtensionStack…` / `AnimationChannel…` /
-//! `JsonDepthExceeded` / `JsonTooLarge` prefix so callers can grep for
-//! the specific sub-rule without reaching for a typed enum (the shared
-//! `oxideav_core::Error` enum can't gain a new variant from a sibling
-//! crate).
+//! `JsonDepthExceeded` / `JsonTooLarge` / `AssetVersion…` prefix so
+//! callers can grep for the specific sub-rule without reaching for a
+//! typed enum (the shared `oxideav_core::Error` enum can't gain a new
+//! variant from a sibling crate).
 
 use crate::error::{invalid, Result};
 use crate::json_model::{
@@ -460,12 +473,130 @@ pub fn validate_animation_channels(
     Ok(())
 }
 
+/// Highest 2.x edition of the glTF spec this decoder implements.
+///
+/// `asset.version` carries the *target* version of the asset (the
+/// version the asset author wrote against); `asset.minVersion`, when
+/// present, carries the *minimum* version a client implementation MUST
+/// support to load the asset (spec §3.2). Both are compared against
+/// this constant so we reject 2.1 / 2.5 / 3.0 assets even when the
+/// schema pattern matches.
+const MAX_SUPPORTED_MAJOR: u32 = 2;
+const MAX_SUPPORTED_MINOR: u32 = 0;
+
+/// Parse a glTF `<major>.<minor>` version string into `(major, minor)`.
+///
+/// Returns `Err` when the input does not match the JSON-schema pattern
+/// `^[0-9]+\.[0-9]+$` (one or more ASCII digits, a single dot, one or
+/// more ASCII digits). The error message is opaque so the caller can
+/// wrap it with a per-field prefix (`AssetVersionFormat` vs
+/// `AssetMinVersionFormat`).
+fn parse_version(s: &str) -> std::result::Result<(u32, u32), &'static str> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    // major: one or more ASCII digits
+    let major_start = i;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == major_start {
+        return Err("missing major");
+    }
+    if i >= bytes.len() || bytes[i] != b'.' {
+        return Err("missing dot");
+    }
+    let dot = i;
+    i += 1;
+    let minor_start = i;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == minor_start {
+        return Err("missing minor");
+    }
+    if i != bytes.len() {
+        return Err("trailing characters");
+    }
+    let major: u32 = s[..dot].parse().map_err(|_| "major overflow")?;
+    let minor: u32 = s[dot + 1..].parse().map_err(|_| "minor overflow")?;
+    Ok((major, minor))
+}
+
+/// Spec §3.2 + §5.9.3 / §5.9.4: validate `asset.version` and
+/// `asset.minVersion` against the schema pattern and the highest
+/// version this decoder implements.
+///
+/// Stable error prefixes (all `Error::InvalidData`):
+///
+/// * `AssetVersionFormat` — `asset.version` does not match
+///   `<major>.<minor>`.
+/// * `AssetVersionUnsupported` — `asset.version` major.minor exceeds
+///   the highest 2.x edition we implement.
+/// * `AssetMinVersionFormat` — `asset.minVersion` does not match
+///   `<major>.<minor>`.
+/// * `AssetMinVersionGreaterThanVersion` — `asset.minVersion >
+///   asset.version` (spec MUST: §5.9.4).
+/// * `AssetMinVersionUnsupported` — `asset.minVersion` exceeds the
+///   highest edition this decoder can guarantee.
+///
+/// `asset.version` major is checked rather than compared exact-string
+/// against `"2.0"`: a forward-compatible 2.1 asset that only uses 2.0
+/// features still loads, matching the spec's own guidance in §3.2
+/// ("clients should check the version property and ensure the major
+/// version is supported").
+pub fn check_asset_version(asset: &crate::json_model::Asset) -> Result<()> {
+    let (av_major, av_minor) = parse_version(&asset.version).map_err(|why| {
+        invalid(format!(
+            "AssetVersionFormat: asset.version = {:?} does not match \
+             <major>.<minor> ({why}, spec §5.9.3)",
+            asset.version
+        ))
+    })?;
+    if av_major != MAX_SUPPORTED_MAJOR {
+        return Err(invalid(format!(
+            "AssetVersionUnsupported: asset.version = {:?} — only major \
+             {MAX_SUPPORTED_MAJOR} (glTF 2.x) is supported (spec §5.9.3)",
+            asset.version
+        )));
+    }
+    // 2.x is forward-compatible *enough* that we accept the minor freely
+    // for asset.version. minVersion is where the hard upper-bound lives.
+
+    if let Some(min_v) = asset.min_version.as_ref() {
+        let (mv_major, mv_minor) = parse_version(min_v).map_err(|why| {
+            invalid(format!(
+                "AssetMinVersionFormat: asset.minVersion = {min_v:?} does not match \
+                 <major>.<minor> ({why}, spec §5.9.4)"
+            ))
+        })?;
+        // Spec §5.9.4 (MUST): minVersion <= version.
+        if (mv_major, mv_minor) > (av_major, av_minor) {
+            return Err(invalid(format!(
+                "AssetMinVersionGreaterThanVersion: asset.minVersion = {min_v:?} > \
+                 asset.version = {:?} (spec §5.9.4: minVersion MUST NOT be greater \
+                 than version)",
+                asset.version
+            )));
+        }
+        // This decoder only implements up to 2.0; reject anything beyond.
+        if (mv_major, mv_minor) > (MAX_SUPPORTED_MAJOR, MAX_SUPPORTED_MINOR) {
+            return Err(invalid(format!(
+                "AssetMinVersionUnsupported: asset.minVersion = {min_v:?} exceeds \
+                 the highest supported edition {MAX_SUPPORTED_MAJOR}.{MAX_SUPPORTED_MINOR} \
+                 (spec §3.2: clients SHOULD NOT load assets whose minVersion they \
+                 cannot guarantee)"
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::json_model::{
         Accessor, AccessorSparse, AccessorSparseIndices, AccessorSparseValues, Animation,
-        AnimationChannel, AnimationChannelTarget, AnimationSampler, BufferView,
+        AnimationChannel, AnimationChannelTarget, AnimationSampler, Asset, BufferView,
         KhrLightsPunctualRoot, Mesh, Node, NodeExtensions, NodeLightRef, Primitive, RootExtensions,
         COMPONENT_TYPE_FLOAT,
     };
@@ -900,6 +1031,87 @@ mod tests {
         let meshes: Vec<Mesh> = vec![];
         let accessors = vec![float_scalar_accessor(2), float_scalar_accessor(2)];
         validate_animation_channels(0, &anim, &nodes, &meshes, &accessors).unwrap();
+    }
+
+    // --- Asset version / minVersion ---------------------------------
+
+    fn asset_with(version: &str, min_version: Option<&str>) -> Asset {
+        Asset {
+            version: version.to_owned(),
+            generator: None,
+            copyright: None,
+            min_version: min_version.map(str::to_owned),
+            extras: None,
+        }
+    }
+
+    #[test]
+    fn asset_version_accepts_2_0() {
+        check_asset_version(&asset_with("2.0", None)).unwrap();
+    }
+
+    #[test]
+    fn asset_version_accepts_2_1_forward() {
+        // Spec §3.2 explicitly allows clients to load a 2.1 asset as
+        // long as it doesn't carry a minVersion forcing 2.1 features.
+        check_asset_version(&asset_with("2.1", None)).unwrap();
+    }
+
+    #[test]
+    fn asset_version_rejects_3_0() {
+        let err = check_asset_version(&asset_with("3.0", None)).unwrap_err();
+        assert!(format!("{err}").contains("AssetVersionUnsupported"));
+    }
+
+    #[test]
+    fn asset_version_rejects_1_0_major_mismatch() {
+        let err = check_asset_version(&asset_with("1.0", None)).unwrap_err();
+        assert!(format!("{err}").contains("AssetVersionUnsupported"));
+    }
+
+    #[test]
+    fn asset_version_rejects_malformed() {
+        for bad in ["", "2", "2.", ".0", "2.0.1", "v2.0", "2.0 ", " 2.0", "a.b"] {
+            let err = check_asset_version(&asset_with(bad, None)).unwrap_err();
+            assert!(
+                format!("{err}").contains("AssetVersionFormat"),
+                "expected AssetVersionFormat for {bad:?}, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn asset_min_version_accepts_when_le_version() {
+        check_asset_version(&asset_with("2.0", Some("2.0"))).unwrap();
+        check_asset_version(&asset_with("2.1", Some("2.0"))).unwrap();
+    }
+
+    #[test]
+    fn asset_min_version_rejects_when_greater_than_version() {
+        // 2.1 > 2.0 — spec §5.9.4 MUST.
+        let err = check_asset_version(&asset_with("2.0", Some("2.1"))).unwrap_err();
+        assert!(format!("{err}").contains("AssetMinVersionGreaterThanVersion"));
+    }
+
+    #[test]
+    fn asset_min_version_rejects_beyond_supported() {
+        // version is 2.5 (we accept any 2.x for version), but minVersion
+        // 2.5 demands 2.5 features we don't implement.
+        let err = check_asset_version(&asset_with("2.5", Some("2.5"))).unwrap_err();
+        assert!(format!("{err}").contains("AssetMinVersionUnsupported"));
+    }
+
+    #[test]
+    fn asset_min_version_rejects_malformed() {
+        let err = check_asset_version(&asset_with("2.0", Some("2"))).unwrap_err();
+        assert!(format!("{err}").contains("AssetMinVersionFormat"));
+    }
+
+    #[test]
+    fn asset_version_parser_accepts_multi_digit() {
+        // No artificial cap on digit count — JSON schema pattern is
+        // `^[0-9]+\.[0-9]+$`. Reject only on the version-policy step.
+        check_asset_version(&asset_with("2.42", None)).unwrap();
     }
 
     // Silence unused-import warnings on `AccessorSparse*`.
