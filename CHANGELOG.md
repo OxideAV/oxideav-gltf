@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.2](https://github.com/OxideAV/oxideav-gltf/compare/v0.0.1...v0.0.2) - 2026-05-20
+
+### Other
+
+- round 8: accessor/bufferView fit + sparse-indices restriction validation
+- Round 75: GLB hardening + JSON-to-scene validation extension
+- Validate extension stack + animation paths; harden JSON parser (r7)
+
 ### Added (round 8)
 
 - Accessor-fit-in-bufferView validation per glTF 2.0 §3.6.2.4 line
