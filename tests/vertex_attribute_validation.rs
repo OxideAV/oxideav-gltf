@@ -95,9 +95,16 @@ fn rejects_misaligned_attribute_byte_offset() {
 #[test]
 fn rejects_misaligned_byte_stride() {
     // Spec §3.6.2.4: bufferView.byteStride for vertex attributes MUST
-    // be a multiple of 4. Use an interleaved POSITION+NORMAL layout
-    // with stride = 13 (bogus) and reject.
-    let (bin, _) = aligned_positions_bin_4();
+    // be a multiple of 4. Build an interleaved layout with stride = 13
+    // (bogus) and a generous bufferView byteLength so the round-8
+    // accessor-fit check (also §3.6.2.4) passes and only the alignment
+    // rule fires.
+    //
+    // Fit math with stride=13, VEC3 float, count=4 needs:
+    //   byteOffset + stride * (count-1) + elementSize
+    //   = 0 + 13*3 + 12 = 51 bytes.
+    // Allocate 64 so fit-check is happy.
+    let bin = vec![0u8; 64];
     let total = bin.len();
     let doc = build_doc(
         &bin,

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 8)
+
+- Accessor-fit-in-bufferView validation per glTF 2.0 §3.6.2.4 line
+  3104. The decoder now applies the spec's bound
+  `accessor.byteOffset + EFFECTIVE_BYTE_STRIDE * (count - 1) +
+  SIZE_OF_COMPONENT * NUMBER_OF_COMPONENTS <= bufferView.byteLength`
+  to every accessor that references a bufferView, covering both
+  tightly-packed and strided layouts. Failures surface as
+  `Error::InvalidData` with stable prefixes:
+  `AccessorFitBufferView` (overrun), `AccessorFitStride` (stride
+  smaller than element), `AccessorFitComponentType` (unknown
+  componentType), `AccessorFitElementType` (unknown `type`),
+  `AccessorFitOverflow` (offset arithmetic overflowed u64).
+- BufferView-fit-in-buffer validation per glTF 2.0 §5.11. The
+  decoder now rejects `bufferView.byteOffset + byteLength >
+  buffer.byteLength` with `BufferViewFitBuffer`, and rejects
+  `bufferView.byteStride` outside the JSON-schema range `[4, 252]`
+  (§5.11.4) with `BufferViewStrideRange`.
+- Sparse-indices bufferView restriction validation per glTF 2.0
+  §5.3.1. The decoder now rejects an `accessor.sparse.indices.bufferView`
+  that carries a `target` (`SparseIndicesBufferViewTarget`) or a
+  `byteStride` (`SparseIndicesBufferViewStride`) property; out-of-range
+  bufferView indices surface as `SparseIndicesBufferViewIndex`.
+
 ### Added (round 7)
 
 - Extension-stack consistency validation per glTF 2.0 §3.12. The

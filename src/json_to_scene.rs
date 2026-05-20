@@ -34,9 +34,10 @@ use crate::asset_source::BufferViewAsset;
 use crate::error::{invalid, unsupported, Error, Result};
 use crate::json_model::{self as gj, GltfRoot};
 use crate::validation::{
-    check_asset_version, validate_alignment, validate_animation_channels,
-    validate_attribute_counts, validate_color0_range, validate_extension_stack,
-    validate_index_no_restart, validate_tangent_w,
+    check_asset_version, validate_accessor_fits_bufferview, validate_alignment,
+    validate_animation_channels, validate_attribute_counts, validate_bufferview_fits_buffer,
+    validate_color0_range, validate_extension_stack, validate_index_no_restart,
+    validate_sparse_indices_buffer_views, validate_tangent_w,
 };
 
 /// Decode a parsed [`GltfRoot`] into a [`Scene3D`], using `glb_bin`
@@ -62,6 +63,23 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
     for (i, a) in root.animations.iter().enumerate() {
         validate_animation_channels(i, a, &root.nodes, &root.meshes, &root.accessors)?;
     }
+
+    // Spec §5.11 — every bufferView MUST fit inside the buffer it
+    // points into; bufferView.byteStride (when defined) MUST be in
+    // [4, 252] per the JSON schema §5.11.4.
+    for (i, bv) in root.buffer_views.iter().enumerate() {
+        validate_bufferview_fits_buffer(i, bv, &root.buffers)?;
+    }
+    // Spec §3.6.2.4 line 3104 — every accessor MUST fit inside the
+    // bufferView it points into (EFFECTIVE_BYTE_STRIDE * (count - 1) +
+    // element size + byteOffset <= bufferView.byteLength). Covers
+    // tightly-packed and strided layouts.
+    for (i, acc) in root.accessors.iter().enumerate() {
+        validate_accessor_fits_bufferview(i, acc, &root.buffer_views)?;
+    }
+    // Spec §5.3.1 — accessor.sparse.indices.bufferView MUST NOT carry
+    // `target` or `byteStride` properties.
+    validate_sparse_indices_buffer_views(&root.accessors, &root.buffer_views)?;
 
     let buffers = resolve_buffers(root, glb_bin)?;
     let mut scene = Scene3D::new();

@@ -94,19 +94,39 @@ framework but usable standalone.
   prefix. Linear-time scan that respects JSON string + escape syntax
   so a `[` inside `"..."` doesn't count. Defends against 1000-deep
   nested-array bombs that crash recursive descent on stack overflow
+- Accessor-fit-in-bufferView per spec §3.6.2.4 line 3104 — the
+  decoder applies the bound `accessor.byteOffset +
+  EFFECTIVE_BYTE_STRIDE * (count - 1) + SIZE_OF_COMPONENT *
+  NUMBER_OF_COMPONENTS <= bufferView.byteLength` to every accessor
+  with a bufferView and rejects overruns with
+  `AccessorFitBufferView` (also covers stride < element size,
+  unknown componentType / type, and u64 overflow in the offset
+  arithmetic)
+- BufferView-fit-in-buffer per spec §5.11 — `bufferView.byteOffset
+  + byteLength > buffer.byteLength` is rejected with
+  `BufferViewFitBuffer`; `bufferView.byteStride` outside the
+  JSON-schema range `[4, 252]` (§5.11.4) is rejected with
+  `BufferViewStrideRange`
+- Sparse-indices bufferView restrictions per spec §5.3.1 — an
+  `accessor.sparse.indices.bufferView` that carries `target` or
+  `byteStride` is rejected with `SparseIndicesBufferViewTarget` /
+  `SparseIndicesBufferViewStride`; out-of-range indices surface as
+  `SparseIndicesBufferViewIndex`
 - `extras` round-trip on root, scenes, nodes, materials, primitives
 
-## Round 8 (planned)
+## Spec-staging gaps (next-round work)
 
 - KHR_audio_emitter wiring against `oxideav_mesh3d::AudioSource` /
-  `AudioEmitter` (blocked on docs/3d/gltf/extensions/ entries)
+  `AudioEmitter` — blocked on `docs/3d/gltf/extensions/` (only the
+  core 2.0 spec is mirrored today; the KHR registry isn't)
 - Material PBR-extension surfaces: KHR_materials_ior,
-  _emissive_strength, _clearcoat, _sheen, _transmission
-  (blocked on docs/3d/gltf/extensions/ entries)
-- KHR_texture_transform UV transform on texture references
+  _emissive_strength, _clearcoat, _sheen, _transmission — same gap
+- KHR_texture_transform UV transform on texture references — the
+  core 2.0 spec mentions the extension by name in §3.12 but the
+  full extension prose is not staged
 - KHR_mesh_quantization int8/int16 quantised POSITION / NORMAL /
-  TANGENT / TEXCOORD (blocked on docs/3d/gltf/extensions/ entries —
-  need the extension schema + dequantisation table)
+  TANGENT / TEXCOORD — same gap (needs extension schema +
+  dequantisation table)
 
 ## Installation
 

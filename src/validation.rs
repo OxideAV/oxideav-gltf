@@ -66,17 +66,37 @@
 //!   means the asset author requires features this decoder cannot
 //!   guarantee.
 //!
+//! Buffer / bufferView fit (round 8):
+//!
+//! * §3.6.2.4 + §5.1 — every accessor MUST fit inside the bufferView
+//!   that backs it: `accessor.byteOffset + EFFECTIVE_BYTE_STRIDE *
+//!   (accessor.count - 1) + SIZE_OF_COMPONENT * NUMBER_OF_COMPONENTS
+//!   <= bufferView.byteLength` (spec line 3104). The validator covers
+//!   both tightly-packed (effective stride = element size) and
+//!   strided (`bufferView.byteStride`) layouts.
+//! * §5.11 — every bufferView MUST fit inside the buffer it points
+//!   into: `bufferView.byteOffset + bufferView.byteLength <=
+//!   buffer.byteLength`.
+//! * §5.11.4 — `bufferView.byteStride`, when defined, MUST satisfy
+//!   the JSON-schema range `[4, 252]`.
+//! * §5.3.1 — `accessor.sparse.indices.bufferView` MUST NOT carry a
+//!   `target` or `byteStride` property (the sparse-indices buffer view
+//!   is a tightly-packed index array; a stride or target hint would be
+//!   semantically nonsensical).
+//!
 //! All failures surface as `Error::InvalidData` with a stable
 //! `VertexAttribute…` / `ExtensionStack…` / `AnimationChannel…` /
-//! `JsonDepthExceeded` / `JsonTooLarge` / `AssetVersion…` prefix so
-//! callers can grep for the specific sub-rule without reaching for a
-//! typed enum (the shared `oxideav_core::Error` enum can't gain a new
-//! variant from a sibling crate).
+//! `JsonDepthExceeded` / `JsonTooLarge` / `AssetVersion…` /
+//! `AccessorFit…` / `BufferViewFit…` / `BufferViewStride…` /
+//! `SparseIndicesBufferView…` prefix so callers can grep for the
+//! specific sub-rule without reaching for a typed enum (the shared
+//! `oxideav_core::Error` enum can't gain a new variant from a sibling
+//! crate).
 
 use crate::error::{invalid, Result};
 use crate::json_model::{
-    component_size, Accessor, Animation, BufferView, GltfRoot, Mesh, COMPONENT_TYPE_UNSIGNED_BYTE,
-    COMPONENT_TYPE_UNSIGNED_INT, COMPONENT_TYPE_UNSIGNED_SHORT,
+    component_size, type_components, Accessor, Animation, Buffer, BufferView, GltfRoot, Mesh,
+    COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_INT, COMPONENT_TYPE_UNSIGNED_SHORT,
 };
 use std::collections::HashMap;
 
@@ -591,12 +611,198 @@ pub fn check_asset_version(asset: &crate::json_model::Asset) -> Result<()> {
     Ok(())
 }
 
+/// Spec §3.6.2.4 + §5.1: every accessor MUST fit inside the bufferView
+/// that backs it. The fit expression from line 3104 of the 2.0 spec is
+///
+/// ```text
+/// accessor.byteOffset
+///     + EFFECTIVE_BYTE_STRIDE * (accessor.count - 1)
+///     + SIZE_OF_COMPONENT * NUMBER_OF_COMPONENTS
+///     <= bufferView.byteLength
+/// ```
+///
+/// where `EFFECTIVE_BYTE_STRIDE` is `bufferView.byteStride` when defined,
+/// else `SIZE_OF_COMPONENT * NUMBER_OF_COMPONENTS` (tightly packed).
+///
+/// The bufferView's own `byteOffset` cancels out of this check because
+/// the bound is against `bufferView.byteLength`; bufferView fit inside
+/// its backing buffer is the separate `validate_bufferview_fits_buffer`
+/// check.
+///
+/// Accessors with no `bufferView` (pure-sparse base-zero accessors) are
+/// skipped — the spec only requires fit when a bufferView is referenced.
+/// Accessor `count == 0` is also skipped (no data to fit).
+pub fn validate_accessor_fits_bufferview(
+    accessor_idx: usize,
+    accessor: &Accessor,
+    buffer_views: &[BufferView],
+) -> Result<()> {
+    let Some(bv_idx) = accessor.buffer_view else {
+        return Ok(());
+    };
+    if accessor.count == 0 {
+        return Ok(());
+    }
+    let bv = buffer_views.get(bv_idx as usize).ok_or_else(|| {
+        invalid(format!(
+            "AccessorFitBufferView: accessors[{accessor_idx}].bufferView = {bv_idx} \
+             out of range (have {} buffer views, spec §3.6.2.4)",
+            buffer_views.len()
+        ))
+    })?;
+    let csize = component_size(accessor.component_type).ok_or_else(|| {
+        invalid(format!(
+            "AccessorFitComponentType: accessors[{accessor_idx}].componentType = {} \
+             unknown (spec §3.6.2.2 enumerates 5120/5121/5122/5123/5125/5126)",
+            accessor.component_type
+        ))
+    })?;
+    let components = type_components(&accessor.kind).ok_or_else(|| {
+        invalid(format!(
+            "AccessorFitElementType: accessors[{accessor_idx}].type = {:?} \
+             unknown (spec §3.6.2.2 enumerates SCALAR/VEC2/VEC3/VEC4/MAT2/MAT3/MAT4)",
+            accessor.kind
+        ))
+    })?;
+    let element_size = (csize as u64) * (components as u64);
+    let effective_stride: u64 = bv.byte_stride.map(u64::from).unwrap_or(element_size);
+    if effective_stride < element_size {
+        return Err(invalid(format!(
+            "AccessorFitStride: accessors[{accessor_idx}] -> bufferViews[{bv_idx}] \
+             byteStride {effective_stride} < element size {element_size} \
+             (spec §3.6.2.4: stride MUST fit the element)"
+        )));
+    }
+    let acc_off = accessor.byte_offset.unwrap_or(0) as u64;
+    let last_element_start = effective_stride
+        .checked_mul(accessor.count as u64 - 1)
+        .and_then(|v| v.checked_add(acc_off))
+        .ok_or_else(|| {
+            invalid(format!(
+                "AccessorFitOverflow: accessors[{accessor_idx}].byteOffset + stride * (count-1) \
+                 overflowed u64 (spec §3.6.2.4)"
+            ))
+        })?;
+    let end = last_element_start
+        .checked_add(element_size)
+        .ok_or_else(|| {
+            invalid(format!(
+                "AccessorFitOverflow: accessors[{accessor_idx}] element-end offset overflowed u64 \
+             (spec §3.6.2.4)"
+            ))
+        })?;
+    let bv_len = bv.byte_length as u64;
+    if end > bv_len {
+        return Err(invalid(format!(
+            "AccessorFitBufferView: accessors[{accessor_idx}] needs {end} bytes inside \
+             bufferViews[{bv_idx}] (byteLength {bv_len}) — \
+             byteOffset {acc_off} + stride {effective_stride} * (count {} - 1) + \
+             elementSize {element_size} (spec §3.6.2.4 line 3104)",
+            accessor.count
+        )));
+    }
+    Ok(())
+}
+
+/// Spec §5.11: every bufferView MUST fit inside the buffer it points
+/// into. The check is
+///
+/// ```text
+/// bufferView.byteOffset + bufferView.byteLength <= buffer.byteLength
+/// ```
+///
+/// plus the JSON-schema range `[4, 252]` for `byteStride` from §5.11.4
+/// (the schema also limits stride to `[4, 252]`; values outside that
+/// window are violations even when no accessor references them).
+pub fn validate_bufferview_fits_buffer(
+    bv_idx: usize,
+    bv: &BufferView,
+    buffers: &[Buffer],
+) -> Result<()> {
+    let buf = buffers.get(bv.buffer as usize).ok_or_else(|| {
+        invalid(format!(
+            "BufferViewFitBuffer: bufferViews[{bv_idx}].buffer = {} out of range \
+             (have {} buffers, spec §5.11.1)",
+            bv.buffer,
+            buffers.len()
+        ))
+    })?;
+    let off = bv.byte_offset.unwrap_or(0) as u64;
+    let len = bv.byte_length as u64;
+    let end = off.checked_add(len).ok_or_else(|| {
+        invalid(format!(
+            "BufferViewFitOverflow: bufferViews[{bv_idx}].byteOffset + byteLength overflowed u64 \
+             (spec §5.11)"
+        ))
+    })?;
+    let buf_len = buf.byte_length as u64;
+    if end > buf_len {
+        return Err(invalid(format!(
+            "BufferViewFitBuffer: bufferViews[{bv_idx}] spans bytes [{off}, {end}) \
+             but buffers[{}] is only {buf_len} bytes long (spec §5.11)",
+            bv.buffer
+        )));
+    }
+    if let Some(stride) = bv.byte_stride {
+        if !(4..=252).contains(&stride) {
+            return Err(invalid(format!(
+                "BufferViewStrideRange: bufferViews[{bv_idx}].byteStride = {stride} \
+                 outside JSON-schema range [4, 252] (spec §5.11.4)"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Spec §5.3.1: an `accessor.sparse.indices.bufferView` MUST NOT carry a
+/// `target` or `byteStride` property. The sparse-indices array is always
+/// tightly packed and not a vertex-attribute / element-array buffer view
+/// in the GPU-pipeline sense, so any such hint is a spec violation.
+///
+/// We walk every accessor's sparse block (when present) and check the
+/// referenced bufferView. Out-of-range `bufferView` indices are reported
+/// with `SparseIndicesBufferViewIndex`; the byteOffset alignment rule
+/// from the same paragraph reuses `validate_alignment` upstream.
+pub fn validate_sparse_indices_buffer_views(
+    accessors: &[Accessor],
+    buffer_views: &[BufferView],
+) -> Result<()> {
+    for (ai, acc) in accessors.iter().enumerate() {
+        let Some(sparse) = acc.sparse.as_ref() else {
+            continue;
+        };
+        let bv_idx = sparse.indices.buffer_view as usize;
+        let bv = buffer_views.get(bv_idx).ok_or_else(|| {
+            invalid(format!(
+                "SparseIndicesBufferViewIndex: accessors[{ai}].sparse.indices.bufferView \
+                 = {bv_idx} out of range (have {} buffer views, spec §5.3.1)",
+                buffer_views.len()
+            ))
+        })?;
+        if bv.target.is_some() {
+            return Err(invalid(format!(
+                "SparseIndicesBufferViewTarget: accessors[{ai}].sparse.indices.bufferView \
+                 -> bufferViews[{bv_idx}].target = {:?} — MUST NOT be defined (spec §5.3.1)",
+                bv.target
+            )));
+        }
+        if bv.byte_stride.is_some() {
+            return Err(invalid(format!(
+                "SparseIndicesBufferViewStride: accessors[{ai}].sparse.indices.bufferView \
+                 -> bufferViews[{bv_idx}].byteStride = {:?} — MUST NOT be defined (spec §5.3.1)",
+                bv.byte_stride
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::json_model::{
         Accessor, AccessorSparse, AccessorSparseIndices, AccessorSparseValues, Animation,
-        AnimationChannel, AnimationChannelTarget, AnimationSampler, Asset, BufferView,
+        AnimationChannel, AnimationChannelTarget, AnimationSampler, Asset, Buffer, BufferView,
         KhrLightsPunctualRoot, Mesh, Node, NodeExtensions, NodeLightRef, Primitive, RootExtensions,
         COMPONENT_TYPE_FLOAT,
     };
@@ -1129,5 +1335,290 @@ mod tests {
                 byte_offset: None,
             },
         };
+    }
+
+    // --- Accessor fit in bufferView (round 8) -----------------------
+
+    fn bv(byte_length: u32) -> BufferView {
+        BufferView {
+            buffer: 0,
+            byte_offset: Some(0),
+            byte_length,
+            byte_stride: None,
+            target: None,
+            name: None,
+        }
+    }
+
+    fn bv_strided(byte_length: u32, stride: u32) -> BufferView {
+        BufferView {
+            buffer: 0,
+            byte_offset: Some(0),
+            byte_length,
+            byte_stride: Some(stride),
+            target: None,
+            name: None,
+        }
+    }
+
+    #[test]
+    fn accessor_fit_accepts_tight_pack() {
+        // 3 VEC3 floats = 3 * 12 = 36 bytes.
+        let acc = vec3_float_accessor(0, 3, 0);
+        let bvs = vec![bv(36)];
+        validate_accessor_fits_bufferview(0, &acc, &bvs).unwrap();
+    }
+
+    #[test]
+    fn accessor_fit_rejects_overflow_tight_pack() {
+        // 3 VEC3 floats = 36 bytes; bufferView has only 35.
+        let acc = vec3_float_accessor(0, 3, 0);
+        let bvs = vec![bv(35)];
+        let err = validate_accessor_fits_bufferview(0, &acc, &bvs).unwrap_err();
+        assert!(format!("{err}").contains("AccessorFitBufferView"));
+    }
+
+    #[test]
+    fn accessor_fit_accepts_strided() {
+        // stride 16, 3 VEC3 floats: last_element_start = 0 + 16*2 = 32,
+        // end = 32 + 12 = 44. Need bufferView >= 44.
+        let acc = vec3_float_accessor(0, 3, 0);
+        let bvs = vec![bv_strided(44, 16)];
+        validate_accessor_fits_bufferview(0, &acc, &bvs).unwrap();
+    }
+
+    #[test]
+    fn accessor_fit_rejects_strided_short_by_one() {
+        let acc = vec3_float_accessor(0, 3, 0);
+        let bvs = vec![bv_strided(43, 16)];
+        let err = validate_accessor_fits_bufferview(0, &acc, &bvs).unwrap_err();
+        assert!(format!("{err}").contains("AccessorFitBufferView"));
+    }
+
+    #[test]
+    fn accessor_fit_rejects_stride_smaller_than_element() {
+        // VEC3 float = 12 bytes; stride 8 is smaller than element.
+        // (validate_alignment + JSON-schema range catch this too; the
+        // fit check independently flags it for callers that don't run
+        // the alignment validator first.)
+        let acc = vec3_float_accessor(0, 3, 0);
+        let bvs = vec![bv_strided(64, 8)];
+        let err = validate_accessor_fits_bufferview(0, &acc, &bvs).unwrap_err();
+        assert!(format!("{err}").contains("AccessorFitStride"));
+    }
+
+    #[test]
+    fn accessor_fit_skips_when_no_bufferview() {
+        // Pure-zero / sparse-only accessor: no bufferView, nothing to
+        // fit-check (the spec's MUST is conditional on the reference).
+        let mut acc = vec3_float_accessor(0, 3, 0);
+        acc.buffer_view = None;
+        // Empty bv list: still OK because we skip.
+        validate_accessor_fits_bufferview(0, &acc, &[]).unwrap();
+    }
+
+    #[test]
+    fn accessor_fit_skips_when_count_zero() {
+        // Pathological but allowed by §3.6.2; nothing to bound.
+        let acc = vec3_float_accessor(0, 0, 0);
+        let bvs = vec![bv(0)];
+        validate_accessor_fits_bufferview(0, &acc, &bvs).unwrap();
+    }
+
+    #[test]
+    fn accessor_fit_rejects_with_byte_offset() {
+        // 1 VEC3 float at byteOffset 24 in a 32-byte bufferView would
+        // need 24 + 12 = 36 bytes; only 32 available.
+        let acc = vec3_float_accessor(24, 1, 0);
+        let bvs = vec![bv(32)];
+        let err = validate_accessor_fits_bufferview(0, &acc, &bvs).unwrap_err();
+        assert!(format!("{err}").contains("AccessorFitBufferView"));
+    }
+
+    #[test]
+    fn accessor_fit_rejects_unknown_component_type() {
+        let mut acc = vec3_float_accessor(0, 3, 0);
+        acc.component_type = 9999;
+        let bvs = vec![bv(64)];
+        let err = validate_accessor_fits_bufferview(0, &acc, &bvs).unwrap_err();
+        assert!(format!("{err}").contains("AccessorFitComponentType"));
+    }
+
+    #[test]
+    fn accessor_fit_rejects_unknown_element_type() {
+        let mut acc = vec3_float_accessor(0, 3, 0);
+        acc.kind = "VECTOR_OF_QUATERNIONS".into();
+        let bvs = vec![bv(64)];
+        let err = validate_accessor_fits_bufferview(0, &acc, &bvs).unwrap_err();
+        assert!(format!("{err}").contains("AccessorFitElementType"));
+    }
+
+    #[test]
+    fn accessor_fit_rejects_out_of_range_bufferview() {
+        let acc = vec3_float_accessor(0, 3, 99);
+        let err = validate_accessor_fits_bufferview(0, &acc, &[]).unwrap_err();
+        assert!(format!("{err}").contains("AccessorFitBufferView"));
+    }
+
+    // --- BufferView fit in buffer (round 8) -------------------------
+
+    fn buffer_of(byte_length: u32) -> Buffer {
+        Buffer {
+            byte_length,
+            uri: None,
+            name: None,
+        }
+    }
+
+    #[test]
+    fn bufferview_fit_accepts_exact() {
+        let bv = BufferView {
+            buffer: 0,
+            byte_offset: Some(100),
+            byte_length: 200,
+            byte_stride: None,
+            target: None,
+            name: None,
+        };
+        validate_bufferview_fits_buffer(0, &bv, &[buffer_of(300)]).unwrap();
+    }
+
+    #[test]
+    fn bufferview_fit_rejects_overrun() {
+        let bv = BufferView {
+            buffer: 0,
+            byte_offset: Some(100),
+            byte_length: 250,
+            byte_stride: None,
+            target: None,
+            name: None,
+        };
+        let err = validate_bufferview_fits_buffer(0, &bv, &[buffer_of(300)]).unwrap_err();
+        assert!(format!("{err}").contains("BufferViewFitBuffer"));
+    }
+
+    #[test]
+    fn bufferview_fit_rejects_out_of_range_buffer() {
+        let bv = BufferView {
+            buffer: 7,
+            byte_offset: Some(0),
+            byte_length: 8,
+            byte_stride: None,
+            target: None,
+            name: None,
+        };
+        let err = validate_bufferview_fits_buffer(0, &bv, &[buffer_of(300)]).unwrap_err();
+        assert!(format!("{err}").contains("BufferViewFitBuffer"));
+    }
+
+    #[test]
+    fn bufferview_stride_rejects_too_small() {
+        let bv = BufferView {
+            buffer: 0,
+            byte_offset: Some(0),
+            byte_length: 64,
+            byte_stride: Some(2),
+            target: None,
+            name: None,
+        };
+        let err = validate_bufferview_fits_buffer(0, &bv, &[buffer_of(64)]).unwrap_err();
+        assert!(format!("{err}").contains("BufferViewStrideRange"));
+    }
+
+    #[test]
+    fn bufferview_stride_rejects_too_large() {
+        let bv = BufferView {
+            buffer: 0,
+            byte_offset: Some(0),
+            byte_length: 256,
+            byte_stride: Some(256),
+            target: None,
+            name: None,
+        };
+        let err = validate_bufferview_fits_buffer(0, &bv, &[buffer_of(256)]).unwrap_err();
+        assert!(format!("{err}").contains("BufferViewStrideRange"));
+    }
+
+    #[test]
+    fn bufferview_stride_accepts_boundary() {
+        // 4 and 252 are the inclusive endpoints from §5.11.4.
+        for s in [4u32, 16, 252] {
+            let bv = BufferView {
+                buffer: 0,
+                byte_offset: Some(0),
+                byte_length: 1024,
+                byte_stride: Some(s),
+                target: None,
+                name: None,
+            };
+            validate_bufferview_fits_buffer(0, &bv, &[buffer_of(1024)]).unwrap();
+        }
+    }
+
+    // --- Sparse-indices bufferView restrictions (round 8) -----------
+
+    fn sparse_acc(indices_bv: u32) -> Accessor {
+        Accessor {
+            buffer_view: None,
+            byte_offset: None,
+            component_type: COMPONENT_TYPE_FLOAT,
+            count: 4,
+            kind: "VEC3".into(),
+            normalized: false,
+            min: None,
+            max: None,
+            name: None,
+            sparse: Some(AccessorSparse {
+                count: 2,
+                indices: AccessorSparseIndices {
+                    buffer_view: indices_bv,
+                    byte_offset: None,
+                    component_type: COMPONENT_TYPE_UNSIGNED_BYTE,
+                },
+                values: AccessorSparseValues {
+                    buffer_view: 0,
+                    byte_offset: None,
+                },
+            }),
+        }
+    }
+
+    #[test]
+    fn sparse_indices_bv_accepts_plain() {
+        let accs = vec![sparse_acc(0)];
+        let bvs = vec![bv(64)];
+        validate_sparse_indices_buffer_views(&accs, &bvs).unwrap();
+    }
+
+    #[test]
+    fn sparse_indices_bv_rejects_target() {
+        let accs = vec![sparse_acc(0)];
+        let mut bvs = vec![bv(64)];
+        bvs[0].target = Some(34962);
+        let err = validate_sparse_indices_buffer_views(&accs, &bvs).unwrap_err();
+        assert!(format!("{err}").contains("SparseIndicesBufferViewTarget"));
+    }
+
+    #[test]
+    fn sparse_indices_bv_rejects_stride() {
+        let accs = vec![sparse_acc(0)];
+        let mut bvs = vec![bv(64)];
+        bvs[0].byte_stride = Some(4);
+        let err = validate_sparse_indices_buffer_views(&accs, &bvs).unwrap_err();
+        assert!(format!("{err}").contains("SparseIndicesBufferViewStride"));
+    }
+
+    #[test]
+    fn sparse_indices_bv_rejects_out_of_range() {
+        let accs = vec![sparse_acc(7)];
+        let bvs = vec![bv(64)];
+        let err = validate_sparse_indices_buffer_views(&accs, &bvs).unwrap_err();
+        assert!(format!("{err}").contains("SparseIndicesBufferViewIndex"));
+    }
+
+    #[test]
+    fn sparse_indices_bv_skips_non_sparse_accessors() {
+        let acc = vec3_float_accessor(0, 3, 0); // no sparse field
+        validate_sparse_indices_buffer_views(&[acc], &[]).unwrap();
     }
 }
