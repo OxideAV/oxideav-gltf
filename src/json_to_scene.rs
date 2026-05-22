@@ -844,6 +844,18 @@ fn convert_material(
         _ => AlphaMode::Opaque,
     };
     mat.double_sided = m.double_sided;
+    // Per-material extensions — currently `KHR_materials_unlit`
+    // (docs/3d/gltf/extensions/KHR_materials_unlit.md). The empty
+    // extension object is a Boolean flag; we surface it through
+    // `Material::extras["KHR_materials_unlit"] = true` so downstream
+    // raster consumers can branch without us having to widen
+    // `oxideav_mesh3d::Material`.
+    if let Some(ext) = &m.extensions {
+        if ext.khr_materials_unlit.is_some() {
+            mat.extras
+                .insert("KHR_materials_unlit".to_owned(), Value::Bool(true));
+        }
+    }
     if let Some(extras) = &m.extras {
         extras_into(&mut mat.extras, extras.clone());
     }

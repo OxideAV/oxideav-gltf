@@ -99,8 +99,24 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     }
 
     // --- materials ---
+    // Track whether any material carries `KHR_materials_unlit` so we
+    // can append the extension to `extensionsUsed` per spec §3.12 +
+    // KHR_materials_unlit.md "Extending Materials".
+    let mut emitted_unlit = false;
     for mat in &scene.materials {
-        root.materials.push(encode_material(mat));
+        let m_json = encode_material(mat);
+        if m_json
+            .extensions
+            .as_ref()
+            .and_then(|e| e.khr_materials_unlit.as_ref())
+            .is_some()
+        {
+            emitted_unlit = true;
+        }
+        root.materials.push(m_json);
+    }
+    if emitted_unlit {
+        root.extensions_used.push("KHR_materials_unlit".to_owned());
     }
 
     // --- textures + images + samplers ---
@@ -689,10 +705,29 @@ fn encode_material(m: &Material) -> gj::Material {
         ),
         AlphaMode::Blend => (Some("BLEND".to_owned()), None),
     };
-    let extras = if m.extras.is_empty() {
+    // Pull the `KHR_materials_unlit` flag out of extras (decoder
+    // parks it there as `Value::Bool(true)`) into the proper
+    // per-material extensions block, so the round-trip lands the
+    // extension object back where it came from rather than as a
+    // surplus `extras` key. Per the KHR_materials_unlit spec the
+    // value is an empty object — anything truthy on our side maps
+    // to an emitted `{}`.
+    let mut effective_extras = m.extras.clone();
+    let unlit_flag = effective_extras
+        .remove("KHR_materials_unlit")
+        .map(|v| v.as_bool().unwrap_or(false))
+        .unwrap_or(false);
+    let extensions = if unlit_flag {
+        Some(gj::MaterialExtensions {
+            khr_materials_unlit: Some(gj::MaterialUnlit {}),
+        })
+    } else {
+        None
+    };
+    let extras = if effective_extras.is_empty() {
         None
     } else {
-        Some(map_to_value(&m.extras))
+        Some(map_to_value(&effective_extras))
     };
     gj::Material {
         pbr_metallic_roughness: Some(pbr),
@@ -711,6 +746,7 @@ fn encode_material(m: &Material) -> gj::Material {
         alpha_cutoff,
         double_sided: m.double_sided,
         name: m.name.clone(),
+        extensions,
         extras,
     }
 }

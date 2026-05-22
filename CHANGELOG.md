@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 93)
+
+- `KHR_materials_unlit` extension (Khronos ratified — see
+  `docs/3d/gltf/extensions/KHR_materials_unlit.md`). Decoder reads
+  `materials[i].extensions.KHR_materials_unlit` and surfaces the flag
+  through `oxideav_mesh3d::Material::extras["KHR_materials_unlit"] =
+  Bool(true)`; encoder lifts the flag back into the JSON extension
+  object (literal `{}`) and appends `KHR_materials_unlit` to
+  `extensionsUsed`. The §3.12 stack validator rejects materials
+  carrying the data block without the declaration with
+  `ExtensionStackUsedNotDeclared`. JSON model gains
+  `MaterialExtensions` + `MaterialUnlit` and a `Material.extensions`
+  field. Tests: 5 integration (`khr_materials_unlit.rs`) + 2 unit
+  (`validation::tests`).
+
 ### Added (round 8)
 
 - Accessor-fit-in-bufferView validation per glTF 2.0 §3.6.2.4 line

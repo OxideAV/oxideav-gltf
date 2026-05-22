@@ -330,6 +330,13 @@ pub struct Material {
     pub double_sided: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Per-material `extensions` block. Today this carries
+    /// `KHR_materials_unlit` (a boolean-flag shading-model selector
+    /// per the KHR_materials_unlit spec — `docs/3d/gltf/extensions/
+    /// KHR_materials_unlit.md`); future per-material KHR extensions
+    /// land here too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<MaterialExtensions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extras: Option<Value>,
 }
@@ -337,6 +344,28 @@ pub struct Material {
 fn is_default_false(b: &bool) -> bool {
     !*b
 }
+
+/// Per-material `extensions` block. Currently models
+/// `KHR_materials_unlit` — an empty-object extension whose presence
+/// (`materials[i].extensions.KHR_materials_unlit = {}`) tells
+/// renderers to skip PBR lighting and emit `baseColor` directly per
+/// the KHR_materials_unlit spec §Extending Materials.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MaterialExtensions {
+    #[serde(
+        rename = "KHR_materials_unlit",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_materials_unlit: Option<MaterialUnlit>,
+}
+
+/// `KHR_materials_unlit` extension object. Per the spec the schema
+/// allows additional properties but no field is defined, so the
+/// presence of the object itself is the signal. We keep the struct
+/// empty for the encoder to emit a literal `{}`.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MaterialUnlit {}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct PbrMetallicRoughness {

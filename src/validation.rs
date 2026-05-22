@@ -31,7 +31,8 @@
 //! * §3.12 — `extensionsRequired` MUST be a subset of `extensionsUsed`.
 //! * §3.12 — every extension whose object lives somewhere in the
 //!   document (root `extensions` / node `extensions`) MUST appear in
-//!   `extensionsUsed`. Today this covers `KHR_lights_punctual`.
+//!   `extensionsUsed`. Today this covers `KHR_lights_punctual` and
+//!   `KHR_materials_unlit`.
 //!
 //! Animation channels (round 7):
 //!
@@ -346,9 +347,9 @@ pub fn validate_color0_range(colors: &[[f32; 4]]) -> Result<()> {
 ///
 /// In addition, any extension whose object actually appears in the
 /// document MUST be declared in `extensionsUsed` — today the decoder
-/// understands `KHR_lights_punctual` at root scope and on nodes; the
-/// check fires when an emitter put the data block in but forgot the
-/// declaration.
+/// understands `KHR_lights_punctual` at root scope and on nodes, plus
+/// `KHR_materials_unlit` on materials; the check fires when an
+/// emitter put the data block in but forgot the declaration.
 pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
     // 1. extensionsRequired ⊆ extensionsUsed.
     for required in &root.extensions_required {
@@ -379,6 +380,24 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         return Err(invalid(
             "ExtensionStackUsedNotDeclared: KHR_lights_punctual data is present \
              but the extension is not listed in extensionsUsed (spec §3.12)",
+        ));
+    }
+
+    // KHR_materials_unlit — per-material extension. Same §3.12 rule:
+    // the extension MUST be declared in `extensionsUsed` if any
+    // material carries the data block. See
+    // `docs/3d/gltf/extensions/KHR_materials_unlit.md`.
+    let has_material_unlit = root.materials.iter().any(|m| {
+        m.extensions
+            .as_ref()
+            .and_then(|e| e.khr_materials_unlit.as_ref())
+            .is_some()
+    });
+    if has_material_unlit && !used("KHR_materials_unlit") {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_materials_unlit data is present \
+             on a material but the extension is not listed in extensionsUsed \
+             (spec §3.12)",
         ));
     }
 
@@ -803,8 +822,8 @@ mod tests {
     use crate::json_model::{
         Accessor, AccessorSparse, AccessorSparseIndices, AccessorSparseValues, Animation,
         AnimationChannel, AnimationChannelTarget, AnimationSampler, Asset, Buffer, BufferView,
-        KhrLightsPunctualRoot, Mesh, Node, NodeExtensions, NodeLightRef, Primitive, RootExtensions,
-        COMPONENT_TYPE_FLOAT,
+        KhrLightsPunctualRoot, Material, MaterialExtensions, MaterialUnlit, Mesh, Node,
+        NodeExtensions, NodeLightRef, Primitive, RootExtensions, COMPONENT_TYPE_FLOAT,
     };
     use std::collections::HashMap;
 
@@ -1074,6 +1093,36 @@ mod tests {
             khr_lights_punctual: Some(KhrLightsPunctualRoot { lights: vec![] }),
         });
         root.extensions_used = vec!["KHR_lights_punctual".into()];
+        validate_extension_stack(&root).unwrap();
+    }
+
+    // KHR_materials_unlit — docs/3d/gltf/extensions/KHR_materials_unlit.md.
+    fn unlit_material() -> Material {
+        Material {
+            extensions: Some(MaterialExtensions {
+                khr_materials_unlit: Some(MaterialUnlit {}),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn extension_stack_rejects_material_unlit_missing_used() {
+        let mut root = empty_root();
+        root.materials.push(unlit_material());
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackUsedNotDeclared") && msg.contains("KHR_materials_unlit"),
+            "expected ExtensionStackUsedNotDeclared for KHR_materials_unlit, got {msg}"
+        );
+    }
+
+    #[test]
+    fn extension_stack_accepts_material_unlit_declared() {
+        let mut root = empty_root();
+        root.materials.push(unlit_material());
+        root.extensions_used = vec!["KHR_materials_unlit".into()];
         validate_extension_stack(&root).unwrap();
     }
 

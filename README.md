@@ -23,6 +23,16 @@ framework but usable standalone.
   narrowest representable
 - Cameras: perspective + orthographic
 - KHR_lights_punctual extension (directional / point / spot)
+- KHR_materials_unlit extension (Khronos ratified) — per-material
+  Boolean shading-model flag from
+  `docs/3d/gltf/extensions/KHR_materials_unlit.md`. The decoder lifts
+  the JSON `materials[i].extensions.KHR_materials_unlit` data block
+  into the typed `oxideav_mesh3d::Material::extras["KHR_materials_unlit"]
+  = Bool(true)` side-channel; the encoder rebuilds the empty `{}`
+  extension object on write and appends `KHR_materials_unlit` to
+  `extensionsUsed`. The §3.12 stack validator rejects materials
+  carrying the data block without the declaration
+  (`ExtensionStackUsedNotDeclared`)
 - Skins + skeletons (joint roster, inverseBindMatrices accessor,
   optional skeleton root) per spec §3.7.3 — `node.skin` round-trips
 - Animations (channels + samplers) per spec §3.11 — translation /
@@ -75,7 +85,8 @@ framework but usable standalone.
 - Extension-stack consistency validation per spec §3.12 — the decoder
   rejects documents whose `extensionsRequired` set is not a subset of
   `extensionsUsed` (`ExtensionStackRequiredNotListed`), and documents
-  that materialise a `KHR_lights_punctual` data block (root or per-node)
+  that materialise a `KHR_lights_punctual` data block (root or
+  per-node) or a `KHR_materials_unlit` data block (per material)
   without declaring the extension in `extensionsUsed`
   (`ExtensionStackUsedNotDeclared`)
 - Animation channel target-path validation per spec §3.11 — every
