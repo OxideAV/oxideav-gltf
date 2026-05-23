@@ -101,10 +101,12 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     // --- materials ---
     // Track which per-material KHR extensions any material carries so we
     // can append each to `extensionsUsed` per spec §3.12 — see
-    // KHR_materials_unlit.md "Extending Materials" and
-    // KHR_materials_emissive_strength.md "Extending Materials".
+    // KHR_materials_unlit.md "Extending Materials",
+    // KHR_materials_emissive_strength.md "Extending Materials", and
+    // KHR_materials_ior.md "Extending Materials".
     let mut emitted_unlit = false;
     let mut emitted_emissive_strength = false;
+    let mut emitted_ior = false;
     for mat in &scene.materials {
         let m_json = encode_material(mat);
         if let Some(ext) = m_json.extensions.as_ref() {
@@ -113,6 +115,9 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
             }
             if ext.khr_materials_emissive_strength.is_some() {
                 emitted_emissive_strength = true;
+            }
+            if ext.khr_materials_ior.is_some() {
+                emitted_ior = true;
             }
         }
         root.materials.push(m_json);
@@ -123,6 +128,9 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     if emitted_emissive_strength {
         root.extensions_used
             .push("KHR_materials_emissive_strength".to_owned());
+    }
+    if emitted_ior {
+        root.extensions_used.push("KHR_materials_ior".to_owned());
     }
 
     // --- textures + images + samplers ---
@@ -732,7 +740,16 @@ fn encode_material(m: &Material) -> gj::Material {
         .remove("KHR_materials_emissive_strength")
         .and_then(|v| v.as_f64())
         .map(|v| v as f32);
-    let extensions = if unlit_flag || emissive_strength.is_some() {
+    // KHR_materials_ior — the decoder parks the scalar in extras as a
+    // JSON number; lift it back into the typed extensions block so the
+    // round-trip emits the spec object rather than a surplus `extras`
+    // key (docs/3d/gltf/extensions/KHR_materials_ior.md §Extending
+    // Materials).
+    let ior = effective_extras
+        .remove("KHR_materials_ior")
+        .and_then(|v| v.as_f64())
+        .map(|v| v as f32);
+    let extensions = if unlit_flag || emissive_strength.is_some() || ior.is_some() {
         Some(gj::MaterialExtensions {
             khr_materials_unlit: if unlit_flag {
                 Some(gj::MaterialUnlit {})
@@ -744,6 +761,7 @@ fn encode_material(m: &Material) -> gj::Material {
                     emissive_strength: Some(s),
                 }
             }),
+            khr_materials_ior: ior.map(|v| gj::MaterialIor { ior: Some(v) }),
         })
     } else {
         None

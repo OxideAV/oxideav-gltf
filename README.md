@@ -45,6 +45,17 @@ framework but usable standalone.
   `extensionsUsed`. The §3.12 stack validator rejects materials
   carrying the data block without the declaration
   (`ExtensionStackUsedNotDeclared`)
+- KHR_materials_ior extension (Khronos ratified) — per-material scalar
+  index of refraction from `docs/3d/gltf/extensions/KHR_materials_ior.md`.
+  The decoder lifts the JSON `materials[i].extensions.KHR_materials_ior.ior`
+  value into the typed `oxideav_mesh3d::Material::extras["KHR_materials_ior"]`
+  side-channel as a JSON number (a bare `{}` object resolves to the spec
+  default of `1.5`; the `ior == 0` specular-glossiness
+  backwards-compatibility sentinel is carried through verbatim); the
+  encoder rebuilds the extension object on write and appends
+  `KHR_materials_ior` to `extensionsUsed`. The §3.12 stack validator
+  rejects materials carrying the data block without the declaration
+  (`ExtensionStackUsedNotDeclared`)
 - Skins + skeletons (joint roster, inverseBindMatrices accessor,
   optional skeleton root) per spec §3.7.3 — `node.skin` round-trips
 - Animations (channels + samplers) per spec §3.11 — translation /
@@ -143,10 +154,10 @@ The KHR extension registry is now staged under
 `docs/3d/gltf/extensions/` (25 specs + index), so the remaining work
 is implementation, not docs:
 
-- Material PBR-extension surfaces: KHR_materials_ior, _clearcoat,
-  _sheen, _transmission, _specular, _volume — scalar/colour factors
-  ready to lift through the same `Material::extras` side-channel the
-  `emissive_strength` scalar uses
+- Material PBR-extension surfaces: KHR_materials_clearcoat, _sheen,
+  _transmission, _specular, _volume — scalar/colour factors ready to
+  lift through the same `Material::extras` side-channel the
+  `emissive_strength` and `ior` scalars use
 - KHR_texture_transform UV transform (offset / rotation / scale) on
   texture references
 - KHR_mesh_quantization int8/int16 quantised POSITION / NORMAL /

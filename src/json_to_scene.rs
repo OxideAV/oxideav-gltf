@@ -871,6 +871,20 @@ fn convert_material(
                 );
             }
         }
+        // KHR_materials_ior — a scalar index of refraction that overrides
+        // the metallic-roughness dielectric BRDF's fixed 1.5 (docs/3d/gltf/
+        // extensions/KHR_materials_ior.md). We surface it through
+        // `Material::extras["KHR_materials_ior"]` as a JSON number rather
+        // than widening `oxideav_mesh3d::Material`. Per the spec the field
+        // is optional with a default of 1.5, so a bare `{}` object resolves
+        // to that default.
+        if let Some(io) = &ext.khr_materials_ior {
+            let ior = io.ior.unwrap_or(1.5);
+            if let Some(n) = serde_json::Number::from_f64(ior as f64) {
+                mat.extras
+                    .insert("KHR_materials_ior".to_owned(), Value::Number(n));
+            }
+        }
     }
     if let Some(extras) = &m.extras {
         extras_into(&mut mat.extras, extras.clone());

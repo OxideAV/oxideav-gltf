@@ -333,10 +333,12 @@ pub struct Material {
     /// Per-material `extensions` block. Today this carries
     /// `KHR_materials_unlit` (a boolean-flag shading-model selector
     /// per the KHR_materials_unlit spec — `docs/3d/gltf/extensions/
-    /// KHR_materials_unlit.md`) and `KHR_materials_emissive_strength`
+    /// KHR_materials_unlit.md`), `KHR_materials_emissive_strength`
     /// (a scalar emissive multiplier — `docs/3d/gltf/extensions/
-    /// KHR_materials_emissive_strength.md`); future per-material KHR
-    /// extensions land here too.
+    /// KHR_materials_emissive_strength.md`), and `KHR_materials_ior`
+    /// (a scalar index of refraction — `docs/3d/gltf/extensions/
+    /// KHR_materials_ior.md`); future per-material KHR extensions
+    /// land here too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extensions: Option<MaterialExtensions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -349,9 +351,11 @@ fn is_default_false(b: &bool) -> bool {
 
 /// Per-material `extensions` block. Models the per-material KHR
 /// extensions the crate understands: `KHR_materials_unlit` (an
-/// empty-object shading-model flag) and `KHR_materials_emissive_strength`
+/// empty-object shading-model flag), `KHR_materials_emissive_strength`
 /// (a scalar emissive multiplier per
-/// `docs/3d/gltf/extensions/KHR_materials_emissive_strength.md`).
+/// `docs/3d/gltf/extensions/KHR_materials_emissive_strength.md`), and
+/// `KHR_materials_ior` (a scalar index of refraction per
+/// `docs/3d/gltf/extensions/KHR_materials_ior.md`).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct MaterialExtensions {
     #[serde(
@@ -366,6 +370,12 @@ pub struct MaterialExtensions {
         skip_serializing_if = "Option::is_none"
     )]
     pub khr_materials_emissive_strength: Option<MaterialEmissiveStrength>,
+    #[serde(
+        rename = "KHR_materials_ior",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_materials_ior: Option<MaterialIor>,
 }
 
 /// `KHR_materials_unlit` extension object. Per the spec the schema
@@ -389,6 +399,18 @@ pub struct MaterialEmissiveStrength {
         skip_serializing_if = "Option::is_none"
     )]
     pub emissive_strength: Option<f32>,
+}
+
+/// `KHR_materials_ior` extension object — a single `ior` scalar that
+/// overrides the metallic-roughness dielectric BRDF's fixed index of
+/// refraction (the core spec hard-codes 1.5). Per the spec the field is
+/// optional with a default of `1.5`; valid values are `>= 1`, with `0`
+/// reserved as the special specular-glossiness backwards-compatibility
+/// sentinel. See `docs/3d/gltf/extensions/KHR_materials_ior.md`.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MaterialIor {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ior: Option<f32>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

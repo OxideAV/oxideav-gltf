@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 102)
+
+- `KHR_materials_ior` extension (Khronos ratified — see
+  `docs/3d/gltf/extensions/KHR_materials_ior.md`). Decoder reads
+  `materials[i].extensions.KHR_materials_ior.ior` and surfaces the
+  scalar through `oxideav_mesh3d::Material::extras["KHR_materials_ior"]`
+  as a JSON number — a bare `{}` extension object resolves to the spec
+  default of `1.5` (§Extending Materials). The `ior == 0`
+  specular-glossiness backwards-compatibility sentinel is carried
+  through verbatim, not coerced. Encoder lifts the value back into the
+  JSON extension object and appends `KHR_materials_ior` to
+  `extensionsUsed`. The §3.12 stack validator rejects materials carrying
+  the data block without the declaration with
+  `ExtensionStackUsedNotDeclared`. JSON model gains `MaterialIor` and a
+  `MaterialExtensions.khr_materials_ior` field. Tests: 7 integration
+  (`khr_materials_ior.rs`) + 2 unit (`validation::tests`).
+
 ### Added (round 98)
 
 - `KHR_materials_emissive_strength` extension (Khronos ratified — see
