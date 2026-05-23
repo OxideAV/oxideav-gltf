@@ -855,6 +855,22 @@ fn convert_material(
             mat.extras
                 .insert("KHR_materials_unlit".to_owned(), Value::Bool(true));
         }
+        // KHR_materials_emissive_strength — a scalar multiplier on the
+        // core emissive value (docs/3d/gltf/extensions/
+        // KHR_materials_emissive_strength.md §Parameters). We surface
+        // it through `Material::extras["KHR_materials_emissive_strength"]`
+        // as a JSON number rather than widening `oxideav_mesh3d::Material`.
+        // Per the spec the field is optional with a default of 1.0, so a
+        // bare `{}` object resolves to that default.
+        if let Some(es) = &ext.khr_materials_emissive_strength {
+            let strength = es.emissive_strength.unwrap_or(1.0);
+            if let Some(n) = serde_json::Number::from_f64(strength as f64) {
+                mat.extras.insert(
+                    "KHR_materials_emissive_strength".to_owned(),
+                    Value::Number(n),
+                );
+            }
+        }
     }
     if let Some(extras) = &m.extras {
         extras_into(&mut mat.extras, extras.clone());

@@ -99,24 +99,30 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     }
 
     // --- materials ---
-    // Track whether any material carries `KHR_materials_unlit` so we
-    // can append the extension to `extensionsUsed` per spec §3.12 +
-    // KHR_materials_unlit.md "Extending Materials".
+    // Track which per-material KHR extensions any material carries so we
+    // can append each to `extensionsUsed` per spec §3.12 — see
+    // KHR_materials_unlit.md "Extending Materials" and
+    // KHR_materials_emissive_strength.md "Extending Materials".
     let mut emitted_unlit = false;
+    let mut emitted_emissive_strength = false;
     for mat in &scene.materials {
         let m_json = encode_material(mat);
-        if m_json
-            .extensions
-            .as_ref()
-            .and_then(|e| e.khr_materials_unlit.as_ref())
-            .is_some()
-        {
-            emitted_unlit = true;
+        if let Some(ext) = m_json.extensions.as_ref() {
+            if ext.khr_materials_unlit.is_some() {
+                emitted_unlit = true;
+            }
+            if ext.khr_materials_emissive_strength.is_some() {
+                emitted_emissive_strength = true;
+            }
         }
         root.materials.push(m_json);
     }
     if emitted_unlit {
         root.extensions_used.push("KHR_materials_unlit".to_owned());
+    }
+    if emitted_emissive_strength {
+        root.extensions_used
+            .push("KHR_materials_emissive_strength".to_owned());
     }
 
     // --- textures + images + samplers ---
@@ -717,9 +723,27 @@ fn encode_material(m: &Material) -> gj::Material {
         .remove("KHR_materials_unlit")
         .map(|v| v.as_bool().unwrap_or(false))
         .unwrap_or(false);
-    let extensions = if unlit_flag {
+    // KHR_materials_emissive_strength — the decoder parks the scalar in
+    // extras as a JSON number; lift it back into the typed extensions
+    // block so the round-trip emits the spec object rather than a
+    // surplus `extras` key (docs/3d/gltf/extensions/
+    // KHR_materials_emissive_strength.md §Parameters).
+    let emissive_strength = effective_extras
+        .remove("KHR_materials_emissive_strength")
+        .and_then(|v| v.as_f64())
+        .map(|v| v as f32);
+    let extensions = if unlit_flag || emissive_strength.is_some() {
         Some(gj::MaterialExtensions {
-            khr_materials_unlit: Some(gj::MaterialUnlit {}),
+            khr_materials_unlit: if unlit_flag {
+                Some(gj::MaterialUnlit {})
+            } else {
+                None
+            },
+            khr_materials_emissive_strength: emissive_strength.map(|s| {
+                gj::MaterialEmissiveStrength {
+                    emissive_strength: Some(s),
+                }
+            }),
         })
     } else {
         None

@@ -333,8 +333,10 @@ pub struct Material {
     /// Per-material `extensions` block. Today this carries
     /// `KHR_materials_unlit` (a boolean-flag shading-model selector
     /// per the KHR_materials_unlit spec — `docs/3d/gltf/extensions/
-    /// KHR_materials_unlit.md`); future per-material KHR extensions
-    /// land here too.
+    /// KHR_materials_unlit.md`) and `KHR_materials_emissive_strength`
+    /// (a scalar emissive multiplier — `docs/3d/gltf/extensions/
+    /// KHR_materials_emissive_strength.md`); future per-material KHR
+    /// extensions land here too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extensions: Option<MaterialExtensions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -345,11 +347,11 @@ fn is_default_false(b: &bool) -> bool {
     !*b
 }
 
-/// Per-material `extensions` block. Currently models
-/// `KHR_materials_unlit` — an empty-object extension whose presence
-/// (`materials[i].extensions.KHR_materials_unlit = {}`) tells
-/// renderers to skip PBR lighting and emit `baseColor` directly per
-/// the KHR_materials_unlit spec §Extending Materials.
+/// Per-material `extensions` block. Models the per-material KHR
+/// extensions the crate understands: `KHR_materials_unlit` (an
+/// empty-object shading-model flag) and `KHR_materials_emissive_strength`
+/// (a scalar emissive multiplier per
+/// `docs/3d/gltf/extensions/KHR_materials_emissive_strength.md`).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct MaterialExtensions {
     #[serde(
@@ -358,6 +360,12 @@ pub struct MaterialExtensions {
         skip_serializing_if = "Option::is_none"
     )]
     pub khr_materials_unlit: Option<MaterialUnlit>,
+    #[serde(
+        rename = "KHR_materials_emissive_strength",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_materials_emissive_strength: Option<MaterialEmissiveStrength>,
 }
 
 /// `KHR_materials_unlit` extension object. Per the spec the schema
@@ -366,6 +374,22 @@ pub struct MaterialExtensions {
 /// empty for the encoder to emit a literal `{}`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct MaterialUnlit {}
+
+/// `KHR_materials_emissive_strength` extension object — a single
+/// `emissiveStrength` scalar that multiplies the core material's
+/// emissive value, allowing emission above the [0,1] clamp for HDR
+/// rendering. Per the spec §Parameters the field is optional with a
+/// default of `1.0`. See
+/// `docs/3d/gltf/extensions/KHR_materials_emissive_strength.md`.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MaterialEmissiveStrength {
+    #[serde(
+        rename = "emissiveStrength",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub emissive_strength: Option<f32>,
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct PbrMetallicRoughness {

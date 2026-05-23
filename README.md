@@ -33,6 +33,18 @@ framework but usable standalone.
   `extensionsUsed`. The §3.12 stack validator rejects materials
   carrying the data block without the declaration
   (`ExtensionStackUsedNotDeclared`)
+- KHR_materials_emissive_strength extension (Khronos ratified) —
+  per-material scalar emissive multiplier from
+  `docs/3d/gltf/extensions/KHR_materials_emissive_strength.md`. The
+  decoder lifts the JSON `materials[i].extensions.KHR_materials_emissive_strength.emissiveStrength`
+  value into the typed
+  `oxideav_mesh3d::Material::extras["KHR_materials_emissive_strength"]`
+  side-channel as a JSON number (a bare `{}` object resolves to the
+  spec default of `1.0`); the encoder rebuilds the extension object on
+  write and appends `KHR_materials_emissive_strength` to
+  `extensionsUsed`. The §3.12 stack validator rejects materials
+  carrying the data block without the declaration
+  (`ExtensionStackUsedNotDeclared`)
 - Skins + skeletons (joint roster, inverseBindMatrices accessor,
   optional skeleton root) per spec §3.7.3 — `node.skin` round-trips
 - Animations (channels + samplers) per spec §3.11 — translation /
@@ -125,19 +137,22 @@ framework but usable standalone.
   `SparseIndicesBufferViewIndex`
 - `extras` round-trip on root, scenes, nodes, materials, primitives
 
-## Spec-staging gaps (next-round work)
+## Extension roadmap (next-round work)
 
-- KHR_audio_emitter wiring against `oxideav_mesh3d::AudioSource` /
-  `AudioEmitter` — blocked on `docs/3d/gltf/extensions/` (only the
-  core 2.0 spec is mirrored today; the KHR registry isn't)
-- Material PBR-extension surfaces: KHR_materials_ior,
-  _emissive_strength, _clearcoat, _sheen, _transmission — same gap
-- KHR_texture_transform UV transform on texture references — the
-  core 2.0 spec mentions the extension by name in §3.12 but the
-  full extension prose is not staged
+The KHR extension registry is now staged under
+`docs/3d/gltf/extensions/` (25 specs + index), so the remaining work
+is implementation, not docs:
+
+- Material PBR-extension surfaces: KHR_materials_ior, _clearcoat,
+  _sheen, _transmission, _specular, _volume — scalar/colour factors
+  ready to lift through the same `Material::extras` side-channel the
+  `emissive_strength` scalar uses
+- KHR_texture_transform UV transform (offset / rotation / scale) on
+  texture references
 - KHR_mesh_quantization int8/int16 quantised POSITION / NORMAL /
-  TANGENT / TEXCOORD — same gap (needs extension schema +
-  dequantisation table)
+  TANGENT / TEXCOORD — needs the dequantisation path
+- KHR_audio_emitter wiring against `oxideav_mesh3d::AudioSource` /
+  `AudioEmitter`
 
 ## Installation
 
