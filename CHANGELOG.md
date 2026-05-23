@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 105)
+
+- `KHR_materials_specular` extension (Khronos ratified — see
+  `docs/3d/gltf/extensions/KHR_materials_specular.md`). Decoder reads
+  `materials[i].extensions.KHR_materials_specular` and surfaces the full
+  extension object through
+  `oxideav_mesh3d::Material::extras["KHR_materials_specular"]` as a JSON
+  `Value::Object` carrying any of the four spec-defined keys
+  (`specularFactor`, `specularTexture`, `specularColorFactor`,
+  `specularColorTexture`) — a bare `{}` extension object resolves to the
+  spec defaults `specularFactor = 1.0`, `specularColorFactor = [1, 1, 1]`
+  (§Extending Materials). The spec explicitly allows
+  `specularColorFactor` components above `1.0`, so we pass them through
+  unclamped (clamping is a render-time concern per the Implementation
+  §, not a decode-time one). `specularTexture` / `specularColorTexture`
+  TextureInfo round-trips preserve both `index` and optional `texCoord`.
+  Encoder lifts the object back into the typed JSON extension block and
+  appends `KHR_materials_specular` to `extensionsUsed`. The §3.12 stack
+  validator rejects materials carrying the data block without the
+  declaration with `ExtensionStackUsedNotDeclared`. JSON model gains
+  `MaterialSpecular` and a `MaterialExtensions.khr_materials_specular`
+  field. Tests: 7 integration (`khr_materials_specular.rs`) + 2 unit
+  (`validation::tests`).
+
 ### Added (round 102)
 
 - `KHR_materials_ior` extension (Khronos ratified — see

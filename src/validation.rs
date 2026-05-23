@@ -32,8 +32,8 @@
 //! * §3.12 — every extension whose object lives somewhere in the
 //!   document (root `extensions` / node `extensions`) MUST appear in
 //!   `extensionsUsed`. Today this covers `KHR_lights_punctual`,
-//!   `KHR_materials_unlit`, `KHR_materials_emissive_strength`, and
-//!   `KHR_materials_ior`.
+//!   `KHR_materials_unlit`, `KHR_materials_emissive_strength`,
+//!   `KHR_materials_ior`, and `KHR_materials_specular`.
 //!
 //! Animation channels (round 7):
 //!
@@ -435,6 +435,24 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
             "ExtensionStackUsedNotDeclared: KHR_materials_ior data is present \
              on a material but the extension is not listed in extensionsUsed \
              (spec §3.12)",
+        ));
+    }
+
+    // KHR_materials_specular — per-material extension. Same §3.12 rule:
+    // the extension MUST be declared in `extensionsUsed` if any material
+    // carries the data block. See
+    // `docs/3d/gltf/extensions/KHR_materials_specular.md`.
+    let has_specular = root.materials.iter().any(|m| {
+        m.extensions
+            .as_ref()
+            .and_then(|e| e.khr_materials_specular.as_ref())
+            .is_some()
+    });
+    if has_specular && !used("KHR_materials_specular") {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_materials_specular data is \
+             present on a material but the extension is not listed in \
+             extensionsUsed (spec §3.12)",
         ));
     }
 
@@ -860,8 +878,8 @@ mod tests {
         Accessor, AccessorSparse, AccessorSparseIndices, AccessorSparseValues, Animation,
         AnimationChannel, AnimationChannelTarget, AnimationSampler, Asset, Buffer, BufferView,
         KhrLightsPunctualRoot, Material, MaterialEmissiveStrength, MaterialExtensions, MaterialIor,
-        MaterialUnlit, Mesh, Node, NodeExtensions, NodeLightRef, Primitive, RootExtensions,
-        COMPONENT_TYPE_FLOAT,
+        MaterialSpecular, MaterialUnlit, Mesh, Node, NodeExtensions, NodeLightRef, Primitive,
+        RootExtensions, COMPONENT_TYPE_FLOAT,
     };
     use std::collections::HashMap;
 
@@ -1229,6 +1247,42 @@ mod tests {
         let mut root = empty_root();
         root.materials.push(ior_material());
         root.extensions_used = vec!["KHR_materials_ior".into()];
+        validate_extension_stack(&root).unwrap();
+    }
+
+    // KHR_materials_specular —
+    // docs/3d/gltf/extensions/KHR_materials_specular.md.
+    fn specular_material() -> Material {
+        Material {
+            extensions: Some(MaterialExtensions {
+                khr_materials_specular: Some(MaterialSpecular {
+                    specular_factor: Some(0.5),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn extension_stack_rejects_specular_missing_used() {
+        let mut root = empty_root();
+        root.materials.push(specular_material());
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackUsedNotDeclared") && msg.contains("KHR_materials_specular"),
+            "expected ExtensionStackUsedNotDeclared for \
+             KHR_materials_specular, got {msg}"
+        );
+    }
+
+    #[test]
+    fn extension_stack_accepts_specular_declared() {
+        let mut root = empty_root();
+        root.materials.push(specular_material());
+        root.extensions_used = vec!["KHR_materials_specular".into()];
         validate_extension_stack(&root).unwrap();
     }
 

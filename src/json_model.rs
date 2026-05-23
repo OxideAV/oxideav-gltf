@@ -335,10 +335,12 @@ pub struct Material {
     /// per the KHR_materials_unlit spec — `docs/3d/gltf/extensions/
     /// KHR_materials_unlit.md`), `KHR_materials_emissive_strength`
     /// (a scalar emissive multiplier — `docs/3d/gltf/extensions/
-    /// KHR_materials_emissive_strength.md`), and `KHR_materials_ior`
+    /// KHR_materials_emissive_strength.md`), `KHR_materials_ior`
     /// (a scalar index of refraction — `docs/3d/gltf/extensions/
-    /// KHR_materials_ior.md`); future per-material KHR extensions
-    /// land here too.
+    /// KHR_materials_ior.md`), and `KHR_materials_specular`
+    /// (a specular reflection factor + F0 colour + optional textures
+    /// — `docs/3d/gltf/extensions/KHR_materials_specular.md`); future
+    /// per-material KHR extensions land here too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extensions: Option<MaterialExtensions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -353,9 +355,11 @@ fn is_default_false(b: &bool) -> bool {
 /// extensions the crate understands: `KHR_materials_unlit` (an
 /// empty-object shading-model flag), `KHR_materials_emissive_strength`
 /// (a scalar emissive multiplier per
-/// `docs/3d/gltf/extensions/KHR_materials_emissive_strength.md`), and
+/// `docs/3d/gltf/extensions/KHR_materials_emissive_strength.md`),
 /// `KHR_materials_ior` (a scalar index of refraction per
-/// `docs/3d/gltf/extensions/KHR_materials_ior.md`).
+/// `docs/3d/gltf/extensions/KHR_materials_ior.md`), and
+/// `KHR_materials_specular` (a specular factor + F0 colour + optional
+/// textures per `docs/3d/gltf/extensions/KHR_materials_specular.md`).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct MaterialExtensions {
     #[serde(
@@ -376,6 +380,12 @@ pub struct MaterialExtensions {
         skip_serializing_if = "Option::is_none"
     )]
     pub khr_materials_ior: Option<MaterialIor>,
+    #[serde(
+        rename = "KHR_materials_specular",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_materials_specular: Option<MaterialSpecular>,
 }
 
 /// `KHR_materials_unlit` extension object. Per the spec the schema
@@ -411,6 +421,44 @@ pub struct MaterialEmissiveStrength {
 pub struct MaterialIor {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ior: Option<f32>,
+}
+
+/// `KHR_materials_specular` extension object — adds two parameters to
+/// the metallic-roughness material: a scalar `specularFactor` (default
+/// `1.0`) that scales the dielectric BRDF's specular reflection, an
+/// optional `specularTexture` whose alpha channel multiplies the
+/// factor; an RGB `specularColorFactor` (default `[1.0, 1.0, 1.0]`)
+/// that tints the F0 colour of the dielectric BRDF, and an optional
+/// sRGB `specularColorTexture` whose RGB channels multiply the colour
+/// factor. All four fields are optional per the spec. See
+/// `docs/3d/gltf/extensions/KHR_materials_specular.md` §Extending
+/// Materials.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MaterialSpecular {
+    #[serde(
+        rename = "specularFactor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub specular_factor: Option<f32>,
+    #[serde(
+        rename = "specularTexture",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub specular_texture: Option<TextureInfo>,
+    #[serde(
+        rename = "specularColorFactor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub specular_color_factor: Option<[f32; 3]>,
+    #[serde(
+        rename = "specularColorTexture",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub specular_color_texture: Option<TextureInfo>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

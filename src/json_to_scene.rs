@@ -885,6 +885,44 @@ fn convert_material(
                     .insert("KHR_materials_ior".to_owned(), Value::Number(n));
             }
         }
+        // KHR_materials_specular — a specular reflection factor + F0
+        // colour + optional textures per docs/3d/gltf/extensions/
+        // KHR_materials_specular.md §Extending Materials. We surface it
+        // through `Material::extras["KHR_materials_specular"]` as a JSON
+        // object carrying any of the four spec-defined keys
+        // (`specularFactor`, `specularTexture`, `specularColorFactor`,
+        // `specularColorTexture`) rather than widening
+        // `oxideav_mesh3d::Material`. Per the spec all four fields are
+        // optional; we materialise the scalar / vector defaults
+        // (`specularFactor = 1.0`, `specularColorFactor = [1, 1, 1]`)
+        // so a bare `{}` object resolves to a fully-specified record,
+        // and pass texture infos through verbatim (the raw `index`
+        // numbers refer to positions in the round-tripped `textures[]`
+        // array, which keep their ordering through scene→json on the
+        // encode side).
+        if let Some(sp) = &ext.khr_materials_specular {
+            let mut obj = serde_json::Map::new();
+            let factor = sp.specular_factor.unwrap_or(1.0);
+            if let Some(n) = serde_json::Number::from_f64(factor as f64) {
+                obj.insert("specularFactor".to_owned(), Value::Number(n));
+            }
+            let cf = sp.specular_color_factor.unwrap_or([1.0, 1.0, 1.0]);
+            let cf_arr: Vec<Value> = cf
+                .iter()
+                .filter_map(|v| serde_json::Number::from_f64(*v as f64).map(Value::Number))
+                .collect();
+            if cf_arr.len() == 3 {
+                obj.insert("specularColorFactor".to_owned(), Value::Array(cf_arr));
+            }
+            if let Some(t) = &sp.specular_texture {
+                obj.insert("specularTexture".to_owned(), texture_info_to_json(t));
+            }
+            if let Some(t) = &sp.specular_color_texture {
+                obj.insert("specularColorTexture".to_owned(), texture_info_to_json(t));
+            }
+            mat.extras
+                .insert("KHR_materials_specular".to_owned(), Value::Object(obj));
+        }
     }
     if let Some(extras) = &m.extras {
         extras_into(&mut mat.extras, extras.clone());
@@ -1210,6 +1248,20 @@ fn topology_from_mode(mode: u32) -> Result<Topology> {
         gj::MODE_TRIANGLE_FAN => Topology::TriangleFan,
         other => return Err(invalid(format!("primitive.mode {other} unknown"))),
     })
+}
+
+// Render a `TextureInfo` (texture index + optional texCoord) back to a
+// JSON object the way it appears on the wire. Used by the
+// `KHR_materials_specular` decoder to keep the raw texture-info shape
+// when surfacing the extension through the `Material::extras`
+// side-channel.
+fn texture_info_to_json(t: &gj::TextureInfo) -> Value {
+    let mut m = serde_json::Map::new();
+    m.insert("index".to_owned(), Value::from(t.index));
+    if let Some(tc) = t.tex_coord {
+        m.insert("texCoord".to_owned(), Value::from(tc));
+    }
+    Value::Object(m)
 }
 
 // `extras` is a JSON object — flatten one level into the

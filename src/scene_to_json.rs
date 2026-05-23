@@ -102,11 +102,13 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     // Track which per-material KHR extensions any material carries so we
     // can append each to `extensionsUsed` per spec §3.12 — see
     // KHR_materials_unlit.md "Extending Materials",
-    // KHR_materials_emissive_strength.md "Extending Materials", and
-    // KHR_materials_ior.md "Extending Materials".
+    // KHR_materials_emissive_strength.md "Extending Materials",
+    // KHR_materials_ior.md "Extending Materials", and
+    // KHR_materials_specular.md "Extending Materials".
     let mut emitted_unlit = false;
     let mut emitted_emissive_strength = false;
     let mut emitted_ior = false;
+    let mut emitted_specular = false;
     for mat in &scene.materials {
         let m_json = encode_material(mat);
         if let Some(ext) = m_json.extensions.as_ref() {
@@ -118,6 +120,9 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
             }
             if ext.khr_materials_ior.is_some() {
                 emitted_ior = true;
+            }
+            if ext.khr_materials_specular.is_some() {
+                emitted_specular = true;
             }
         }
         root.materials.push(m_json);
@@ -131,6 +136,10 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     }
     if emitted_ior {
         root.extensions_used.push("KHR_materials_ior".to_owned());
+    }
+    if emitted_specular {
+        root.extensions_used
+            .push("KHR_materials_specular".to_owned());
     }
 
     // --- textures + images + samplers ---
@@ -749,23 +758,36 @@ fn encode_material(m: &Material) -> gj::Material {
         .remove("KHR_materials_ior")
         .and_then(|v| v.as_f64())
         .map(|v| v as f32);
-    let extensions = if unlit_flag || emissive_strength.is_some() || ior.is_some() {
-        Some(gj::MaterialExtensions {
-            khr_materials_unlit: if unlit_flag {
-                Some(gj::MaterialUnlit {})
-            } else {
-                None
-            },
-            khr_materials_emissive_strength: emissive_strength.map(|s| {
-                gj::MaterialEmissiveStrength {
-                    emissive_strength: Some(s),
-                }
-            }),
-            khr_materials_ior: ior.map(|v| gj::MaterialIor { ior: Some(v) }),
-        })
-    } else {
-        None
-    };
+    // KHR_materials_specular — the decoder parks the whole extension
+    // object in extras as a `Value::Object` carrying any of the four
+    // spec-defined keys (`specularFactor`, `specularTexture`,
+    // `specularColorFactor`, `specularColorTexture`). Lift it back into
+    // the typed extensions block so the round-trip emits the spec
+    // object rather than a surplus `extras` key
+    // (docs/3d/gltf/extensions/KHR_materials_specular.md §Extending
+    // Materials).
+    let specular = effective_extras
+        .remove("KHR_materials_specular")
+        .and_then(specular_from_value);
+    let extensions =
+        if unlit_flag || emissive_strength.is_some() || ior.is_some() || specular.is_some() {
+            Some(gj::MaterialExtensions {
+                khr_materials_unlit: if unlit_flag {
+                    Some(gj::MaterialUnlit {})
+                } else {
+                    None
+                },
+                khr_materials_emissive_strength: emissive_strength.map(|s| {
+                    gj::MaterialEmissiveStrength {
+                        emissive_strength: Some(s),
+                    }
+                }),
+                khr_materials_ior: ior.map(|v| gj::MaterialIor { ior: Some(v) }),
+                khr_materials_specular: specular,
+            })
+        } else {
+            None
+        };
     let extras = if effective_extras.is_empty() {
         None
     } else {
@@ -1044,6 +1066,57 @@ fn map_to_value(map: &HashMap<String, serde_json::Value>) -> serde_json::Value {
         out.insert(k.clone(), v.clone());
     }
     serde_json::Value::Object(out)
+}
+
+// Parse the decoder's `Material::extras["KHR_materials_specular"]` JSON
+// object back into the typed `MaterialSpecular` for re-emission. The
+// decoder normalises defaults, but consumers may also construct
+// partial objects directly; this helper accepts both, ignoring keys
+// outside the four spec-defined fields (forward-compatibility with
+// future spec revisions). See
+// `docs/3d/gltf/extensions/KHR_materials_specular.md`.
+fn specular_from_value(v: serde_json::Value) -> Option<gj::MaterialSpecular> {
+    let obj = v.as_object()?;
+    let factor = obj
+        .get("specularFactor")
+        .and_then(|x| x.as_f64())
+        .map(|x| x as f32);
+    let color = obj
+        .get("specularColorFactor")
+        .and_then(|x| x.as_array())
+        .and_then(|arr| {
+            if arr.len() == 3 {
+                let r = arr[0].as_f64()? as f32;
+                let g = arr[1].as_f64()? as f32;
+                let b = arr[2].as_f64()? as f32;
+                Some([r, g, b])
+            } else {
+                None
+            }
+        });
+    let texture = obj.get("specularTexture").and_then(texture_info_from_value);
+    let color_texture = obj
+        .get("specularColorTexture")
+        .and_then(texture_info_from_value);
+    if factor.is_none() && color.is_none() && texture.is_none() && color_texture.is_none() {
+        return None;
+    }
+    Some(gj::MaterialSpecular {
+        specular_factor: factor,
+        specular_texture: texture,
+        specular_color_factor: color,
+        specular_color_texture: color_texture,
+    })
+}
+
+fn texture_info_from_value(v: &serde_json::Value) -> Option<gj::TextureInfo> {
+    let obj = v.as_object()?;
+    let index = obj.get("index").and_then(|x| x.as_u64())? as u32;
+    let tex_coord = obj
+        .get("texCoord")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as u32);
+    Some(gj::TextureInfo { index, tex_coord })
 }
 
 // --- skin / animation encoders -------------------------------------------
