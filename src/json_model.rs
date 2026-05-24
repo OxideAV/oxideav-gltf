@@ -364,7 +364,10 @@ fn is_default_false(b: &bool) -> bool {
 /// roughness factors + optional textures per
 /// `docs/3d/gltf/extensions/KHR_materials_clearcoat.md`), and
 /// `KHR_materials_sheen` (a sheen colour + roughness factors + optional
-/// textures per `docs/3d/gltf/extensions/KHR_materials_sheen.md`).
+/// textures per `docs/3d/gltf/extensions/KHR_materials_sheen.md`), and
+/// `KHR_materials_transmission` (a transmission factor + optional
+/// texture per
+/// `docs/3d/gltf/extensions/KHR_materials_transmission.md`).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct MaterialExtensions {
     #[serde(
@@ -403,6 +406,12 @@ pub struct MaterialExtensions {
         skip_serializing_if = "Option::is_none"
     )]
     pub khr_materials_sheen: Option<MaterialSheen>,
+    #[serde(
+        rename = "KHR_materials_transmission",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_materials_transmission: Option<MaterialTransmission>,
 }
 
 /// `KHR_materials_unlit` extension object. Per the spec the schema
@@ -572,6 +581,38 @@ pub struct MaterialSheen {
         skip_serializing_if = "Option::is_none"
     )]
     pub sheen_roughness_texture: Option<TextureInfo>,
+}
+
+/// `KHR_materials_transmission` extension object — makes the
+/// metallic-roughness material optically transparent (light passes
+/// through the surface rather than being diffusely re-emitted), enabling
+/// physically-plausible glass / plastic. Adds a single scalar factor and
+/// one optional texture reference per
+/// `docs/3d/gltf/extensions/KHR_materials_transmission.md` §Properties:
+///
+/// * `transmissionFactor` (default `0.0`) — the base percentage of light
+///   that is transmitted through the surface (`1.0` = 100% of the light
+///   that penetrates the surface is transmitted); when zero the material
+///   is fully opaque to transmission.
+/// * `transmissionTexture` (a `textureInfo`) — its `.r` channel defines
+///   the transmission percentage and is multiplied by
+///   `transmissionFactor`.
+///
+/// Both fields are optional per the spec.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MaterialTransmission {
+    #[serde(
+        rename = "transmissionFactor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub transmission_factor: Option<f32>,
+    #[serde(
+        rename = "transmissionTexture",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub transmission_texture: Option<TextureInfo>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

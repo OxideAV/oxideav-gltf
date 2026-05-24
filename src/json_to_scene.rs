@@ -1005,6 +1005,30 @@ fn convert_material(
             mat.extras
                 .insert("KHR_materials_sheen".to_owned(), Value::Object(obj));
         }
+        // KHR_materials_transmission — makes the metallic-roughness
+        // material optically transparent per
+        // docs/3d/gltf/extensions/KHR_materials_transmission.md
+        // §Properties. We surface it through
+        // `Material::extras["KHR_materials_transmission"]` as a JSON
+        // object carrying either of the two spec-defined keys
+        // (`transmissionFactor`, `transmissionTexture`) rather than
+        // widening `oxideav_mesh3d::Material`. Per the spec both fields
+        // are optional; we materialise the scalar default
+        // (`transmissionFactor = 0.0`) so a bare `{}` resolves to a
+        // fully-specified record. The texture info passes through
+        // verbatim.
+        if let Some(tr) = &ext.khr_materials_transmission {
+            let mut obj = serde_json::Map::new();
+            let factor = tr.transmission_factor.unwrap_or(0.0);
+            if let Some(n) = serde_json::Number::from_f64(factor as f64) {
+                obj.insert("transmissionFactor".to_owned(), Value::Number(n));
+            }
+            if let Some(t) = &tr.transmission_texture {
+                obj.insert("transmissionTexture".to_owned(), texture_info_to_json(t));
+            }
+            mat.extras
+                .insert("KHR_materials_transmission".to_owned(), Value::Object(obj));
+        }
     }
     if let Some(extras) = &m.extras {
         extras_into(&mut mat.extras, extras.clone());

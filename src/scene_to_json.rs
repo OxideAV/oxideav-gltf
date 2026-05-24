@@ -105,14 +105,16 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     // KHR_materials_emissive_strength.md "Extending Materials",
     // KHR_materials_ior.md "Extending Materials",
     // KHR_materials_specular.md "Extending Materials",
-    // KHR_materials_clearcoat.md "Extending Materials", and
-    // KHR_materials_sheen.md "Extending Materials".
+    // KHR_materials_clearcoat.md "Extending Materials",
+    // KHR_materials_sheen.md "Extending Materials", and
+    // KHR_materials_transmission.md "Extending Materials".
     let mut emitted_unlit = false;
     let mut emitted_emissive_strength = false;
     let mut emitted_ior = false;
     let mut emitted_specular = false;
     let mut emitted_clearcoat = false;
     let mut emitted_sheen = false;
+    let mut emitted_transmission = false;
     for mat in &scene.materials {
         let m_json = encode_material(mat);
         if let Some(ext) = m_json.extensions.as_ref() {
@@ -133,6 +135,9 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
             }
             if ext.khr_materials_sheen.is_some() {
                 emitted_sheen = true;
+            }
+            if ext.khr_materials_transmission.is_some() {
+                emitted_transmission = true;
             }
         }
         root.materials.push(m_json);
@@ -157,6 +162,10 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     }
     if emitted_sheen {
         root.extensions_used.push("KHR_materials_sheen".to_owned());
+    }
+    if emitted_transmission {
+        root.extensions_used
+            .push("KHR_materials_transmission".to_owned());
     }
 
     // --- textures + images + samplers ---
@@ -807,12 +816,23 @@ fn encode_material(m: &Material) -> gj::Material {
     let sheen = effective_extras
         .remove("KHR_materials_sheen")
         .and_then(sheen_from_value);
+    // KHR_materials_transmission — the decoder parks the whole extension
+    // object in extras as a `Value::Object` carrying either of the two
+    // spec-defined keys (`transmissionFactor`, `transmissionTexture`).
+    // Lift it back into the typed extensions block so the round-trip
+    // emits the spec object rather than a surplus `extras` key
+    // (docs/3d/gltf/extensions/KHR_materials_transmission.md
+    // §Properties).
+    let transmission = effective_extras
+        .remove("KHR_materials_transmission")
+        .and_then(transmission_from_value);
     let extensions = if unlit_flag
         || emissive_strength.is_some()
         || ior.is_some()
         || specular.is_some()
         || clearcoat.is_some()
         || sheen.is_some()
+        || transmission.is_some()
     {
         Some(gj::MaterialExtensions {
             khr_materials_unlit: if unlit_flag {
@@ -829,6 +849,7 @@ fn encode_material(m: &Material) -> gj::Material {
             khr_materials_specular: specular,
             khr_materials_clearcoat: clearcoat,
             khr_materials_sheen: sheen,
+            khr_materials_transmission: transmission,
         })
     } else {
         None
@@ -1269,6 +1290,30 @@ fn sheen_from_value(v: serde_json::Value) -> Option<gj::MaterialSheen> {
         sheen_color_texture: color_texture,
         sheen_roughness_factor: roughness,
         sheen_roughness_texture: roughness_texture,
+    })
+}
+
+// Parse the decoder's `Material::extras["KHR_materials_transmission"]`
+// JSON object back into the typed `MaterialTransmission` for re-emission.
+// The decoder normalises the factor default, but consumers may also
+// construct partial objects directly; this helper accepts both, ignoring
+// keys outside the two spec-defined fields. See
+// `docs/3d/gltf/extensions/KHR_materials_transmission.md` §Properties.
+fn transmission_from_value(v: serde_json::Value) -> Option<gj::MaterialTransmission> {
+    let obj = v.as_object()?;
+    let factor = obj
+        .get("transmissionFactor")
+        .and_then(|x| x.as_f64())
+        .map(|x| x as f32);
+    let texture = obj
+        .get("transmissionTexture")
+        .and_then(texture_info_from_value);
+    if factor.is_none() && texture.is_none() {
+        return None;
+    }
+    Some(gj::MaterialTransmission {
+        transmission_factor: factor,
+        transmission_texture: texture,
     })
 }
 

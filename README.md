@@ -107,6 +107,21 @@ framework but usable standalone.
   to `extensionsUsed`. The §3.12 stack validator rejects materials
   carrying the data block without the declaration
   (`ExtensionStackUsedNotDeclared`)
+- KHR_materials_transmission extension (Khronos ratified) —
+  per-material optical-transparency factor + optional texture from
+  `docs/3d/gltf/extensions/KHR_materials_transmission.md`. The decoder
+  lifts the full JSON
+  `materials[i].extensions.KHR_materials_transmission` object into
+  `oxideav_mesh3d::Material::extras["KHR_materials_transmission"]` as a
+  JSON `Value::Object` carrying either of the two spec-defined keys
+  (`transmissionFactor`, `transmissionTexture`); a bare `{}` resolves
+  to the spec default `transmissionFactor = 0.0`, and the
+  `transmissionTexture` info round-trips with both `index` and
+  optional `texCoord` preserved. The encoder lifts the object back
+  into the typed extensions block and appends
+  `KHR_materials_transmission` to `extensionsUsed`. The §3.12 stack
+  validator rejects materials carrying the data block without the
+  declaration (`ExtensionStackUsedNotDeclared`)
 - Skins + skeletons (joint roster, inverseBindMatrices accessor,
   optional skeleton root) per spec §3.7.3 — `node.skin` round-trips
 - Animations (channels + samplers) per spec §3.11 — translation /
@@ -205,10 +220,12 @@ The KHR extension registry is now staged under
 `docs/3d/gltf/extensions/` (25 specs + index), so the remaining work
 is implementation, not docs:
 
-- Material PBR-extension surfaces: KHR_materials_transmission, _volume
-  — scalar/colour factors ready to lift through the same
+- Material PBR-extension surfaces: KHR_materials_volume,
+  _iridescence, _anisotropy, _dispersion, _diffuse_transmission —
+  scalar/colour factors ready to lift through the same
   `Material::extras` side-channel the `emissive_strength`, `ior`,
-  `specular`, `clearcoat`, and `sheen` blocks already use
+  `specular`, `clearcoat`, `sheen`, and `transmission` blocks already
+  use
 - KHR_texture_transform UV transform (offset / rotation / scale) on
   texture references
 - KHR_mesh_quantization int8/int16 quantised POSITION / NORMAL /
