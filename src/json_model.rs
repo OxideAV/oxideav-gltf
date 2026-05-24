@@ -367,7 +367,10 @@ fn is_default_false(b: &bool) -> bool {
 /// textures per `docs/3d/gltf/extensions/KHR_materials_sheen.md`), and
 /// `KHR_materials_transmission` (a transmission factor + optional
 /// texture per
-/// `docs/3d/gltf/extensions/KHR_materials_transmission.md`).
+/// `docs/3d/gltf/extensions/KHR_materials_transmission.md`), and
+/// `KHR_materials_volume` (a thickness + attenuation distance + colour
+/// describing a homogeneous volumetric medium enclosed by the mesh per
+/// `docs/3d/gltf/extensions/KHR_materials_volume.md`).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct MaterialExtensions {
     #[serde(
@@ -412,6 +415,12 @@ pub struct MaterialExtensions {
         skip_serializing_if = "Option::is_none"
     )]
     pub khr_materials_transmission: Option<MaterialTransmission>,
+    #[serde(
+        rename = "KHR_materials_volume",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_materials_volume: Option<MaterialVolume>,
 }
 
 /// `KHR_materials_unlit` extension object. Per the spec the schema
@@ -613,6 +622,59 @@ pub struct MaterialTransmission {
         skip_serializing_if = "Option::is_none"
     )]
     pub transmission_texture: Option<TextureInfo>,
+}
+
+/// `KHR_materials_volume` extension object — turns the surface into an
+/// interface between volumes (the mesh defines the boundaries of a
+/// homogeneous medium), enabling effects like refraction and absorption.
+/// Adds two scalar factors, one optional texture reference, and an RGB
+/// attenuation colour per
+/// `docs/3d/gltf/extensions/KHR_materials_volume.md` §Properties:
+///
+/// * `thicknessFactor` (default `0.0`) — thickness of the volume beneath
+///   the surface, in mesh-coordinate space; a value of `0` means the
+///   material is thin-walled, anything `> 0` makes it a volume boundary
+///   and requires a manifold/closed mesh. Range `[0, +inf)`.
+/// * `thicknessTexture` (a `textureInfo`) — the thickness texture; its
+///   `.g` channel multiplies `thicknessFactor`. Texture-sampled value
+///   range is `[0, 1]`.
+/// * `attenuationDistance` (default `+Infinity`) — average distance light
+///   travels in the medium before interacting with a particle, in world
+///   space. Range `(0, +inf)`. We treat `None` as "not specified" so the
+///   spec-mandated `+Infinity` default is implicit (a finite default
+///   would round-trip incorrectly through JSON, which cannot encode
+///   non-finite numbers).
+/// * `attenuationColor` (default `[1, 1, 1]`) — the colour that white
+///   light turns into due to absorption when reaching the attenuation
+///   distance.
+///
+/// All four fields are optional per the spec.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MaterialVolume {
+    #[serde(
+        rename = "thicknessFactor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub thickness_factor: Option<f32>,
+    #[serde(
+        rename = "thicknessTexture",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub thickness_texture: Option<TextureInfo>,
+    #[serde(
+        rename = "attenuationDistance",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub attenuation_distance: Option<f32>,
+    #[serde(
+        rename = "attenuationColor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub attenuation_color: Option<[f32; 3]>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

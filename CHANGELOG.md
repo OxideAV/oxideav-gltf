@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 120)
+
+- `KHR_materials_volume` extension (Khronos ratified — see
+  `docs/3d/gltf/extensions/KHR_materials_volume.md`). Decoder reads
+  `materials[i].extensions.KHR_materials_volume` and surfaces the full
+  extension object through
+  `oxideav_mesh3d::Material::extras["KHR_materials_volume"]` as a JSON
+  `Value::Object` carrying any of the four spec-defined keys
+  (`thicknessFactor`, `thicknessTexture`, `attenuationDistance`,
+  `attenuationColor`) — a bare `{}` extension object resolves to the
+  spec defaults `thicknessFactor = 0.0` (thin-walled) and
+  `attenuationColor = [1, 1, 1]`. `attenuationDistance` defaults to
+  `+Infinity` per §Properties; JSON cannot encode non-finite numbers
+  so the decoder leaves the key absent and consumers interpret
+  missing-key as the +Infinity default. `thicknessTexture` is a
+  `textureInfo` (round-trip `index` + optional `texCoord` preserved).
+  Encoder lifts the object back into the typed JSON extension block
+  and appends `KHR_materials_volume` to `extensionsUsed`. The §3.12
+  stack validator rejects materials carrying the data block without
+  the declaration with `ExtensionStackUsedNotDeclared`. JSON model
+  gains `MaterialVolume` and a `MaterialExtensions.khr_materials_volume`
+  field. Tests: 9 integration (`khr_materials_volume.rs`) + 2 unit
+  (`validation::tests`).
+
 ### Added (round 114)
 
 - `KHR_materials_sheen` extension (Khronos ratified — see

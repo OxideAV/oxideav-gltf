@@ -1029,6 +1029,51 @@ fn convert_material(
             mat.extras
                 .insert("KHR_materials_transmission".to_owned(), Value::Object(obj));
         }
+        // KHR_materials_volume — turns the surface into the boundary of a
+        // homogeneous volumetric medium (thickness + attenuation) per
+        // docs/3d/gltf/extensions/KHR_materials_volume.md §Properties. We
+        // surface it through `Material::extras["KHR_materials_volume"]` as
+        // a JSON object carrying any of the four spec-defined keys
+        // (`thicknessFactor`, `thicknessTexture`, `attenuationDistance`,
+        // `attenuationColor`) rather than widening
+        // `oxideav_mesh3d::Material`. Per the spec all four fields are
+        // optional; we materialise the scalar / colour defaults
+        // (`thicknessFactor = 0.0`, `attenuationColor = [1, 1, 1]`) so a
+        // bare `{}` resolves to a fully-specified record. The
+        // `attenuationDistance` default per the spec is `+Infinity`, which
+        // JSON cannot encode, so we leave that key absent when the source
+        // document omits it — consumers interpret a missing key as the
+        // spec default of `+Infinity` (thin-walled materials with
+        // `thicknessFactor = 0` ignore the attenuation parameters
+        // altogether). Texture infos pass through verbatim.
+        if let Some(vol) = &ext.khr_materials_volume {
+            let mut obj = serde_json::Map::new();
+            let tf = vol.thickness_factor.unwrap_or(0.0);
+            if let Some(n) = serde_json::Number::from_f64(tf as f64) {
+                obj.insert("thicknessFactor".to_owned(), Value::Number(n));
+            }
+            if let Some(t) = &vol.thickness_texture {
+                obj.insert("thicknessTexture".to_owned(), texture_info_to_json(t));
+            }
+            // Only emit `attenuationDistance` when the source provided
+            // a value; the `+Infinity` default cannot round-trip through
+            // JSON, so absence carries the spec default.
+            if let Some(d) = vol.attenuation_distance {
+                if let Some(n) = serde_json::Number::from_f64(d as f64) {
+                    obj.insert("attenuationDistance".to_owned(), Value::Number(n));
+                }
+            }
+            let ac = vol.attenuation_color.unwrap_or([1.0, 1.0, 1.0]);
+            let ac_arr: Vec<Value> = ac
+                .iter()
+                .filter_map(|v| serde_json::Number::from_f64(*v as f64).map(Value::Number))
+                .collect();
+            if ac_arr.len() == 3 {
+                obj.insert("attenuationColor".to_owned(), Value::Array(ac_arr));
+            }
+            mat.extras
+                .insert("KHR_materials_volume".to_owned(), Value::Object(obj));
+        }
     }
     if let Some(extras) = &m.extras {
         extras_into(&mut mat.extras, extras.clone());

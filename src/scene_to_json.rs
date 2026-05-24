@@ -106,8 +106,9 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     // KHR_materials_ior.md "Extending Materials",
     // KHR_materials_specular.md "Extending Materials",
     // KHR_materials_clearcoat.md "Extending Materials",
-    // KHR_materials_sheen.md "Extending Materials", and
-    // KHR_materials_transmission.md "Extending Materials".
+    // KHR_materials_sheen.md "Extending Materials",
+    // KHR_materials_transmission.md "Extending Materials", and
+    // KHR_materials_volume.md "Extending Materials".
     let mut emitted_unlit = false;
     let mut emitted_emissive_strength = false;
     let mut emitted_ior = false;
@@ -115,6 +116,7 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     let mut emitted_clearcoat = false;
     let mut emitted_sheen = false;
     let mut emitted_transmission = false;
+    let mut emitted_volume = false;
     for mat in &scene.materials {
         let m_json = encode_material(mat);
         if let Some(ext) = m_json.extensions.as_ref() {
@@ -138,6 +140,9 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
             }
             if ext.khr_materials_transmission.is_some() {
                 emitted_transmission = true;
+            }
+            if ext.khr_materials_volume.is_some() {
+                emitted_volume = true;
             }
         }
         root.materials.push(m_json);
@@ -166,6 +171,9 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     if emitted_transmission {
         root.extensions_used
             .push("KHR_materials_transmission".to_owned());
+    }
+    if emitted_volume {
+        root.extensions_used.push("KHR_materials_volume".to_owned());
     }
 
     // --- textures + images + samplers ---
@@ -826,6 +834,15 @@ fn encode_material(m: &Material) -> gj::Material {
     let transmission = effective_extras
         .remove("KHR_materials_transmission")
         .and_then(transmission_from_value);
+    // KHR_materials_volume — the decoder parks the whole extension object
+    // in extras as a `Value::Object` carrying any of the four spec-defined
+    // keys (`thicknessFactor`, `thicknessTexture`, `attenuationDistance`,
+    // `attenuationColor`). Lift it back into the typed extensions block so
+    // the round-trip emits the spec object rather than a surplus `extras`
+    // key (docs/3d/gltf/extensions/KHR_materials_volume.md §Properties).
+    let volume = effective_extras
+        .remove("KHR_materials_volume")
+        .and_then(volume_from_value);
     let extensions = if unlit_flag
         || emissive_strength.is_some()
         || ior.is_some()
@@ -833,6 +850,7 @@ fn encode_material(m: &Material) -> gj::Material {
         || clearcoat.is_some()
         || sheen.is_some()
         || transmission.is_some()
+        || volume.is_some()
     {
         Some(gj::MaterialExtensions {
             khr_materials_unlit: if unlit_flag {
@@ -850,6 +868,7 @@ fn encode_material(m: &Material) -> gj::Material {
             khr_materials_clearcoat: clearcoat,
             khr_materials_sheen: sheen,
             khr_materials_transmission: transmission,
+            khr_materials_volume: volume,
         })
     } else {
         None
@@ -1314,6 +1333,53 @@ fn transmission_from_value(v: serde_json::Value) -> Option<gj::MaterialTransmiss
     Some(gj::MaterialTransmission {
         transmission_factor: factor,
         transmission_texture: texture,
+    })
+}
+
+// Parse the decoder's `Material::extras["KHR_materials_volume"]` JSON
+// object back into the typed `MaterialVolume` for re-emission. The
+// decoder normalises the thickness / attenuation-colour defaults, but
+// consumers may also construct partial objects directly; this helper
+// accepts both, ignoring keys outside the four spec-defined fields. See
+// `docs/3d/gltf/extensions/KHR_materials_volume.md` §Properties.
+fn volume_from_value(v: serde_json::Value) -> Option<gj::MaterialVolume> {
+    let obj = v.as_object()?;
+    let thickness = obj
+        .get("thicknessFactor")
+        .and_then(|x| x.as_f64())
+        .map(|x| x as f32);
+    let thickness_texture = obj
+        .get("thicknessTexture")
+        .and_then(texture_info_from_value);
+    let attenuation_distance = obj
+        .get("attenuationDistance")
+        .and_then(|x| x.as_f64())
+        .map(|x| x as f32);
+    let attenuation_color = obj
+        .get("attenuationColor")
+        .and_then(|x| x.as_array())
+        .and_then(|arr| {
+            if arr.len() == 3 {
+                let r = arr[0].as_f64()? as f32;
+                let g = arr[1].as_f64()? as f32;
+                let b = arr[2].as_f64()? as f32;
+                Some([r, g, b])
+            } else {
+                None
+            }
+        });
+    if thickness.is_none()
+        && thickness_texture.is_none()
+        && attenuation_distance.is_none()
+        && attenuation_color.is_none()
+    {
+        return None;
+    }
+    Some(gj::MaterialVolume {
+        thickness_factor: thickness,
+        thickness_texture,
+        attenuation_distance,
+        attenuation_color,
     })
 }
 

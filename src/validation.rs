@@ -34,8 +34,8 @@
 //!   `extensionsUsed`. Today this covers `KHR_lights_punctual`,
 //!   `KHR_materials_unlit`, `KHR_materials_emissive_strength`,
 //!   `KHR_materials_ior`, `KHR_materials_specular`,
-//!   `KHR_materials_clearcoat`, `KHR_materials_sheen`, and
-//!   `KHR_materials_transmission`.
+//!   `KHR_materials_clearcoat`, `KHR_materials_sheen`,
+//!   `KHR_materials_transmission`, and `KHR_materials_volume`.
 //!
 //! Animation channels (round 7):
 //!
@@ -512,6 +512,24 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         ));
     }
 
+    // KHR_materials_volume — per-material extension. Same §3.12 rule: the
+    // extension MUST be declared in `extensionsUsed` if any material
+    // carries the data block. See
+    // `docs/3d/gltf/extensions/KHR_materials_volume.md`.
+    let has_volume = root.materials.iter().any(|m| {
+        m.extensions
+            .as_ref()
+            .and_then(|e| e.khr_materials_volume.as_ref())
+            .is_some()
+    });
+    if has_volume && !used("KHR_materials_volume") {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_materials_volume data is \
+             present on a material but the extension is not listed in \
+             extensionsUsed (spec §3.12)",
+        ));
+    }
+
     Ok(())
 }
 
@@ -935,8 +953,8 @@ mod tests {
         AnimationChannel, AnimationChannelTarget, AnimationSampler, Asset, Buffer, BufferView,
         KhrLightsPunctualRoot, Material, MaterialClearcoat, MaterialEmissiveStrength,
         MaterialExtensions, MaterialIor, MaterialSheen, MaterialSpecular, MaterialTransmission,
-        MaterialUnlit, Mesh, Node, NodeExtensions, NodeLightRef, Primitive, RootExtensions,
-        COMPONENT_TYPE_FLOAT,
+        MaterialUnlit, MaterialVolume, Mesh, Node, NodeExtensions, NodeLightRef, Primitive,
+        RootExtensions, COMPONENT_TYPE_FLOAT,
     };
     use std::collections::HashMap;
 
@@ -1450,6 +1468,44 @@ mod tests {
         let mut root = empty_root();
         root.materials.push(transmission_material());
         root.extensions_used = vec!["KHR_materials_transmission".into()];
+        validate_extension_stack(&root).unwrap();
+    }
+
+    // KHR_materials_volume —
+    // docs/3d/gltf/extensions/KHR_materials_volume.md.
+    fn volume_material() -> Material {
+        Material {
+            extensions: Some(MaterialExtensions {
+                khr_materials_volume: Some(MaterialVolume {
+                    thickness_factor: Some(0.4),
+                    attenuation_distance: Some(2.5),
+                    attenuation_color: Some([0.7, 0.2, 0.3]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn extension_stack_rejects_volume_missing_used() {
+        let mut root = empty_root();
+        root.materials.push(volume_material());
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackUsedNotDeclared") && msg.contains("KHR_materials_volume"),
+            "expected ExtensionStackUsedNotDeclared for \
+             KHR_materials_volume, got {msg}"
+        );
+    }
+
+    #[test]
+    fn extension_stack_accepts_volume_declared() {
+        let mut root = empty_root();
+        root.materials.push(volume_material());
+        root.extensions_used = vec!["KHR_materials_volume".into()];
         validate_extension_stack(&root).unwrap();
     }
 
