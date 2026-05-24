@@ -72,6 +72,25 @@ framework but usable standalone.
   appends `KHR_materials_specular` to `extensionsUsed`. The §3.12 stack
   validator rejects materials carrying the data block without the
   declaration (`ExtensionStackUsedNotDeclared`)
+- KHR_materials_clearcoat extension (Khronos ratified) — per-material
+  clear-coat layer (intensity + roughness scalar factors + optional
+  textures) from `docs/3d/gltf/extensions/KHR_materials_clearcoat.md`.
+  The decoder lifts the full JSON
+  `materials[i].extensions.KHR_materials_clearcoat` object into
+  `oxideav_mesh3d::Material::extras["KHR_materials_clearcoat"]` as a JSON
+  `Value::Object` carrying any of the five spec-defined keys
+  (`clearcoatFactor`, `clearcoatTexture`, `clearcoatRoughnessFactor`,
+  `clearcoatRoughnessTexture`, `clearcoatNormalTexture`); a bare `{}`
+  resolves to the spec defaults `clearcoatFactor = 0.0` and
+  `clearcoatRoughnessFactor = 0.0` (a zero `clearcoatFactor` disables the
+  whole layer per the spec). `clearcoatTexture` /
+  `clearcoatRoughnessTexture` are `textureInfo` (round-trip `index` +
+  optional `texCoord`); `clearcoatNormalTexture` is a `normalTextureInfo`
+  so it additionally round-trips an optional `scale`. The encoder lifts
+  the object back into the typed extensions block and appends
+  `KHR_materials_clearcoat` to `extensionsUsed`. The §3.12 stack
+  validator rejects materials carrying the data block without the
+  declaration (`ExtensionStackUsedNotDeclared`)
 - Skins + skeletons (joint roster, inverseBindMatrices accessor,
   optional skeleton root) per spec §3.7.3 — `node.skin` round-trips
 - Animations (channels + samplers) per spec §3.11 — translation /
@@ -170,10 +189,10 @@ The KHR extension registry is now staged under
 `docs/3d/gltf/extensions/` (25 specs + index), so the remaining work
 is implementation, not docs:
 
-- Material PBR-extension surfaces: KHR_materials_clearcoat, _sheen,
+- Material PBR-extension surfaces: KHR_materials_sheen,
   _transmission, _volume — scalar/colour factors ready to lift through
   the same `Material::extras` side-channel the `emissive_strength`,
-  `ior`, and `specular` blocks already use
+  `ior`, `specular`, and `clearcoat` blocks already use
 - KHR_texture_transform UV transform (offset / rotation / scale) on
   texture references
 - KHR_mesh_quantization int8/int16 quantised POSITION / NORMAL /

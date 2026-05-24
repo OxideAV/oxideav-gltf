@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 110)
+
+- `KHR_materials_clearcoat` extension (Khronos ratified — see
+  `docs/3d/gltf/extensions/KHR_materials_clearcoat.md`). Decoder reads
+  `materials[i].extensions.KHR_materials_clearcoat` and surfaces the full
+  extension object through
+  `oxideav_mesh3d::Material::extras["KHR_materials_clearcoat"]` as a JSON
+  `Value::Object` carrying any of the five spec-defined keys
+  (`clearcoatFactor`, `clearcoatTexture`, `clearcoatRoughnessFactor`,
+  `clearcoatRoughnessTexture`, `clearcoatNormalTexture`) — a bare `{}`
+  extension object resolves to the spec defaults `clearcoatFactor = 0.0`,
+  `clearcoatRoughnessFactor = 0.0` (§Extending Materials §Clearcoat; the
+  spec notes a zero `clearcoatFactor` disables the whole clearcoat
+  layer). `clearcoatTexture` / `clearcoatRoughnessTexture` are
+  `textureInfo` (round-trip `index` + optional `texCoord`);
+  `clearcoatNormalTexture` is a `normalTextureInfo`, so it additionally
+  round-trips an optional `scale`. Encoder lifts the object back into the
+  typed JSON extension block and appends `KHR_materials_clearcoat` to
+  `extensionsUsed`. The §3.12 stack validator rejects materials carrying
+  the data block without the declaration with
+  `ExtensionStackUsedNotDeclared`. JSON model gains `MaterialClearcoat`
+  and a `MaterialExtensions.khr_materials_clearcoat` field. Tests: 7
+  integration (`khr_materials_clearcoat.rs`) + 2 unit
+  (`validation::tests`).
+
 ### Added (round 105)
 
 - `KHR_materials_specular` extension (Khronos ratified — see

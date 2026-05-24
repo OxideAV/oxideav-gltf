@@ -923,6 +923,51 @@ fn convert_material(
             mat.extras
                 .insert("KHR_materials_specular".to_owned(), Value::Object(obj));
         }
+        // KHR_materials_clearcoat — a clear-coat layer (intensity +
+        // roughness factors + optional textures) layered on top of the
+        // metallic-roughness material per docs/3d/gltf/extensions/
+        // KHR_materials_clearcoat.md §Extending Materials §Clearcoat. We
+        // surface it through `Material::extras["KHR_materials_clearcoat"]`
+        // as a JSON object carrying any of the five spec-defined keys
+        // (`clearcoatFactor`, `clearcoatTexture`,
+        // `clearcoatRoughnessFactor`, `clearcoatRoughnessTexture`,
+        // `clearcoatNormalTexture`) rather than widening
+        // `oxideav_mesh3d::Material`. Per the spec both factors are
+        // optional with a default of 0.0, so we materialise those
+        // defaults — a bare `{}` resolves to
+        // `clearcoatFactor = clearcoatRoughnessFactor = 0.0` (and the
+        // spec notes a zero `clearcoatFactor` disables the whole layer).
+        // Texture infos pass through verbatim; `clearcoatNormalTexture`
+        // is a `normalTextureInfo`, so it additionally carries an
+        // optional `scale`.
+        if let Some(cc) = &ext.khr_materials_clearcoat {
+            let mut obj = serde_json::Map::new();
+            let factor = cc.clearcoat_factor.unwrap_or(0.0);
+            if let Some(n) = serde_json::Number::from_f64(factor as f64) {
+                obj.insert("clearcoatFactor".to_owned(), Value::Number(n));
+            }
+            let rough = cc.clearcoat_roughness_factor.unwrap_or(0.0);
+            if let Some(n) = serde_json::Number::from_f64(rough as f64) {
+                obj.insert("clearcoatRoughnessFactor".to_owned(), Value::Number(n));
+            }
+            if let Some(t) = &cc.clearcoat_texture {
+                obj.insert("clearcoatTexture".to_owned(), texture_info_to_json(t));
+            }
+            if let Some(t) = &cc.clearcoat_roughness_texture {
+                obj.insert(
+                    "clearcoatRoughnessTexture".to_owned(),
+                    texture_info_to_json(t),
+                );
+            }
+            if let Some(t) = &cc.clearcoat_normal_texture {
+                obj.insert(
+                    "clearcoatNormalTexture".to_owned(),
+                    normal_texture_info_to_json(t),
+                );
+            }
+            mat.extras
+                .insert("KHR_materials_clearcoat".to_owned(), Value::Object(obj));
+        }
     }
     if let Some(extras) = &m.extras {
         extras_into(&mut mat.extras, extras.clone());
@@ -1260,6 +1305,26 @@ fn texture_info_to_json(t: &gj::TextureInfo) -> Value {
     m.insert("index".to_owned(), Value::from(t.index));
     if let Some(tc) = t.tex_coord {
         m.insert("texCoord".to_owned(), Value::from(tc));
+    }
+    Value::Object(m)
+}
+
+// Render a `NormalTextureInfo` (texture index + optional texCoord +
+// optional scale) back to a JSON object the way it appears on the wire.
+// Used by the `KHR_materials_clearcoat` decoder for the extension's
+// `clearcoatNormalTexture`, which is a `normalTextureInfo` and so
+// carries an optional `scale` per
+// `docs/3d/gltf/extensions/KHR_materials_clearcoat.md` §Clearcoat.
+fn normal_texture_info_to_json(t: &gj::NormalTextureInfo) -> Value {
+    let mut m = serde_json::Map::new();
+    m.insert("index".to_owned(), Value::from(t.index));
+    if let Some(tc) = t.tex_coord {
+        m.insert("texCoord".to_owned(), Value::from(tc));
+    }
+    if let Some(s) = t.scale {
+        if let Some(n) = serde_json::Number::from_f64(s as f64) {
+            m.insert("scale".to_owned(), Value::Number(n));
+        }
     }
     Value::Object(m)
 }

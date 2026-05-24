@@ -103,12 +103,14 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     // can append each to `extensionsUsed` per spec §3.12 — see
     // KHR_materials_unlit.md "Extending Materials",
     // KHR_materials_emissive_strength.md "Extending Materials",
-    // KHR_materials_ior.md "Extending Materials", and
-    // KHR_materials_specular.md "Extending Materials".
+    // KHR_materials_ior.md "Extending Materials",
+    // KHR_materials_specular.md "Extending Materials", and
+    // KHR_materials_clearcoat.md "Extending Materials".
     let mut emitted_unlit = false;
     let mut emitted_emissive_strength = false;
     let mut emitted_ior = false;
     let mut emitted_specular = false;
+    let mut emitted_clearcoat = false;
     for mat in &scene.materials {
         let m_json = encode_material(mat);
         if let Some(ext) = m_json.extensions.as_ref() {
@@ -123,6 +125,9 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
             }
             if ext.khr_materials_specular.is_some() {
                 emitted_specular = true;
+            }
+            if ext.khr_materials_clearcoat.is_some() {
+                emitted_clearcoat = true;
             }
         }
         root.materials.push(m_json);
@@ -140,6 +145,10 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     if emitted_specular {
         root.extensions_used
             .push("KHR_materials_specular".to_owned());
+    }
+    if emitted_clearcoat {
+        root.extensions_used
+            .push("KHR_materials_clearcoat".to_owned());
     }
 
     // --- textures + images + samplers ---
@@ -769,25 +778,41 @@ fn encode_material(m: &Material) -> gj::Material {
     let specular = effective_extras
         .remove("KHR_materials_specular")
         .and_then(specular_from_value);
-    let extensions =
-        if unlit_flag || emissive_strength.is_some() || ior.is_some() || specular.is_some() {
-            Some(gj::MaterialExtensions {
-                khr_materials_unlit: if unlit_flag {
-                    Some(gj::MaterialUnlit {})
-                } else {
-                    None
-                },
-                khr_materials_emissive_strength: emissive_strength.map(|s| {
-                    gj::MaterialEmissiveStrength {
-                        emissive_strength: Some(s),
-                    }
-                }),
-                khr_materials_ior: ior.map(|v| gj::MaterialIor { ior: Some(v) }),
-                khr_materials_specular: specular,
-            })
-        } else {
-            None
-        };
+    // KHR_materials_clearcoat — the decoder parks the whole extension
+    // object in extras as a `Value::Object` carrying any of the five
+    // spec-defined keys (`clearcoatFactor`, `clearcoatTexture`,
+    // `clearcoatRoughnessFactor`, `clearcoatRoughnessTexture`,
+    // `clearcoatNormalTexture`). Lift it back into the typed extensions
+    // block so the round-trip emits the spec object rather than a
+    // surplus `extras` key (docs/3d/gltf/extensions/
+    // KHR_materials_clearcoat.md §Extending Materials).
+    let clearcoat = effective_extras
+        .remove("KHR_materials_clearcoat")
+        .and_then(clearcoat_from_value);
+    let extensions = if unlit_flag
+        || emissive_strength.is_some()
+        || ior.is_some()
+        || specular.is_some()
+        || clearcoat.is_some()
+    {
+        Some(gj::MaterialExtensions {
+            khr_materials_unlit: if unlit_flag {
+                Some(gj::MaterialUnlit {})
+            } else {
+                None
+            },
+            khr_materials_emissive_strength: emissive_strength.map(|s| {
+                gj::MaterialEmissiveStrength {
+                    emissive_strength: Some(s),
+                }
+            }),
+            khr_materials_ior: ior.map(|v| gj::MaterialIor { ior: Some(v) }),
+            khr_materials_specular: specular,
+            khr_materials_clearcoat: clearcoat,
+        })
+    } else {
+        None
+    };
     let extras = if effective_extras.is_empty() {
         None
     } else {
@@ -1117,6 +1142,68 @@ fn texture_info_from_value(v: &serde_json::Value) -> Option<gj::TextureInfo> {
         .and_then(|x| x.as_u64())
         .map(|x| x as u32);
     Some(gj::TextureInfo { index, tex_coord })
+}
+
+// Parse a `normalTextureInfo` (index + optional texCoord + optional
+// scale) back into the typed `NormalTextureInfo`. Used by the
+// `KHR_materials_clearcoat` re-emission path for the extension's
+// `clearcoatNormalTexture` per
+// `docs/3d/gltf/extensions/KHR_materials_clearcoat.md` §Clearcoat.
+fn normal_texture_info_from_value(v: &serde_json::Value) -> Option<gj::NormalTextureInfo> {
+    let obj = v.as_object()?;
+    let index = obj.get("index").and_then(|x| x.as_u64())? as u32;
+    let tex_coord = obj
+        .get("texCoord")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as u32);
+    let scale = obj.get("scale").and_then(|x| x.as_f64()).map(|x| x as f32);
+    Some(gj::NormalTextureInfo {
+        index,
+        tex_coord,
+        scale,
+    })
+}
+
+// Parse the decoder's `Material::extras["KHR_materials_clearcoat"]` JSON
+// object back into the typed `MaterialClearcoat` for re-emission. The
+// decoder normalises the factor defaults, but consumers may also
+// construct partial objects directly; this helper accepts both,
+// ignoring keys outside the five spec-defined fields. See
+// `docs/3d/gltf/extensions/KHR_materials_clearcoat.md` §Clearcoat.
+fn clearcoat_from_value(v: serde_json::Value) -> Option<gj::MaterialClearcoat> {
+    let obj = v.as_object()?;
+    let factor = obj
+        .get("clearcoatFactor")
+        .and_then(|x| x.as_f64())
+        .map(|x| x as f32);
+    let roughness = obj
+        .get("clearcoatRoughnessFactor")
+        .and_then(|x| x.as_f64())
+        .map(|x| x as f32);
+    let texture = obj
+        .get("clearcoatTexture")
+        .and_then(texture_info_from_value);
+    let roughness_texture = obj
+        .get("clearcoatRoughnessTexture")
+        .and_then(texture_info_from_value);
+    let normal_texture = obj
+        .get("clearcoatNormalTexture")
+        .and_then(normal_texture_info_from_value);
+    if factor.is_none()
+        && roughness.is_none()
+        && texture.is_none()
+        && roughness_texture.is_none()
+        && normal_texture.is_none()
+    {
+        return None;
+    }
+    Some(gj::MaterialClearcoat {
+        clearcoat_factor: factor,
+        clearcoat_texture: texture,
+        clearcoat_roughness_factor: roughness,
+        clearcoat_roughness_texture: roughness_texture,
+        clearcoat_normal_texture: normal_texture,
+    })
 }
 
 // --- skin / animation encoders -------------------------------------------

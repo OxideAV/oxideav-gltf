@@ -33,7 +33,8 @@
 //!   document (root `extensions` / node `extensions`) MUST appear in
 //!   `extensionsUsed`. Today this covers `KHR_lights_punctual`,
 //!   `KHR_materials_unlit`, `KHR_materials_emissive_strength`,
-//!   `KHR_materials_ior`, and `KHR_materials_specular`.
+//!   `KHR_materials_ior`, `KHR_materials_specular`, and
+//!   `KHR_materials_clearcoat`.
 //!
 //! Animation channels (round 7):
 //!
@@ -451,6 +452,24 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
     if has_specular && !used("KHR_materials_specular") {
         return Err(invalid(
             "ExtensionStackUsedNotDeclared: KHR_materials_specular data is \
+             present on a material but the extension is not listed in \
+             extensionsUsed (spec §3.12)",
+        ));
+    }
+
+    // KHR_materials_clearcoat — per-material extension. Same §3.12 rule:
+    // the extension MUST be declared in `extensionsUsed` if any material
+    // carries the data block. See
+    // `docs/3d/gltf/extensions/KHR_materials_clearcoat.md`.
+    let has_clearcoat = root.materials.iter().any(|m| {
+        m.extensions
+            .as_ref()
+            .and_then(|e| e.khr_materials_clearcoat.as_ref())
+            .is_some()
+    });
+    if has_clearcoat && !used("KHR_materials_clearcoat") {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_materials_clearcoat data is \
              present on a material but the extension is not listed in \
              extensionsUsed (spec §3.12)",
         ));
@@ -877,9 +896,9 @@ mod tests {
     use crate::json_model::{
         Accessor, AccessorSparse, AccessorSparseIndices, AccessorSparseValues, Animation,
         AnimationChannel, AnimationChannelTarget, AnimationSampler, Asset, Buffer, BufferView,
-        KhrLightsPunctualRoot, Material, MaterialEmissiveStrength, MaterialExtensions, MaterialIor,
-        MaterialSpecular, MaterialUnlit, Mesh, Node, NodeExtensions, NodeLightRef, Primitive,
-        RootExtensions, COMPONENT_TYPE_FLOAT,
+        KhrLightsPunctualRoot, Material, MaterialClearcoat, MaterialEmissiveStrength,
+        MaterialExtensions, MaterialIor, MaterialSpecular, MaterialUnlit, Mesh, Node,
+        NodeExtensions, NodeLightRef, Primitive, RootExtensions, COMPONENT_TYPE_FLOAT,
     };
     use std::collections::HashMap;
 
@@ -1283,6 +1302,43 @@ mod tests {
         let mut root = empty_root();
         root.materials.push(specular_material());
         root.extensions_used = vec!["KHR_materials_specular".into()];
+        validate_extension_stack(&root).unwrap();
+    }
+
+    // KHR_materials_clearcoat —
+    // docs/3d/gltf/extensions/KHR_materials_clearcoat.md.
+    fn clearcoat_material() -> Material {
+        Material {
+            extensions: Some(MaterialExtensions {
+                khr_materials_clearcoat: Some(MaterialClearcoat {
+                    clearcoat_factor: Some(1.0),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn extension_stack_rejects_clearcoat_missing_used() {
+        let mut root = empty_root();
+        root.materials.push(clearcoat_material());
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackUsedNotDeclared")
+                && msg.contains("KHR_materials_clearcoat"),
+            "expected ExtensionStackUsedNotDeclared for \
+             KHR_materials_clearcoat, got {msg}"
+        );
+    }
+
+    #[test]
+    fn extension_stack_accepts_clearcoat_declared() {
+        let mut root = empty_root();
+        root.materials.push(clearcoat_material());
+        root.extensions_used = vec!["KHR_materials_clearcoat".into()];
         validate_extension_stack(&root).unwrap();
     }
 

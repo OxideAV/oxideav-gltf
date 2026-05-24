@@ -357,9 +357,12 @@ fn is_default_false(b: &bool) -> bool {
 /// (a scalar emissive multiplier per
 /// `docs/3d/gltf/extensions/KHR_materials_emissive_strength.md`),
 /// `KHR_materials_ior` (a scalar index of refraction per
-/// `docs/3d/gltf/extensions/KHR_materials_ior.md`), and
+/// `docs/3d/gltf/extensions/KHR_materials_ior.md`),
 /// `KHR_materials_specular` (a specular factor + F0 colour + optional
-/// textures per `docs/3d/gltf/extensions/KHR_materials_specular.md`).
+/// textures per `docs/3d/gltf/extensions/KHR_materials_specular.md`),
+/// and `KHR_materials_clearcoat` (a clear-coat layer's intensity +
+/// roughness factors + optional textures per
+/// `docs/3d/gltf/extensions/KHR_materials_clearcoat.md`).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct MaterialExtensions {
     #[serde(
@@ -386,6 +389,12 @@ pub struct MaterialExtensions {
         skip_serializing_if = "Option::is_none"
     )]
     pub khr_materials_specular: Option<MaterialSpecular>,
+    #[serde(
+        rename = "KHR_materials_clearcoat",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_materials_clearcoat: Option<MaterialClearcoat>,
 }
 
 /// `KHR_materials_unlit` extension object. Per the spec the schema
@@ -459,6 +468,58 @@ pub struct MaterialSpecular {
         skip_serializing_if = "Option::is_none"
     )]
     pub specular_color_texture: Option<TextureInfo>,
+}
+
+/// `KHR_materials_clearcoat` extension object — layers a protective
+/// clear coating on top of the metallic-roughness material. Adds two
+/// scalar factors and three optional texture references per
+/// `docs/3d/gltf/extensions/KHR_materials_clearcoat.md` §Extending
+/// Materials §Clearcoat:
+///
+/// * `clearcoatFactor` (default `0.0`) — clearcoat layer intensity;
+///   when zero the whole clearcoat layer is disabled.
+/// * `clearcoatTexture` (a `textureInfo`) — the intensity texture; its
+///   `.r` channel multiplies `clearcoatFactor`.
+/// * `clearcoatRoughnessFactor` (default `0.0`) — clearcoat layer
+///   roughness.
+/// * `clearcoatRoughnessTexture` (a `textureInfo`) — the roughness
+///   texture; its `.g` channel multiplies `clearcoatRoughnessFactor`.
+/// * `clearcoatNormalTexture` (a `normalTextureInfo`, so it carries an
+///   optional `scale`) — the clearcoat layer's normal map.
+///
+/// All five fields are optional per the spec.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MaterialClearcoat {
+    #[serde(
+        rename = "clearcoatFactor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub clearcoat_factor: Option<f32>,
+    #[serde(
+        rename = "clearcoatTexture",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub clearcoat_texture: Option<TextureInfo>,
+    #[serde(
+        rename = "clearcoatRoughnessFactor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub clearcoat_roughness_factor: Option<f32>,
+    #[serde(
+        rename = "clearcoatRoughnessTexture",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub clearcoat_roughness_texture: Option<TextureInfo>,
+    #[serde(
+        rename = "clearcoatNormalTexture",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub clearcoat_normal_texture: Option<NormalTextureInfo>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
