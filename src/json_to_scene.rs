@@ -968,6 +968,43 @@ fn convert_material(
             mat.extras
                 .insert("KHR_materials_clearcoat".to_owned(), Value::Object(obj));
         }
+        // KHR_materials_sheen — a sheen BRDF (colour + roughness factors
+        // + optional textures) layered on top of the metallic-roughness
+        // material per docs/3d/gltf/extensions/KHR_materials_sheen.md
+        // §Extending Materials §Sheen. We surface it through
+        // `Material::extras["KHR_materials_sheen"]` as a JSON object
+        // carrying any of the four spec-defined keys (`sheenColorFactor`,
+        // `sheenColorTexture`, `sheenRoughnessFactor`,
+        // `sheenRoughnessTexture`) rather than widening
+        // `oxideav_mesh3d::Material`. Per the spec all four fields are
+        // optional; we materialise the colour / scalar defaults
+        // (`sheenColorFactor = [0, 0, 0]`, `sheenRoughnessFactor = 0.0`)
+        // so a bare `{}` resolves to a fully-specified record (the spec
+        // notes a zero `sheenColorFactor` disables the whole layer).
+        // Texture infos pass through verbatim.
+        if let Some(sh) = &ext.khr_materials_sheen {
+            let mut obj = serde_json::Map::new();
+            let cf = sh.sheen_color_factor.unwrap_or([0.0, 0.0, 0.0]);
+            let cf_arr: Vec<Value> = cf
+                .iter()
+                .filter_map(|v| serde_json::Number::from_f64(*v as f64).map(Value::Number))
+                .collect();
+            if cf_arr.len() == 3 {
+                obj.insert("sheenColorFactor".to_owned(), Value::Array(cf_arr));
+            }
+            let rough = sh.sheen_roughness_factor.unwrap_or(0.0);
+            if let Some(n) = serde_json::Number::from_f64(rough as f64) {
+                obj.insert("sheenRoughnessFactor".to_owned(), Value::Number(n));
+            }
+            if let Some(t) = &sh.sheen_color_texture {
+                obj.insert("sheenColorTexture".to_owned(), texture_info_to_json(t));
+            }
+            if let Some(t) = &sh.sheen_roughness_texture {
+                obj.insert("sheenRoughnessTexture".to_owned(), texture_info_to_json(t));
+            }
+            mat.extras
+                .insert("KHR_materials_sheen".to_owned(), Value::Object(obj));
+        }
     }
     if let Some(extras) = &m.extras {
         extras_into(&mut mat.extras, extras.clone());

@@ -91,6 +91,22 @@ framework but usable standalone.
   `KHR_materials_clearcoat` to `extensionsUsed`. The §3.12 stack
   validator rejects materials carrying the data block without the
   declaration (`ExtensionStackUsedNotDeclared`)
+- KHR_materials_sheen extension (Khronos ratified) — per-material sheen
+  BRDF (cloth / fabric) from
+  `docs/3d/gltf/extensions/KHR_materials_sheen.md`. The decoder lifts the
+  full JSON `materials[i].extensions.KHR_materials_sheen` object into
+  `oxideav_mesh3d::Material::extras["KHR_materials_sheen"]` as a JSON
+  `Value::Object` carrying any of the four spec-defined keys
+  (`sheenColorFactor`, `sheenColorTexture`, `sheenRoughnessFactor`,
+  `sheenRoughnessTexture`); a bare `{}` resolves to the spec defaults
+  `sheenColorFactor = [0, 0, 0]` and `sheenRoughnessFactor = 0.0` (a zero
+  `sheenColorFactor` disables the whole layer per the spec), and the
+  `sheenColorTexture` / `sheenRoughnessTexture` infos round-trip with both
+  `index` and optional `texCoord` preserved. The encoder lifts the object
+  back into the typed extensions block and appends `KHR_materials_sheen`
+  to `extensionsUsed`. The §3.12 stack validator rejects materials
+  carrying the data block without the declaration
+  (`ExtensionStackUsedNotDeclared`)
 - Skins + skeletons (joint roster, inverseBindMatrices accessor,
   optional skeleton root) per spec §3.7.3 — `node.skin` round-trips
 - Animations (channels + samplers) per spec §3.11 — translation /
@@ -189,10 +205,10 @@ The KHR extension registry is now staged under
 `docs/3d/gltf/extensions/` (25 specs + index), so the remaining work
 is implementation, not docs:
 
-- Material PBR-extension surfaces: KHR_materials_sheen,
-  _transmission, _volume — scalar/colour factors ready to lift through
-  the same `Material::extras` side-channel the `emissive_strength`,
-  `ior`, `specular`, and `clearcoat` blocks already use
+- Material PBR-extension surfaces: KHR_materials_transmission, _volume
+  — scalar/colour factors ready to lift through the same
+  `Material::extras` side-channel the `emissive_strength`, `ior`,
+  `specular`, `clearcoat`, and `sheen` blocks already use
 - KHR_texture_transform UV transform (offset / rotation / scale) on
   texture references
 - KHR_mesh_quantization int8/int16 quantised POSITION / NORMAL /

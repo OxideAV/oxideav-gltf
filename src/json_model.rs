@@ -360,9 +360,11 @@ fn is_default_false(b: &bool) -> bool {
 /// `docs/3d/gltf/extensions/KHR_materials_ior.md`),
 /// `KHR_materials_specular` (a specular factor + F0 colour + optional
 /// textures per `docs/3d/gltf/extensions/KHR_materials_specular.md`),
-/// and `KHR_materials_clearcoat` (a clear-coat layer's intensity +
+/// `KHR_materials_clearcoat` (a clear-coat layer's intensity +
 /// roughness factors + optional textures per
-/// `docs/3d/gltf/extensions/KHR_materials_clearcoat.md`).
+/// `docs/3d/gltf/extensions/KHR_materials_clearcoat.md`), and
+/// `KHR_materials_sheen` (a sheen colour + roughness factors + optional
+/// textures per `docs/3d/gltf/extensions/KHR_materials_sheen.md`).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct MaterialExtensions {
     #[serde(
@@ -395,6 +397,12 @@ pub struct MaterialExtensions {
         skip_serializing_if = "Option::is_none"
     )]
     pub khr_materials_clearcoat: Option<MaterialClearcoat>,
+    #[serde(
+        rename = "KHR_materials_sheen",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_materials_sheen: Option<MaterialSheen>,
 }
 
 /// `KHR_materials_unlit` extension object. Per the spec the schema
@@ -520,6 +528,50 @@ pub struct MaterialClearcoat {
         skip_serializing_if = "Option::is_none"
     )]
     pub clearcoat_normal_texture: Option<NormalTextureInfo>,
+}
+
+/// `KHR_materials_sheen` extension object — layers a sheen BRDF (used
+/// to model cloth / fabric) on top of the metallic-roughness material.
+/// Adds an RGB colour factor, a scalar roughness factor, and two
+/// optional texture references per
+/// `docs/3d/gltf/extensions/KHR_materials_sheen.md` §Extending Materials
+/// §Sheen:
+///
+/// * `sheenColorFactor` (default `[0.0, 0.0, 0.0]`) — the sheen colour
+///   in linear space; when zero the whole sheen layer is disabled.
+/// * `sheenColorTexture` (a `textureInfo`) — the sheen colour (RGB) in
+///   the sRGB transfer function; its RGB channels multiply the factor.
+/// * `sheenRoughnessFactor` (default `0.0`) — the sheen roughness.
+/// * `sheenRoughnessTexture` (a `textureInfo`) — the sheen roughness
+///   (Alpha) texture; its `.a` channel multiplies the factor.
+///
+/// All four fields are optional per the spec.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MaterialSheen {
+    #[serde(
+        rename = "sheenColorFactor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sheen_color_factor: Option<[f32; 3]>,
+    #[serde(
+        rename = "sheenColorTexture",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sheen_color_texture: Option<TextureInfo>,
+    #[serde(
+        rename = "sheenRoughnessFactor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sheen_roughness_factor: Option<f32>,
+    #[serde(
+        rename = "sheenRoughnessTexture",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sheen_roughness_texture: Option<TextureInfo>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

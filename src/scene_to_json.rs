@@ -104,13 +104,15 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     // KHR_materials_unlit.md "Extending Materials",
     // KHR_materials_emissive_strength.md "Extending Materials",
     // KHR_materials_ior.md "Extending Materials",
-    // KHR_materials_specular.md "Extending Materials", and
-    // KHR_materials_clearcoat.md "Extending Materials".
+    // KHR_materials_specular.md "Extending Materials",
+    // KHR_materials_clearcoat.md "Extending Materials", and
+    // KHR_materials_sheen.md "Extending Materials".
     let mut emitted_unlit = false;
     let mut emitted_emissive_strength = false;
     let mut emitted_ior = false;
     let mut emitted_specular = false;
     let mut emitted_clearcoat = false;
+    let mut emitted_sheen = false;
     for mat in &scene.materials {
         let m_json = encode_material(mat);
         if let Some(ext) = m_json.extensions.as_ref() {
@@ -128,6 +130,9 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
             }
             if ext.khr_materials_clearcoat.is_some() {
                 emitted_clearcoat = true;
+            }
+            if ext.khr_materials_sheen.is_some() {
+                emitted_sheen = true;
             }
         }
         root.materials.push(m_json);
@@ -149,6 +154,9 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     if emitted_clearcoat {
         root.extensions_used
             .push("KHR_materials_clearcoat".to_owned());
+    }
+    if emitted_sheen {
+        root.extensions_used.push("KHR_materials_sheen".to_owned());
     }
 
     // --- textures + images + samplers ---
@@ -789,11 +797,22 @@ fn encode_material(m: &Material) -> gj::Material {
     let clearcoat = effective_extras
         .remove("KHR_materials_clearcoat")
         .and_then(clearcoat_from_value);
+    // KHR_materials_sheen — the decoder parks the whole extension object
+    // in extras as a `Value::Object` carrying any of the four
+    // spec-defined keys (`sheenColorFactor`, `sheenColorTexture`,
+    // `sheenRoughnessFactor`, `sheenRoughnessTexture`). Lift it back into
+    // the typed extensions block so the round-trip emits the spec object
+    // rather than a surplus `extras` key (docs/3d/gltf/extensions/
+    // KHR_materials_sheen.md §Extending Materials).
+    let sheen = effective_extras
+        .remove("KHR_materials_sheen")
+        .and_then(sheen_from_value);
     let extensions = if unlit_flag
         || emissive_strength.is_some()
         || ior.is_some()
         || specular.is_some()
         || clearcoat.is_some()
+        || sheen.is_some()
     {
         Some(gj::MaterialExtensions {
             khr_materials_unlit: if unlit_flag {
@@ -809,6 +828,7 @@ fn encode_material(m: &Material) -> gj::Material {
             khr_materials_ior: ior.map(|v| gj::MaterialIor { ior: Some(v) }),
             khr_materials_specular: specular,
             khr_materials_clearcoat: clearcoat,
+            khr_materials_sheen: sheen,
         })
     } else {
         None
@@ -1203,6 +1223,52 @@ fn clearcoat_from_value(v: serde_json::Value) -> Option<gj::MaterialClearcoat> {
         clearcoat_roughness_factor: roughness,
         clearcoat_roughness_texture: roughness_texture,
         clearcoat_normal_texture: normal_texture,
+    })
+}
+
+// Parse the decoder's `Material::extras["KHR_materials_sheen"]` JSON
+// object back into the typed `MaterialSheen` for re-emission. The
+// decoder normalises the colour / roughness defaults, but consumers may
+// also construct partial objects directly; this helper accepts both,
+// ignoring keys outside the four spec-defined fields. See
+// `docs/3d/gltf/extensions/KHR_materials_sheen.md` §Sheen.
+fn sheen_from_value(v: serde_json::Value) -> Option<gj::MaterialSheen> {
+    let obj = v.as_object()?;
+    let color = obj
+        .get("sheenColorFactor")
+        .and_then(|x| x.as_array())
+        .and_then(|arr| {
+            if arr.len() == 3 {
+                let r = arr[0].as_f64()? as f32;
+                let g = arr[1].as_f64()? as f32;
+                let b = arr[2].as_f64()? as f32;
+                Some([r, g, b])
+            } else {
+                None
+            }
+        });
+    let roughness = obj
+        .get("sheenRoughnessFactor")
+        .and_then(|x| x.as_f64())
+        .map(|x| x as f32);
+    let color_texture = obj
+        .get("sheenColorTexture")
+        .and_then(texture_info_from_value);
+    let roughness_texture = obj
+        .get("sheenRoughnessTexture")
+        .and_then(texture_info_from_value);
+    if color.is_none()
+        && roughness.is_none()
+        && color_texture.is_none()
+        && roughness_texture.is_none()
+    {
+        return None;
+    }
+    Some(gj::MaterialSheen {
+        sheen_color_factor: color,
+        sheen_color_texture: color_texture,
+        sheen_roughness_factor: roughness,
+        sheen_roughness_texture: roughness_texture,
     })
 }
 

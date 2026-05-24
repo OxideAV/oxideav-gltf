@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 114)
+
+- `KHR_materials_sheen` extension (Khronos ratified — see
+  `docs/3d/gltf/extensions/KHR_materials_sheen.md`). Decoder reads
+  `materials[i].extensions.KHR_materials_sheen` and surfaces the full
+  extension object through
+  `oxideav_mesh3d::Material::extras["KHR_materials_sheen"]` as a JSON
+  `Value::Object` carrying any of the four spec-defined keys
+  (`sheenColorFactor`, `sheenColorTexture`, `sheenRoughnessFactor`,
+  `sheenRoughnessTexture`) — a bare `{}` extension object resolves to the
+  spec defaults `sheenColorFactor = [0, 0, 0]`, `sheenRoughnessFactor =
+  0.0` (§Extending Materials §Sheen; the spec notes a zero
+  `sheenColorFactor` disables the whole sheen layer). `sheenColorTexture`
+  / `sheenRoughnessTexture` are `textureInfo` (round-trip `index` +
+  optional `texCoord`). Encoder lifts the object back into the typed JSON
+  extension block and appends `KHR_materials_sheen` to `extensionsUsed`.
+  The §3.12 stack validator rejects materials carrying the data block
+  without the declaration with `ExtensionStackUsedNotDeclared`. JSON
+  model gains `MaterialSheen` and a `MaterialExtensions.khr_materials_sheen`
+  field. Tests: 7 integration (`khr_materials_sheen.rs`) + 2 unit
+  (`validation::tests`).
+
 ### Added (round 110)
 
 - `KHR_materials_clearcoat` extension (Khronos ratified — see

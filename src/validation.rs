@@ -33,8 +33,8 @@
 //!   document (root `extensions` / node `extensions`) MUST appear in
 //!   `extensionsUsed`. Today this covers `KHR_lights_punctual`,
 //!   `KHR_materials_unlit`, `KHR_materials_emissive_strength`,
-//!   `KHR_materials_ior`, `KHR_materials_specular`, and
-//!   `KHR_materials_clearcoat`.
+//!   `KHR_materials_ior`, `KHR_materials_specular`,
+//!   `KHR_materials_clearcoat`, and `KHR_materials_sheen`.
 //!
 //! Animation channels (round 7):
 //!
@@ -475,6 +475,24 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         ));
     }
 
+    // KHR_materials_sheen — per-material extension. Same §3.12 rule: the
+    // extension MUST be declared in `extensionsUsed` if any material
+    // carries the data block. See
+    // `docs/3d/gltf/extensions/KHR_materials_sheen.md`.
+    let has_sheen = root.materials.iter().any(|m| {
+        m.extensions
+            .as_ref()
+            .and_then(|e| e.khr_materials_sheen.as_ref())
+            .is_some()
+    });
+    if has_sheen && !used("KHR_materials_sheen") {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_materials_sheen data is \
+             present on a material but the extension is not listed in \
+             extensionsUsed (spec §3.12)",
+        ));
+    }
+
     Ok(())
 }
 
@@ -897,8 +915,8 @@ mod tests {
         Accessor, AccessorSparse, AccessorSparseIndices, AccessorSparseValues, Animation,
         AnimationChannel, AnimationChannelTarget, AnimationSampler, Asset, Buffer, BufferView,
         KhrLightsPunctualRoot, Material, MaterialClearcoat, MaterialEmissiveStrength,
-        MaterialExtensions, MaterialIor, MaterialSpecular, MaterialUnlit, Mesh, Node,
-        NodeExtensions, NodeLightRef, Primitive, RootExtensions, COMPONENT_TYPE_FLOAT,
+        MaterialExtensions, MaterialIor, MaterialSheen, MaterialSpecular, MaterialUnlit, Mesh,
+        Node, NodeExtensions, NodeLightRef, Primitive, RootExtensions, COMPONENT_TYPE_FLOAT,
     };
     use std::collections::HashMap;
 
@@ -1339,6 +1357,42 @@ mod tests {
         let mut root = empty_root();
         root.materials.push(clearcoat_material());
         root.extensions_used = vec!["KHR_materials_clearcoat".into()];
+        validate_extension_stack(&root).unwrap();
+    }
+
+    // KHR_materials_sheen —
+    // docs/3d/gltf/extensions/KHR_materials_sheen.md.
+    fn sheen_material() -> Material {
+        Material {
+            extensions: Some(MaterialExtensions {
+                khr_materials_sheen: Some(MaterialSheen {
+                    sheen_color_factor: Some([0.9, 0.9, 0.9]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn extension_stack_rejects_sheen_missing_used() {
+        let mut root = empty_root();
+        root.materials.push(sheen_material());
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackUsedNotDeclared") && msg.contains("KHR_materials_sheen"),
+            "expected ExtensionStackUsedNotDeclared for \
+             KHR_materials_sheen, got {msg}"
+        );
+    }
+
+    #[test]
+    fn extension_stack_accepts_sheen_declared() {
+        let mut root = empty_root();
+        root.materials.push(sheen_material());
+        root.extensions_used = vec!["KHR_materials_sheen".into()];
         validate_extension_stack(&root).unwrap();
     }
 
