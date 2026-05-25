@@ -1074,6 +1074,51 @@ fn convert_material(
             mat.extras
                 .insert("KHR_materials_volume".to_owned(), Value::Object(obj));
         }
+        // KHR_materials_iridescence — thin-film interference layer on top
+        // of the metallic-roughness material; the hue varies with viewing
+        // angle and thin-film thickness per
+        // docs/3d/gltf/extensions/KHR_materials_iridescence.md §Properties.
+        // We surface it through `Material::extras["KHR_materials_iridescence"]`
+        // as a JSON object carrying any of the six spec-defined keys
+        // (`iridescenceFactor`, `iridescenceTexture`, `iridescenceIor`,
+        // `iridescenceThicknessMinimum`, `iridescenceThicknessMaximum`,
+        // `iridescenceThicknessTexture`) rather than widening
+        // `oxideav_mesh3d::Material`. Per the spec all six fields are
+        // optional; we materialise the scalar defaults
+        // (`iridescenceFactor = 0.0`, `iridescenceIor = 1.3`,
+        // `iridescenceThicknessMinimum = 100.0`,
+        // `iridescenceThicknessMaximum = 400.0`) so a bare `{}` resolves
+        // to a fully-specified record. Texture infos pass through verbatim.
+        if let Some(ir) = &ext.khr_materials_iridescence {
+            let mut obj = serde_json::Map::new();
+            let factor = ir.iridescence_factor.unwrap_or(0.0);
+            if let Some(n) = serde_json::Number::from_f64(factor as f64) {
+                obj.insert("iridescenceFactor".to_owned(), Value::Number(n));
+            }
+            if let Some(t) = &ir.iridescence_texture {
+                obj.insert("iridescenceTexture".to_owned(), texture_info_to_json(t));
+            }
+            let ior_val = ir.iridescence_ior.unwrap_or(1.3);
+            if let Some(n) = serde_json::Number::from_f64(ior_val as f64) {
+                obj.insert("iridescenceIor".to_owned(), Value::Number(n));
+            }
+            let thmin = ir.iridescence_thickness_minimum.unwrap_or(100.0);
+            if let Some(n) = serde_json::Number::from_f64(thmin as f64) {
+                obj.insert("iridescenceThicknessMinimum".to_owned(), Value::Number(n));
+            }
+            let thmax = ir.iridescence_thickness_maximum.unwrap_or(400.0);
+            if let Some(n) = serde_json::Number::from_f64(thmax as f64) {
+                obj.insert("iridescenceThicknessMaximum".to_owned(), Value::Number(n));
+            }
+            if let Some(t) = &ir.iridescence_thickness_texture {
+                obj.insert(
+                    "iridescenceThicknessTexture".to_owned(),
+                    texture_info_to_json(t),
+                );
+            }
+            mat.extras
+                .insert("KHR_materials_iridescence".to_owned(), Value::Object(obj));
+        }
     }
     if let Some(extras) = &m.extras {
         extras_into(&mut mat.extras, extras.clone());

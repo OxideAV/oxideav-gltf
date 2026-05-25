@@ -140,6 +140,26 @@ framework but usable standalone.
   `KHR_materials_volume` to `extensionsUsed`. The §3.12 stack validator
   rejects materials carrying the data block without the declaration
   (`ExtensionStackUsedNotDeclared`)
+- KHR_materials_iridescence extension (Khronos ratified) — per-material
+  thin-film interference layer (hue varies with viewing angle + thickness)
+  from `docs/3d/gltf/extensions/KHR_materials_iridescence.md`. The decoder
+  lifts the full JSON `materials[i].extensions.KHR_materials_iridescence`
+  object into `oxideav_mesh3d::Material::extras["KHR_materials_iridescence"]`
+  as a JSON `Value::Object` carrying any of the six spec-defined keys
+  (`iridescenceFactor`, `iridescenceTexture`, `iridescenceIor`,
+  `iridescenceThicknessMinimum`, `iridescenceThicknessMaximum`,
+  `iridescenceThicknessTexture`). A bare `{}` resolves to the spec
+  defaults `iridescenceFactor = 0.0` (zero disables the layer per
+  §Properties), `iridescenceIor = 1.3`, `iridescenceThicknessMinimum =
+  100.0`, `iridescenceThicknessMaximum = 400.0` (all in nanometres). The
+  spec explicitly allows `iridescenceThicknessMinimum >
+  iridescenceThicknessMaximum`, so inverted ranges pass through
+  unmodified. `iridescenceTexture` and `iridescenceThicknessTexture` are
+  `textureInfo` (round-trip `index` + optional `texCoord` preserved). The
+  encoder lifts the object back into the typed extensions block and
+  appends `KHR_materials_iridescence` to `extensionsUsed`. The §3.12
+  stack validator rejects materials carrying the data block without the
+  declaration (`ExtensionStackUsedNotDeclared`)
 - Skins + skeletons (joint roster, inverseBindMatrices accessor,
   optional skeleton root) per spec §3.7.3 — `node.skin` round-trips
 - Animations (channels + samplers) per spec §3.11 — translation /
@@ -238,11 +258,11 @@ The KHR extension registry is now staged under
 `docs/3d/gltf/extensions/` (25 specs + index), so the remaining work
 is implementation, not docs:
 
-- Material PBR-extension surfaces: KHR_materials_iridescence,
-  _anisotropy, _dispersion, _diffuse_transmission — scalar/colour
-  factors ready to lift through the same `Material::extras`
-  side-channel the `emissive_strength`, `ior`, `specular`, `clearcoat`,
-  `sheen`, `transmission`, and `volume` blocks already use
+- Material PBR-extension surfaces: KHR_materials_anisotropy,
+  _dispersion, _diffuse_transmission — scalar/colour factors ready to
+  lift through the same `Material::extras` side-channel the
+  `emissive_strength`, `ior`, `specular`, `clearcoat`, `sheen`,
+  `transmission`, `volume`, and `iridescence` blocks already use
 - KHR_texture_transform UV transform (offset / rotation / scale) on
   texture references
 - KHR_mesh_quantization int8/int16 quantised POSITION / NORMAL /

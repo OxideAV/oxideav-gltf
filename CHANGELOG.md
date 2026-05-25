@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 129)
+
+- `KHR_materials_iridescence` extension (Khronos ratified — see
+  `docs/3d/gltf/extensions/KHR_materials_iridescence.md`). Decoder reads
+  `materials[i].extensions.KHR_materials_iridescence` and surfaces the
+  full extension object through
+  `oxideav_mesh3d::Material::extras["KHR_materials_iridescence"]` as a
+  JSON `Value::Object` carrying any of the six spec-defined keys
+  (`iridescenceFactor`, `iridescenceTexture`, `iridescenceIor`,
+  `iridescenceThicknessMinimum`, `iridescenceThicknessMaximum`,
+  `iridescenceThicknessTexture`) — a bare `{}` extension object resolves
+  to the spec defaults `iridescenceFactor = 0.0` (a zero factor disables
+  the whole iridescence layer per §Properties), `iridescenceIor = 1.3`,
+  `iridescenceThicknessMinimum = 100.0`, `iridescenceThicknessMaximum =
+  400.0` (all in nanometres). The spec explicitly allows
+  `iridescenceThicknessMinimum > iridescenceThicknessMaximum`; the
+  decoder passes inverted ranges through unmodified. `iridescenceTexture`
+  / `iridescenceThicknessTexture` are `textureInfo` (round-trip `index`
+  + optional `texCoord` preserved). Encoder lifts the object back into
+  the typed JSON extension block and appends `KHR_materials_iridescence`
+  to `extensionsUsed`. The §3.12 stack validator rejects materials
+  carrying the data block without the declaration with
+  `ExtensionStackUsedNotDeclared`. JSON model gains `MaterialIridescence`
+  and a `MaterialExtensions.khr_materials_iridescence` field. Tests: 10
+  integration (`khr_materials_iridescence.rs`) + 2 unit
+  (`validation::tests`).
+
 ### Added (round 126)
 
 - cargo-fuzz harness `fuzz/fuzz_targets/parse.rs`. Drives arbitrary

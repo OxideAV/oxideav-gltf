@@ -107,8 +107,9 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     // KHR_materials_specular.md "Extending Materials",
     // KHR_materials_clearcoat.md "Extending Materials",
     // KHR_materials_sheen.md "Extending Materials",
-    // KHR_materials_transmission.md "Extending Materials", and
-    // KHR_materials_volume.md "Extending Materials".
+    // KHR_materials_transmission.md "Extending Materials",
+    // KHR_materials_volume.md "Extending Materials", and
+    // KHR_materials_iridescence.md "Extending Materials".
     let mut emitted_unlit = false;
     let mut emitted_emissive_strength = false;
     let mut emitted_ior = false;
@@ -117,6 +118,7 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     let mut emitted_sheen = false;
     let mut emitted_transmission = false;
     let mut emitted_volume = false;
+    let mut emitted_iridescence = false;
     for mat in &scene.materials {
         let m_json = encode_material(mat);
         if let Some(ext) = m_json.extensions.as_ref() {
@@ -143,6 +145,9 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
             }
             if ext.khr_materials_volume.is_some() {
                 emitted_volume = true;
+            }
+            if ext.khr_materials_iridescence.is_some() {
+                emitted_iridescence = true;
             }
         }
         root.materials.push(m_json);
@@ -174,6 +179,10 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     }
     if emitted_volume {
         root.extensions_used.push("KHR_materials_volume".to_owned());
+    }
+    if emitted_iridescence {
+        root.extensions_used
+            .push("KHR_materials_iridescence".to_owned());
     }
 
     // --- textures + images + samplers ---
@@ -843,6 +852,17 @@ fn encode_material(m: &Material) -> gj::Material {
     let volume = effective_extras
         .remove("KHR_materials_volume")
         .and_then(volume_from_value);
+    // KHR_materials_iridescence — the decoder parks the whole extension
+    // object in extras as a `Value::Object` carrying any of the six
+    // spec-defined keys (`iridescenceFactor`, `iridescenceTexture`,
+    // `iridescenceIor`, `iridescenceThicknessMinimum`,
+    // `iridescenceThicknessMaximum`, `iridescenceThicknessTexture`). Lift
+    // it back into the typed extensions block so the round-trip emits the
+    // spec object rather than a surplus `extras` key
+    // (docs/3d/gltf/extensions/KHR_materials_iridescence.md §Properties).
+    let iridescence = effective_extras
+        .remove("KHR_materials_iridescence")
+        .and_then(iridescence_from_value);
     let extensions = if unlit_flag
         || emissive_strength.is_some()
         || ior.is_some()
@@ -851,6 +871,7 @@ fn encode_material(m: &Material) -> gj::Material {
         || sheen.is_some()
         || transmission.is_some()
         || volume.is_some()
+        || iridescence.is_some()
     {
         Some(gj::MaterialExtensions {
             khr_materials_unlit: if unlit_flag {
@@ -869,6 +890,7 @@ fn encode_material(m: &Material) -> gj::Material {
             khr_materials_sheen: sheen,
             khr_materials_transmission: transmission,
             khr_materials_volume: volume,
+            khr_materials_iridescence: iridescence,
         })
     } else {
         None
@@ -1380,6 +1402,55 @@ fn volume_from_value(v: serde_json::Value) -> Option<gj::MaterialVolume> {
         thickness_texture,
         attenuation_distance,
         attenuation_color,
+    })
+}
+
+// Parse the decoder's `Material::extras["KHR_materials_iridescence"]`
+// JSON object back into the typed `MaterialIridescence` for re-emission.
+// The decoder normalises the scalar defaults, but consumers may also
+// construct partial objects directly; this helper accepts both, ignoring
+// keys outside the six spec-defined fields. See
+// `docs/3d/gltf/extensions/KHR_materials_iridescence.md` §Properties.
+fn iridescence_from_value(v: serde_json::Value) -> Option<gj::MaterialIridescence> {
+    let obj = v.as_object()?;
+    let factor = obj
+        .get("iridescenceFactor")
+        .and_then(|x| x.as_f64())
+        .map(|x| x as f32);
+    let texture = obj
+        .get("iridescenceTexture")
+        .and_then(texture_info_from_value);
+    let ior_val = obj
+        .get("iridescenceIor")
+        .and_then(|x| x.as_f64())
+        .map(|x| x as f32);
+    let thmin = obj
+        .get("iridescenceThicknessMinimum")
+        .and_then(|x| x.as_f64())
+        .map(|x| x as f32);
+    let thmax = obj
+        .get("iridescenceThicknessMaximum")
+        .and_then(|x| x.as_f64())
+        .map(|x| x as f32);
+    let thickness_texture = obj
+        .get("iridescenceThicknessTexture")
+        .and_then(texture_info_from_value);
+    if factor.is_none()
+        && texture.is_none()
+        && ior_val.is_none()
+        && thmin.is_none()
+        && thmax.is_none()
+        && thickness_texture.is_none()
+    {
+        return None;
+    }
+    Some(gj::MaterialIridescence {
+        iridescence_factor: factor,
+        iridescence_texture: texture,
+        iridescence_ior: ior_val,
+        iridescence_thickness_minimum: thmin,
+        iridescence_thickness_maximum: thmax,
+        iridescence_thickness_texture: thickness_texture,
     })
 }
 

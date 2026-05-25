@@ -370,7 +370,10 @@ fn is_default_false(b: &bool) -> bool {
 /// `docs/3d/gltf/extensions/KHR_materials_transmission.md`), and
 /// `KHR_materials_volume` (a thickness + attenuation distance + colour
 /// describing a homogeneous volumetric medium enclosed by the mesh per
-/// `docs/3d/gltf/extensions/KHR_materials_volume.md`).
+/// `docs/3d/gltf/extensions/KHR_materials_volume.md`), and
+/// `KHR_materials_iridescence` (a thin-film intensity + IOR + thickness
+/// range modelling the iridescence effect per
+/// `docs/3d/gltf/extensions/KHR_materials_iridescence.md`).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct MaterialExtensions {
     #[serde(
@@ -421,6 +424,12 @@ pub struct MaterialExtensions {
         skip_serializing_if = "Option::is_none"
     )]
     pub khr_materials_volume: Option<MaterialVolume>,
+    #[serde(
+        rename = "KHR_materials_iridescence",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_materials_iridescence: Option<MaterialIridescence>,
 }
 
 /// `KHR_materials_unlit` extension object. Per the spec the schema
@@ -675,6 +684,72 @@ pub struct MaterialVolume {
         skip_serializing_if = "Option::is_none"
     )]
     pub attenuation_color: Option<[f32; 3]>,
+}
+
+/// `KHR_materials_iridescence` extension object — adds a thin-film
+/// interference layer on top of the metallic-roughness material so that
+/// the hue depends on the viewing angle and the thin-film thickness, per
+/// `docs/3d/gltf/extensions/KHR_materials_iridescence.md` §Properties:
+///
+/// * `iridescenceFactor` (default `0.0`) — iridescence intensity; when
+///   zero the whole iridescence effect is disabled per §Properties
+///   ("If `iridescenceFactor` is zero (default), the iridescence
+///   extension has no effect on the material").
+/// * `iridescenceTexture` (a `textureInfo`) — the iridescence intensity
+///   texture; its `.r` channel multiplies `iridescenceFactor`.
+/// * `iridescenceIor` (default `1.3`) — the index of refraction of the
+///   thin-film layer; valid values are `>= 1.0`.
+/// * `iridescenceThicknessMinimum` (default `100.0`) — minimum thickness
+///   of the thin-film layer in nanometres; corresponds to a sampled
+///   thickness texture value of `0.0`.
+/// * `iridescenceThicknessMaximum` (default `400.0`) — maximum thickness
+///   of the thin-film layer in nanometres; corresponds to a sampled
+///   thickness texture value of `1.0`. The spec explicitly allows
+///   `iridescenceThicknessMinimum > iridescenceThicknessMaximum`. When
+///   no `iridescenceThicknessTexture` is present, the spec says the
+///   thickness is uniformly set to `iridescenceThicknessMaximum`.
+/// * `iridescenceThicknessTexture` (a `textureInfo`) — the thickness
+///   texture; its `.g` channel selects between the two thickness bounds.
+///
+/// All six fields are optional per the spec.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MaterialIridescence {
+    #[serde(
+        rename = "iridescenceFactor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub iridescence_factor: Option<f32>,
+    #[serde(
+        rename = "iridescenceTexture",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub iridescence_texture: Option<TextureInfo>,
+    #[serde(
+        rename = "iridescenceIor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub iridescence_ior: Option<f32>,
+    #[serde(
+        rename = "iridescenceThicknessMinimum",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub iridescence_thickness_minimum: Option<f32>,
+    #[serde(
+        rename = "iridescenceThicknessMaximum",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub iridescence_thickness_maximum: Option<f32>,
+    #[serde(
+        rename = "iridescenceThicknessTexture",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub iridescence_thickness_texture: Option<TextureInfo>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

@@ -35,7 +35,8 @@
 //!   `KHR_materials_unlit`, `KHR_materials_emissive_strength`,
 //!   `KHR_materials_ior`, `KHR_materials_specular`,
 //!   `KHR_materials_clearcoat`, `KHR_materials_sheen`,
-//!   `KHR_materials_transmission`, and `KHR_materials_volume`.
+//!   `KHR_materials_transmission`, `KHR_materials_volume`, and
+//!   `KHR_materials_iridescence`.
 //!
 //! Animation channels (round 7):
 //!
@@ -530,6 +531,24 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         ));
     }
 
+    // KHR_materials_iridescence — per-material extension. Same §3.12 rule:
+    // the extension MUST be declared in `extensionsUsed` if any material
+    // carries the data block. See
+    // `docs/3d/gltf/extensions/KHR_materials_iridescence.md`.
+    let has_iridescence = root.materials.iter().any(|m| {
+        m.extensions
+            .as_ref()
+            .and_then(|e| e.khr_materials_iridescence.as_ref())
+            .is_some()
+    });
+    if has_iridescence && !used("KHR_materials_iridescence") {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_materials_iridescence data \
+             is present on a material but the extension is not listed in \
+             extensionsUsed (spec §3.12)",
+        ));
+    }
+
     Ok(())
 }
 
@@ -952,9 +971,9 @@ mod tests {
         Accessor, AccessorSparse, AccessorSparseIndices, AccessorSparseValues, Animation,
         AnimationChannel, AnimationChannelTarget, AnimationSampler, Asset, Buffer, BufferView,
         KhrLightsPunctualRoot, Material, MaterialClearcoat, MaterialEmissiveStrength,
-        MaterialExtensions, MaterialIor, MaterialSheen, MaterialSpecular, MaterialTransmission,
-        MaterialUnlit, MaterialVolume, Mesh, Node, NodeExtensions, NodeLightRef, Primitive,
-        RootExtensions, COMPONENT_TYPE_FLOAT,
+        MaterialExtensions, MaterialIor, MaterialIridescence, MaterialSheen, MaterialSpecular,
+        MaterialTransmission, MaterialUnlit, MaterialVolume, Mesh, Node, NodeExtensions,
+        NodeLightRef, Primitive, RootExtensions, COMPONENT_TYPE_FLOAT,
     };
     use std::collections::HashMap;
 
@@ -1506,6 +1525,46 @@ mod tests {
         let mut root = empty_root();
         root.materials.push(volume_material());
         root.extensions_used = vec!["KHR_materials_volume".into()];
+        validate_extension_stack(&root).unwrap();
+    }
+
+    // KHR_materials_iridescence —
+    // docs/3d/gltf/extensions/KHR_materials_iridescence.md.
+    fn iridescence_material() -> Material {
+        Material {
+            extensions: Some(MaterialExtensions {
+                khr_materials_iridescence: Some(MaterialIridescence {
+                    iridescence_factor: Some(0.6),
+                    iridescence_ior: Some(1.3),
+                    iridescence_thickness_minimum: Some(100.0),
+                    iridescence_thickness_maximum: Some(400.0),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn extension_stack_rejects_iridescence_missing_used() {
+        let mut root = empty_root();
+        root.materials.push(iridescence_material());
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackUsedNotDeclared")
+                && msg.contains("KHR_materials_iridescence"),
+            "expected ExtensionStackUsedNotDeclared for \
+             KHR_materials_iridescence, got {msg}"
+        );
+    }
+
+    #[test]
+    fn extension_stack_accepts_iridescence_declared() {
+        let mut root = empty_root();
+        root.materials.push(iridescence_material());
+        root.extensions_used = vec!["KHR_materials_iridescence".into()];
         validate_extension_stack(&root).unwrap();
     }
 
