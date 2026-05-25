@@ -324,6 +324,24 @@ assert!(registry.decoder_for_extension("gltf").is_some());
 assert!(registry.decoder_for_extension("glb").is_some());
 ```
 
+## Fuzz testing
+
+`fuzz/fuzz_targets/parse.rs` is a libfuzzer harness that drives
+arbitrary attacker bytes through `GltfDecoder::decode` (the magic-sniff
++ JSON-or-GLB dispatcher) and `glb::parse` (the chunk walker).
+The contract under test is panic-freedom: every reachable parse path
+must return a `Result` on any input — chunk-length overflow, mismatched
+accessor count / componentType, buffer-view stride arithmetic,
+extension dispatch on unknown names, and GLB header / chunk-alignment
+violations are all expected `Err`, never aborts. Run with
+
+```bash
+cargo +nightly fuzz run parse
+```
+
+(no externally-staged corpus; the JSON depth + byte-length caps from
+`validation` keep iterations bounded).
+
 ## License
 
 [MIT](LICENSE)

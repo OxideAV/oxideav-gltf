@@ -1,0 +1,85 @@
+[package]
+name = "oxideav-gltf-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# The glTF surface worth fuzzing is the structural parser: a possible
+# 12-byte GLB header dispatching into chunked JSON + BIN bodies, OR a
+# raw UTF-8 JSON document going straight into serde + the per-attribute
+# accessor walker. Every reachable parse path that turns bytes into a
+# `Scene3D` must return a `Result` for any attacker input — never panic,
+# never abort, never debug-overflow, never index out of bounds.
+#
+# Classic glTF danger spots this crate hammers:
+#
+# * GLB chunk-length overflow — `chunkLength` is a `u32`; the
+#   header-driven walk MUST cap each declared chunk against the
+#   container `length` and refuse the spec's §4.4.3.1 alignment
+#   violations (chunkLength % 4 != 0) without slicing past the buffer.
+# * Buffer-view stride arithmetic — `accessor.byteOffset + stride *
+#   (count - 1) + element_size` must not overflow `u64` and must stay
+#   inside the backing bufferView. `accessor::locate` / `materialise_accessor`
+#   are public APIs that handle this without the upstream `convert`
+#   validators running first, so the harness exercises both paths.
+# * Accessor count / componentType mismatch — `read_indices_u32`,
+#   `read_vec_f32`, `read_scalar_f32`, `read_vec4_u16` all
+#   `try_into().unwrap()` per-element slices; the per-element size
+#   guards must reject mismatched widths BEFORE the indexing happens.
+# * Extension dispatch — `extensionsUsed` / `extensionsRequired` walk
+#   and the per-extension JSON deserialisers (KHR_lights_punctual,
+#   KHR_materials_unlit / _emissive_strength / _ior / _specular /
+#   _clearcoat / _sheen / _transmission / _volume) must accept any
+#   serde-deserialisable shape without panicking — unknown extension
+#   names are tolerated, malformed values surface as Err.
+#
+# No external library worth dlopen-ing as a cross-decode oracle: the
+# clean-room wall bars gltf-rs / cgltf / assimp source, and a black-box
+# differential against, say, `gltf-validator` (Khronos's own command-line
+# tool, written in Dart) would need a build dep on a Dart SDK to wire
+# into CI — not worth the maintenance cost for a panic-freedom contract.
+# Decode-only panic-freedom is the contract under test here.
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.oxideav-gltf]
+path = ".."
+
+[dependencies.oxideav-mesh3d]
+version = "0.0"
+# We exercise the trait-based `Mesh3DDecoder::decode` entry point so the
+# parent crate's `registry` feature is on by default (default-features=true
+# on the path-dep above takes care of the chain).
+
+[lib]
+name = "oxideav_gltf_fuzz"
+path = "src/lib.rs"
+
+# Prevent this fuzz package from being pulled into the umbrella
+# workspace at `crates/*` glob-resolve time.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+# ------------------------------------------------------------------
+# Fuzz targets.
+# ------------------------------------------------------------------
+
+# Panic-freedom over the glTF JSON + .glb binary container parser.
+# Drives attacker-controlled bytes through `GltfDecoder::decode` (the
+# top-level entry that sniffs the b"glTF" magic and dispatches into
+# either the GLB chunk walker or the raw-JSON path), and ALSO calls
+# the lower-level `glb::parse` directly so the chunk-header walker
+# gets exercised on inputs the magic sniff would reject before they
+# reach the high-level decoder.
+[[bin]]
+name = "parse"
+path = "fuzz_targets/parse.rs"
+test = false
+doc = false

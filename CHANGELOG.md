@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 126)
+
+- cargo-fuzz harness `fuzz/fuzz_targets/parse.rs`. Drives arbitrary
+  attacker bytes through `GltfDecoder::decode` (magic-sniff +
+  JSON-or-GLB dispatcher) and `glb::parse` (chunk walker) under
+  libfuzzer-sys with AddressSanitizer. The contract under test is
+  panic-freedom: every reachable parser path returns a `Result` for
+  any input — chunk-length overflow, mismatched accessor count /
+  componentType, buffer-view stride arithmetic, extension dispatch on
+  unknown names, GLB header / chunk-alignment violations all surface
+  as `Err`, never panic. Local soak (2 jobs, 124 s, ~13 k exec/s)
+  reached 3.1 M iterations / coverage 1790 with `oom/timeout/crash:
+  0/0/0`; no decoder changes were required. Round-7 validators
+  (`check_json_byte_length`, `check_json_depth`,
+  `validate_accessor_fits_bufferview`,
+  `validate_bufferview_fits_buffer`) carry the panic-freedom invariant
+  the harness re-verifies on attacker input.
+
 ### Added (round 120)
 
 - `KHR_materials_volume` extension (Khronos ratified — see
