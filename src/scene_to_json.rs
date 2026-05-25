@@ -119,8 +119,17 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     let mut emitted_transmission = false;
     let mut emitted_volume = false;
     let mut emitted_iridescence = false;
+    // KHR_texture_transform — per-textureInfo extension. We scan each
+    // material's five core PBR texture slots for the presence of a
+    // transform after `encode_material` lifts it out of extras
+    // (docs/3d/gltf/extensions/KHR_texture_transform.md §glTF Schema
+    // Updates).
+    let mut emitted_texture_transform = false;
     for mat in &scene.materials {
         let m_json = encode_material(mat);
+        if material_carries_texture_transform(&m_json) {
+            emitted_texture_transform = true;
+        }
         if let Some(ext) = m_json.extensions.as_ref() {
             if ext.khr_materials_unlit.is_some() {
                 emitted_unlit = true;
@@ -183,6 +192,10 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     if emitted_iridescence {
         root.extensions_used
             .push("KHR_materials_iridescence".to_owned());
+    }
+    if emitted_texture_transform {
+        root.extensions_used
+            .push("KHR_texture_transform".to_owned());
     }
 
     // --- textures + images + samplers ---
@@ -728,17 +741,43 @@ fn widen_u16(v: &[u16]) -> Vec<u32> {
 }
 
 fn encode_material(m: &Material) -> gj::Material {
+    // KHR_texture_transform — the decoder parks the per-slot transform
+    // in extras under the key `KHR_texture_transform:<slot>` where
+    // `<slot>` is one of `baseColor`, `metallicRoughness`, `normal`,
+    // `occlusion`, `emissive`. Lift each back into the typed
+    // textureInfo extensions block so the round-trip emits the spec
+    // object rather than a surplus `extras` key
+    // (docs/3d/gltf/extensions/KHR_texture_transform.md §glTF Schema
+    // Updates). Helper closure consumes the matching extras entry and
+    // wraps it into the [`gj::TextureInfoExtensions`] shape.
+    let mut effective_extras = m.extras.clone();
+    let mut take_transform = |slot: &str| -> Option<gj::TextureInfoExtensions> {
+        let key = format!("KHR_texture_transform:{slot}");
+        let v = effective_extras.remove(&key)?;
+        let t = texture_transform_from_value(&v)?;
+        Some(gj::TextureInfoExtensions {
+            khr_texture_transform: Some(t),
+        })
+    };
+    let base_color_ext = take_transform("baseColor");
+    let metallic_roughness_ext = take_transform("metallicRoughness");
+    let normal_ext = take_transform("normal");
+    let occlusion_ext = take_transform("occlusion");
+    let emissive_ext = take_transform("emissive");
+
     let pbr = gj::PbrMetallicRoughness {
         base_color_factor: Some(m.base_color),
         base_color_texture: m.base_color_texture.map(|t| gj::TextureInfo {
             index: t.texture.0,
             tex_coord: if t.uv_set == 0 { None } else { Some(t.uv_set) },
+            extensions: base_color_ext,
         }),
         metallic_factor: Some(m.metallic),
         roughness_factor: Some(m.roughness),
         metallic_roughness_texture: m.metallic_roughness_texture.map(|t| gj::TextureInfo {
             index: t.texture.0,
             tex_coord: if t.uv_set == 0 { None } else { Some(t.uv_set) },
+            extensions: metallic_roughness_ext,
         }),
     };
     let normal_texture = m.normal_texture.map(|t| gj::NormalTextureInfo {
@@ -749,6 +788,7 @@ fn encode_material(m: &Material) -> gj::Material {
         } else {
             Some(m.normal_scale)
         },
+        extensions: normal_ext,
     });
     let occlusion_texture = m.occlusion_texture.map(|t| gj::OcclusionTextureInfo {
         index: t.texture.0,
@@ -758,6 +798,7 @@ fn encode_material(m: &Material) -> gj::Material {
         } else {
             Some(m.occlusion_strength)
         },
+        extensions: occlusion_ext,
     });
     let (alpha_mode, alpha_cutoff) = match m.alpha_mode {
         AlphaMode::Opaque => (None, None),
@@ -777,8 +818,9 @@ fn encode_material(m: &Material) -> gj::Material {
     // extension object back where it came from rather than as a
     // surplus `extras` key. Per the KHR_materials_unlit spec the
     // value is an empty object — anything truthy on our side maps
-    // to an emitted `{}`.
-    let mut effective_extras = m.extras.clone();
+    // to an emitted `{}`. We reuse the `effective_extras` declared
+    // above (already had the per-texture-slot
+    // `KHR_texture_transform:<slot>` entries removed).
     let unlit_flag = effective_extras
         .remove("KHR_materials_unlit")
         .map(|v| v.as_bool().unwrap_or(false))
@@ -912,6 +954,7 @@ fn encode_material(m: &Material) -> gj::Material {
         emissive_texture: m.emissive_texture.map(|t| gj::TextureInfo {
             index: t.texture.0,
             tex_coord: if t.uv_set == 0 { None } else { Some(t.uv_set) },
+            extensions: emissive_ext,
         }),
         alpha_mode,
         alpha_cutoff,
@@ -1216,6 +1259,56 @@ fn specular_from_value(v: serde_json::Value) -> Option<gj::MaterialSpecular> {
     })
 }
 
+// Scan a `gj::Material` for any of its five core PBR texture slots
+// carrying a `KHR_texture_transform` block, so the writer knows whether
+// to append the extension to `extensionsUsed` per spec §3.12. See
+// `docs/3d/gltf/extensions/KHR_texture_transform.md` §glTF Schema
+// Updates.
+fn material_carries_texture_transform(m: &gj::Material) -> bool {
+    fn ti_has(t: &gj::TextureInfo) -> bool {
+        t.extensions
+            .as_ref()
+            .and_then(|e| e.khr_texture_transform.as_ref())
+            .is_some()
+    }
+    if let Some(p) = &m.pbr_metallic_roughness {
+        if p.base_color_texture.as_ref().map(ti_has).unwrap_or(false) {
+            return true;
+        }
+        if p.metallic_roughness_texture
+            .as_ref()
+            .map(ti_has)
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    if let Some(n) = &m.normal_texture {
+        if n.extensions
+            .as_ref()
+            .and_then(|e| e.khr_texture_transform.as_ref())
+            .is_some()
+        {
+            return true;
+        }
+    }
+    if let Some(o) = &m.occlusion_texture {
+        if o.extensions
+            .as_ref()
+            .and_then(|e| e.khr_texture_transform.as_ref())
+            .is_some()
+        {
+            return true;
+        }
+    }
+    if let Some(e) = &m.emissive_texture {
+        if ti_has(e) {
+            return true;
+        }
+    }
+    false
+}
+
 fn texture_info_from_value(v: &serde_json::Value) -> Option<gj::TextureInfo> {
     let obj = v.as_object()?;
     let index = obj.get("index").and_then(|x| x.as_u64())? as u32;
@@ -1223,7 +1316,17 @@ fn texture_info_from_value(v: &serde_json::Value) -> Option<gj::TextureInfo> {
         .get("texCoord")
         .and_then(|x| x.as_u64())
         .map(|x| x as u32);
-    Some(gj::TextureInfo { index, tex_coord })
+    // KHR_texture_transform nested under the sub-extension's textureInfo
+    // (e.g. `specularTexture.extensions.KHR_texture_transform`) — parse
+    // through so encoder-side `texture_info_to_json` can re-emit it.
+    let extensions = obj
+        .get("extensions")
+        .and_then(texture_info_extensions_from_value);
+    Some(gj::TextureInfo {
+        index,
+        tex_coord,
+        extensions,
+    })
 }
 
 // Parse a `normalTextureInfo` (index + optional texCoord + optional
@@ -1239,10 +1342,66 @@ fn normal_texture_info_from_value(v: &serde_json::Value) -> Option<gj::NormalTex
         .and_then(|x| x.as_u64())
         .map(|x| x as u32);
     let scale = obj.get("scale").and_then(|x| x.as_f64()).map(|x| x as f32);
+    let extensions = obj
+        .get("extensions")
+        .and_then(texture_info_extensions_from_value);
     Some(gj::NormalTextureInfo {
         index,
         tex_coord,
         scale,
+        extensions,
+    })
+}
+
+// Parse a `textureInfo.extensions` JSON object back into the typed
+// [`gj::TextureInfoExtensions`] for re-emission. Today only
+// `KHR_texture_transform` is recognised (the other per-textureInfo
+// extension keys, if any, are silently dropped by this re-emission
+// path — they survived the decoder's raw-JSON passage through
+// `Material::extras` if they reach here).
+fn texture_info_extensions_from_value(v: &serde_json::Value) -> Option<gj::TextureInfoExtensions> {
+    let obj = v.as_object()?;
+    let khr_texture_transform = obj
+        .get("KHR_texture_transform")
+        .and_then(texture_transform_from_value)?;
+    Some(gj::TextureInfoExtensions {
+        khr_texture_transform: Some(khr_texture_transform),
+    })
+}
+
+// Parse a `KHR_texture_transform` JSON object back into the typed
+// [`gj::TextureTransform`]. All four spec-defined fields (`offset`,
+// `rotation`, `scale`, `texCoord`) are optional; we accept partial
+// objects and silently ignore unknown keys.
+fn texture_transform_from_value(v: &serde_json::Value) -> Option<gj::TextureTransform> {
+    let obj = v.as_object()?;
+    let offset = obj.get("offset").and_then(|x| x.as_array()).and_then(|a| {
+        if a.len() == 2 {
+            Some([a[0].as_f64()? as f32, a[1].as_f64()? as f32])
+        } else {
+            None
+        }
+    });
+    let rotation = obj
+        .get("rotation")
+        .and_then(|x| x.as_f64())
+        .map(|x| x as f32);
+    let scale = obj.get("scale").and_then(|x| x.as_array()).and_then(|a| {
+        if a.len() == 2 {
+            Some([a[0].as_f64()? as f32, a[1].as_f64()? as f32])
+        } else {
+            None
+        }
+    });
+    let tex_coord = obj
+        .get("texCoord")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as u32);
+    Some(gj::TextureTransform {
+        offset,
+        rotation,
+        scale,
+        tex_coord,
     })
 }
 

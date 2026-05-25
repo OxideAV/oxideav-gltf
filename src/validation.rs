@@ -35,8 +35,9 @@
 //!   `KHR_materials_unlit`, `KHR_materials_emissive_strength`,
 //!   `KHR_materials_ior`, `KHR_materials_specular`,
 //!   `KHR_materials_clearcoat`, `KHR_materials_sheen`,
-//!   `KHR_materials_transmission`, `KHR_materials_volume`, and
-//!   `KHR_materials_iridescence`.
+//!   `KHR_materials_transmission`, `KHR_materials_volume`,
+//!   `KHR_materials_iridescence`, and `KHR_texture_transform` (the
+//!   last on any of the five core PBR textureInfo slots).
 //!
 //! Animation channels (round 7):
 //!
@@ -549,7 +550,52 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         ));
     }
 
+    // KHR_texture_transform — per-textureInfo extension. Same §3.12 rule:
+    // the extension MUST be declared in `extensionsUsed` if any
+    // textureInfo carries the data block. The block may appear on any of
+    // the five core PBR textureInfo slots (`baseColorTexture`,
+    // `metallicRoughnessTexture`, `normalTexture`, `occlusionTexture`,
+    // `emissiveTexture`) per `docs/3d/gltf/extensions/
+    // KHR_texture_transform.md` §glTF Schema Updates.
+    let has_texture_transform = root.materials.iter().any(|m| {
+        let pbr_hit = m
+            .pbr_metallic_roughness
+            .as_ref()
+            .map(|p| {
+                texture_info_has_transform(p.base_color_texture.as_ref())
+                    || texture_info_has_transform(p.metallic_roughness_texture.as_ref())
+            })
+            .unwrap_or(false);
+        let normal_hit = m
+            .normal_texture
+            .as_ref()
+            .and_then(|t| t.extensions.as_ref())
+            .and_then(|e| e.khr_texture_transform.as_ref())
+            .is_some();
+        let occlusion_hit = m
+            .occlusion_texture
+            .as_ref()
+            .and_then(|t| t.extensions.as_ref())
+            .and_then(|e| e.khr_texture_transform.as_ref())
+            .is_some();
+        let emissive_hit = texture_info_has_transform(m.emissive_texture.as_ref());
+        pbr_hit || normal_hit || occlusion_hit || emissive_hit
+    });
+    if has_texture_transform && !used("KHR_texture_transform") {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_texture_transform data is \
+             present on a textureInfo but the extension is not listed in \
+             extensionsUsed (spec §3.12)",
+        ));
+    }
+
     Ok(())
+}
+
+fn texture_info_has_transform(t: Option<&crate::json_model::TextureInfo>) -> bool {
+    t.and_then(|t| t.extensions.as_ref())
+        .and_then(|e| e.khr_texture_transform.as_ref())
+        .is_some()
 }
 
 /// Spec §3.11: every animation channel must point at a known

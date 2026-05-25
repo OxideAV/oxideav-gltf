@@ -160,6 +160,21 @@ framework but usable standalone.
   appends `KHR_materials_iridescence` to `extensionsUsed`. The §3.12
   stack validator rejects materials carrying the data block without the
   declaration (`ExtensionStackUsedNotDeclared`)
+- KHR_texture_transform extension (Khronos ratified) — per-textureInfo
+  affine UV transform (offset / rotation / scale / texCoord) from
+  `docs/3d/gltf/extensions/KHR_texture_transform.md`. The decoder lifts
+  the `materials[i].…Texture.extensions.KHR_texture_transform` object
+  from each of the five core PBR texture slots into
+  `oxideav_mesh3d::Material::extras["KHR_texture_transform:<slot>"]`
+  (slot ∈ `baseColor` / `metallicRoughness` / `normal` / `occlusion` /
+  `emissive`) as a JSON `Value::Object` carrying any of the four
+  spec-defined keys (`offset`, `rotation`, `scale`, `texCoord`); a bare
+  `{}` resolves to the spec defaults `offset = [0, 0]`, `rotation = 0`,
+  `scale = [1, 1]` (materialised at use time). The encoder lifts each
+  slot's transform back into the typed textureInfo extensions block and
+  appends `KHR_texture_transform` to `extensionsUsed`. The §3.12 stack
+  validator rejects textureInfos carrying the data block without the
+  declaration (`ExtensionStackUsedNotDeclared`)
 - Skins + skeletons (joint roster, inverseBindMatrices accessor,
   optional skeleton root) per spec §3.7.3 — `node.skin` round-trips
 - Animations (channels + samplers) per spec §3.11 — translation /

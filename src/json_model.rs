@@ -791,6 +791,13 @@ pub struct TextureInfo {
     pub index: u32,
     #[serde(rename = "texCoord", default, skip_serializing_if = "Option::is_none")]
     pub tex_coord: Option<u32>,
+    /// Per-textureInfo `extensions` block. Today this carries
+    /// `KHR_texture_transform` — an affine offset/rotation/scale on
+    /// the UV coordinates per
+    /// `docs/3d/gltf/extensions/KHR_texture_transform.md`; future
+    /// per-textureInfo KHR extensions land here too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<TextureInfoExtensions>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -800,6 +807,11 @@ pub struct NormalTextureInfo {
     pub tex_coord: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale: Option<f32>,
+    /// Per-textureInfo `extensions` block — same shape as the one on
+    /// [`TextureInfo`], surfacing `KHR_texture_transform` per
+    /// `docs/3d/gltf/extensions/KHR_texture_transform.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<TextureInfoExtensions>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -809,6 +821,56 @@ pub struct OcclusionTextureInfo {
     pub tex_coord: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strength: Option<f32>,
+    /// Per-textureInfo `extensions` block — same shape as the one on
+    /// [`TextureInfo`], surfacing `KHR_texture_transform` per
+    /// `docs/3d/gltf/extensions/KHR_texture_transform.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<TextureInfoExtensions>,
+}
+
+/// Per-textureInfo `extensions` block. Models the per-textureInfo KHR
+/// extensions the crate understands: today just `KHR_texture_transform`
+/// (offset / rotation / scale applied to the texture's UV coordinates
+/// per `docs/3d/gltf/extensions/KHR_texture_transform.md` §glTF Schema
+/// Updates). Future per-textureInfo KHR extensions land here too.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct TextureInfoExtensions {
+    #[serde(
+        rename = "KHR_texture_transform",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_texture_transform: Option<TextureTransform>,
+}
+
+/// `KHR_texture_transform` extension object — an affine 2D transform
+/// applied to the UV coordinates of any `textureInfo`. The transform is
+/// `translation × rotation × scale` applied as a `mat3` to the
+/// homogeneous UV vector `(u, v, 1)`. Per the spec §glTF Schema
+/// Updates all four fields are optional:
+///
+/// * `offset` (default `[0.0, 0.0]`) — UV-space translation, in
+///   texture-dimension factors.
+/// * `rotation` (default `0.0`) — counter-clockwise rotation in
+///   radians around the UV origin (equivalent to a clockwise rotation
+///   of the image).
+/// * `scale` (default `[1.0, 1.0]`) — multiplicative scale applied to
+///   the UV components.
+/// * `texCoord` — overrides the parent `textureInfo.texCoord` value
+///   only if the consumer supports this extension; the underlying
+///   texCoord remains the fallback for engines that don't.
+///
+/// See `docs/3d/gltf/extensions/KHR_texture_transform.md`.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct TextureTransform {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<[f32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<[f32; 2]>,
+    #[serde(rename = "texCoord", default, skip_serializing_if = "Option::is_none")]
+    pub tex_coord: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

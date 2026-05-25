@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 132)
+
+- `KHR_texture_transform` extension (Khronos ratified — see
+  `docs/3d/gltf/extensions/KHR_texture_transform.md`). Adds an optional
+  `extensions` block to the `textureInfo` / `normalTextureInfo` /
+  `occlusionTextureInfo` JSON structs carrying a `KHR_texture_transform`
+  object with the four spec-defined fields `offset` (default `[0, 0]`),
+  `rotation` (default `0`), `scale` (default `[1, 1]`), and `texCoord`.
+  The decoder lifts the transform from each of the five core PBR texture
+  slots (`baseColorTexture`, `metallicRoughnessTexture`, `normalTexture`,
+  `occlusionTexture`, `emissiveTexture`) into
+  `oxideav_mesh3d::Material::extras["KHR_texture_transform:<slot>"]`
+  (slot ∈ `baseColor` / `metallicRoughness` / `normal` / `occlusion` /
+  `emissive`) as a JSON `Value::Object`; a bare `{}` resolves to an empty
+  record with consumers applying the spec defaults at use time. The
+  encoder lifts each slot's transform back into the typed textureInfo
+  extensions block and appends `KHR_texture_transform` to
+  `extensionsUsed`. The §3.12 stack validator rejects textureInfos
+  carrying the data block without the declaration
+  (`ExtensionStackUsedNotDeclared`). The transform also passes through
+  verbatim when nested inside another extension's textureInfo (e.g.
+  `KHR_materials_specular.specularTexture`). New `tests/
+  khr_texture_transform.rs` covers GLB round-trip on the baseColor /
+  normal / emissive slots, `extensionsUsed` emission, the bare-object
+  default, full-field decode (mirroring the spec's lower-left-quadrant
+  90° example), and the §3.12 rejection path.
+
 ### Added (round 129)
 
 - `KHR_materials_iridescence` extension (Khronos ratified — see

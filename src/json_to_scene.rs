@@ -836,6 +836,48 @@ fn convert_material(
             uv_set: e.tex_coord.unwrap_or(0),
         });
     }
+    // KHR_texture_transform — a `textureInfo.extensions` block carrying
+    // offset / rotation / scale / texCoord per
+    // `docs/3d/gltf/extensions/KHR_texture_transform.md` §glTF Schema
+    // Updates. We surface it through `Material::extras` under the key
+    // `KHR_texture_transform:<slot>` (one entry per the five core PBR
+    // texture slots) so downstream raster consumers can apply the affine
+    // UV transform without us widening `oxideav_mesh3d::TextureRef`.
+    // Bare `{}` resolves to all four spec defaults (`offset = [0, 0]`,
+    // `rotation = 0`, `scale = [1, 1]`, `texCoord` unset).
+    if let Some(p) = &m.pbr_metallic_roughness {
+        stash_texture_transform(&mut mat, "baseColor", p.base_color_texture.as_ref());
+        stash_texture_transform(
+            &mut mat,
+            "metallicRoughness",
+            p.metallic_roughness_texture.as_ref(),
+        );
+    }
+    if let Some(n) = &m.normal_texture {
+        if let Some(tt) = n
+            .extensions
+            .as_ref()
+            .and_then(|e| e.khr_texture_transform.as_ref())
+        {
+            mat.extras.insert(
+                "KHR_texture_transform:normal".to_owned(),
+                texture_transform_to_json(tt),
+            );
+        }
+    }
+    if let Some(o) = &m.occlusion_texture {
+        if let Some(tt) = o
+            .extensions
+            .as_ref()
+            .and_then(|e| e.khr_texture_transform.as_ref())
+        {
+            mat.extras.insert(
+                "KHR_texture_transform:occlusion".to_owned(),
+                texture_transform_to_json(tt),
+            );
+        }
+    }
+    stash_texture_transform(&mut mat, "emissive", m.emissive_texture.as_ref());
     mat.alpha_mode = match m.alpha_mode.as_deref() {
         Some("MASK") => AlphaMode::Mask {
             cutoff: m.alpha_cutoff.unwrap_or(0.5),
@@ -1446,16 +1488,43 @@ fn topology_from_mode(mode: u32) -> Result<Topology> {
     })
 }
 
+// Stash a `KHR_texture_transform` block, if present on the given
+// textureInfo, into `mat.extras["KHR_texture_transform:<slot>"]`. A
+// no-op when the texture isn't set or has no transform. The slot key
+// pairs the transform back to the right textureInfo on the encoder
+// side. See `docs/3d/gltf/extensions/KHR_texture_transform.md`.
+fn stash_texture_transform(mat: &mut Material, slot: &str, info: Option<&gj::TextureInfo>) {
+    let Some(info) = info else { return };
+    let Some(tt) = info
+        .extensions
+        .as_ref()
+        .and_then(|e| e.khr_texture_transform.as_ref())
+    else {
+        return;
+    };
+    mat.extras.insert(
+        format!("KHR_texture_transform:{slot}"),
+        texture_transform_to_json(tt),
+    );
+}
+
 // Render a `TextureInfo` (texture index + optional texCoord) back to a
 // JSON object the way it appears on the wire. Used by the
 // `KHR_materials_specular` decoder to keep the raw texture-info shape
 // when surfacing the extension through the `Material::extras`
-// side-channel.
+// side-channel. Per-textureInfo extensions (today only
+// `KHR_texture_transform`, docs/3d/gltf/extensions/
+// KHR_texture_transform.md) pass through verbatim too.
 fn texture_info_to_json(t: &gj::TextureInfo) -> Value {
     let mut m = serde_json::Map::new();
     m.insert("index".to_owned(), Value::from(t.index));
     if let Some(tc) = t.tex_coord {
         m.insert("texCoord".to_owned(), Value::from(tc));
+    }
+    if let Some(ext) = &t.extensions {
+        if let Some(ext_json) = texture_info_extensions_to_json(ext) {
+            m.insert("extensions".to_owned(), ext_json);
+        }
     }
     Value::Object(m)
 }
@@ -1466,6 +1535,9 @@ fn texture_info_to_json(t: &gj::TextureInfo) -> Value {
 // `clearcoatNormalTexture`, which is a `normalTextureInfo` and so
 // carries an optional `scale` per
 // `docs/3d/gltf/extensions/KHR_materials_clearcoat.md` §Clearcoat.
+// Per-textureInfo extensions (today only `KHR_texture_transform`,
+// docs/3d/gltf/extensions/KHR_texture_transform.md) pass through
+// verbatim too.
 fn normal_texture_info_to_json(t: &gj::NormalTextureInfo) -> Value {
     let mut m = serde_json::Map::new();
     m.insert("index".to_owned(), Value::from(t.index));
@@ -1477,7 +1549,68 @@ fn normal_texture_info_to_json(t: &gj::NormalTextureInfo) -> Value {
             m.insert("scale".to_owned(), Value::Number(n));
         }
     }
+    if let Some(ext) = &t.extensions {
+        if let Some(ext_json) = texture_info_extensions_to_json(ext) {
+            m.insert("extensions".to_owned(), ext_json);
+        }
+    }
     Value::Object(m)
+}
+
+// Render a `TextureInfoExtensions` block into the JSON shape that
+// matches the source document: a `{ "KHR_texture_transform": {...} }`
+// object containing only the keys actually present. Returns `None` if
+// no recognised sub-extension is set, so the caller can skip the
+// `extensions` key entirely.
+fn texture_info_extensions_to_json(ext: &gj::TextureInfoExtensions) -> Option<Value> {
+    let mut obj = serde_json::Map::new();
+    if let Some(t) = &ext.khr_texture_transform {
+        obj.insert(
+            "KHR_texture_transform".to_owned(),
+            texture_transform_to_json(t),
+        );
+    }
+    if obj.is_empty() {
+        None
+    } else {
+        Some(Value::Object(obj))
+    }
+}
+
+// Render a `KHR_texture_transform` extension object — emitting only
+// the keys actually present per `docs/3d/gltf/extensions/
+// KHR_texture_transform.md` §glTF Schema Updates (all four fields are
+// optional, with defaults `offset = [0, 0]`, `rotation = 0`,
+// `scale = [1, 1]`).
+pub(crate) fn texture_transform_to_json(t: &gj::TextureTransform) -> Value {
+    let mut obj = serde_json::Map::new();
+    if let Some(o) = t.offset {
+        let arr: Vec<Value> = o
+            .iter()
+            .filter_map(|v| serde_json::Number::from_f64(*v as f64).map(Value::Number))
+            .collect();
+        if arr.len() == 2 {
+            obj.insert("offset".to_owned(), Value::Array(arr));
+        }
+    }
+    if let Some(r) = t.rotation {
+        if let Some(n) = serde_json::Number::from_f64(r as f64) {
+            obj.insert("rotation".to_owned(), Value::Number(n));
+        }
+    }
+    if let Some(s) = t.scale {
+        let arr: Vec<Value> = s
+            .iter()
+            .filter_map(|v| serde_json::Number::from_f64(*v as f64).map(Value::Number))
+            .collect();
+        if arr.len() == 2 {
+            obj.insert("scale".to_owned(), Value::Array(arr));
+        }
+    }
+    if let Some(tc) = t.tex_coord {
+        obj.insert("texCoord".to_owned(), Value::from(tc));
+    }
+    Value::Object(obj)
 }
 
 // `extras` is a JSON object — flatten one level into the
