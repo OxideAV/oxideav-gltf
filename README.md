@@ -179,6 +179,26 @@ framework but usable standalone.
   `anisotropyRotation` (`ExtensionStackAnisotropyRotationFinite`), and
   rejects materials carrying the data block without the declaration
   (`ExtensionStackUsedNotDeclared`)
+- KHR_materials_dispersion extension (Khronos ratified) — per-material
+  optical dispersion (chromatic aberration) modulating the volumetric
+  transmission model from
+  `docs/3d/gltf/extensions/KHR_materials_dispersion.md`. The extension
+  carries a single `dispersion` scalar storing `20/Vd` (where `Vd` is
+  the Abbe number — the same transform Adobe Standard Material and
+  ASWF OpenPBR use). The decoder lifts the full JSON
+  `materials[i].extensions.KHR_materials_dispersion` object into
+  `oxideav_mesh3d::Material::extras["KHR_materials_dispersion"]` as a
+  JSON `Value::Object` carrying the `dispersion` key; a bare `{}`
+  resolves to the spec default `dispersion = 0.0` (no dispersion, the
+  backwards-compatibility default). Values above `1.0` are explicitly
+  allowed for artistic exaggeration (Rutile at `2.04` is the
+  spec-listed example). The encoder lifts the object back into the
+  typed extensions block and appends `KHR_materials_dispersion` to
+  `extensionsUsed`. The §3.12 stack validator additionally enforces
+  the spec's "Any value zero or larger" rule — `dispersion` MUST be
+  finite and `>= 0` (`ExtensionStackDispersionRange`) — and rejects
+  materials carrying the data block without the declaration
+  (`ExtensionStackUsedNotDeclared`)
 - KHR_texture_transform extension (Khronos ratified) — per-textureInfo
   affine UV transform (offset / rotation / scale / texCoord) from
   `docs/3d/gltf/extensions/KHR_texture_transform.md`. The decoder lifts
@@ -292,11 +312,11 @@ The KHR extension registry is now staged under
 `docs/3d/gltf/extensions/` (25 specs + index), so the remaining work
 is implementation, not docs:
 
-- Material PBR-extension surfaces: KHR_materials_anisotropy,
-  _dispersion, _diffuse_transmission — scalar/colour factors ready to
-  lift through the same `Material::extras` side-channel the
-  `emissive_strength`, `ior`, `specular`, `clearcoat`, `sheen`,
-  `transmission`, `volume`, and `iridescence` blocks already use
+- Material PBR-extension surfaces: KHR_materials_diffuse_transmission —
+  scalar/colour factors ready to lift through the same
+  `Material::extras` side-channel the `emissive_strength`, `ior`,
+  `specular`, `clearcoat`, `sheen`, `transmission`, `volume`,
+  `iridescence`, `anisotropy`, and `dispersion` blocks already use
 - KHR_texture_transform UV transform (offset / rotation / scale) on
   texture references
 - KHR_mesh_quantization int8/int16 quantised POSITION / NORMAL /

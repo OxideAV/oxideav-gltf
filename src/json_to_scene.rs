@@ -1190,6 +1190,26 @@ fn convert_material(
             mat.extras
                 .insert("KHR_materials_anisotropy".to_owned(), Value::Object(obj));
         }
+        // KHR_materials_dispersion — optical dispersion (chromatic
+        // aberration) on top of the metallic-roughness material's
+        // volumetric transmission per
+        // docs/3d/gltf/extensions/KHR_materials_dispersion.md §Extending
+        // Materials. We surface it through
+        // `Material::extras["KHR_materials_dispersion"]` as a JSON object
+        // carrying the single spec-defined `dispersion` key (`20/Vd`)
+        // rather than widening `oxideav_mesh3d::Material`. Per the spec
+        // the field is optional with a default of `0.0` (no dispersion,
+        // the backwards-compatibility default) so a bare `{}` resolves
+        // to a fully-specified record with the default materialised.
+        if let Some(dp) = &ext.khr_materials_dispersion {
+            let mut obj = serde_json::Map::new();
+            let dispersion = dp.dispersion.unwrap_or(0.0);
+            if let Some(n) = serde_json::Number::from_f64(dispersion as f64) {
+                obj.insert("dispersion".to_owned(), Value::Number(n));
+            }
+            mat.extras
+                .insert("KHR_materials_dispersion".to_owned(), Value::Object(obj));
+        }
     }
     if let Some(extras) = &m.extras {
         extras_into(&mut mat.extras, extras.clone());

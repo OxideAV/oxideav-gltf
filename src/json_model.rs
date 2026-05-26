@@ -342,8 +342,12 @@ pub struct Material {
     /// — `docs/3d/gltf/extensions/KHR_materials_specular.md`),
     /// `KHR_materials_anisotropy` (an anisotropic specular lobe
     /// strength + rotation + optional direction/strength texture —
-    /// `docs/3d/gltf/extensions/KHR_materials_anisotropy.md`); future
-    /// per-material KHR extensions land here too.
+    /// `docs/3d/gltf/extensions/KHR_materials_anisotropy.md`), and
+    /// `KHR_materials_dispersion` (a single `dispersion` scalar = 20/Vd
+    /// driving the chromatic-aberration spread for the volumetric
+    /// transmission model per `docs/3d/gltf/extensions/
+    /// KHR_materials_dispersion.md`); future per-material KHR extensions
+    /// land here too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extensions: Option<MaterialExtensions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -379,7 +383,11 @@ fn is_default_false(b: &bool) -> bool {
 /// `docs/3d/gltf/extensions/KHR_materials_iridescence.md`), and
 /// `KHR_materials_anisotropy` (an anisotropic specular lobe with a
 /// strength scalar + rotation angle + optional direction/strength
-/// texture per `docs/3d/gltf/extensions/KHR_materials_anisotropy.md`).
+/// texture per `docs/3d/gltf/extensions/KHR_materials_anisotropy.md`),
+/// and `KHR_materials_dispersion` (a single `dispersion` scalar set to
+/// `20/Vd` driving the wavelength-dependent index-of-refraction
+/// spread used by the volumetric transmission model per
+/// `docs/3d/gltf/extensions/KHR_materials_dispersion.md`).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct MaterialExtensions {
     #[serde(
@@ -442,6 +450,12 @@ pub struct MaterialExtensions {
         skip_serializing_if = "Option::is_none"
     )]
     pub khr_materials_anisotropy: Option<MaterialAnisotropy>,
+    #[serde(
+        rename = "KHR_materials_dispersion",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_materials_dispersion: Option<MaterialDispersion>,
 }
 
 /// `KHR_materials_unlit` extension object. Per the spec the schema
@@ -805,6 +819,29 @@ pub struct MaterialAnisotropy {
         skip_serializing_if = "Option::is_none"
     )]
     pub anisotropy_texture: Option<TextureInfo>,
+}
+
+/// `KHR_materials_dispersion` extension object — adds an optical
+/// dispersion (chromatic aberration) to the volumetric transmission
+/// model on top of the metallic-roughness material per
+/// `docs/3d/gltf/extensions/KHR_materials_dispersion.md` §Extending
+/// Materials.
+///
+/// * `dispersion` (default `0.0`) — strength of the dispersion effect,
+///   stored as `20/Vd` where `Vd` is the Abbe number. A value of `0`
+///   means no dispersion (the default for backwards compatibility);
+///   any non-negative value is valid, with `[0, 1]` covering the
+///   realistic range. Values above `1.0` exaggerate the effect for
+///   artistic use. Backed by the same `20/Vd` transform that Adobe
+///   Standard Material and ASWF OpenPBR use.
+///
+/// The extension only meaningfully applies when the material also
+/// carries `KHR_materials_volume`; the spec ratification is independent
+/// of that pairing, so we don't enforce it here.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MaterialDispersion {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispersion: Option<f32>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

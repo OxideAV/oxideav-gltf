@@ -36,13 +36,18 @@
 //!   `KHR_materials_ior`, `KHR_materials_specular`,
 //!   `KHR_materials_clearcoat`, `KHR_materials_sheen`,
 //!   `KHR_materials_transmission`, `KHR_materials_volume`,
-//!   `KHR_materials_iridescence`, `KHR_materials_anisotropy`, and
-//!   `KHR_texture_transform` (the last on any of the five core PBR
-//!   textureInfo slots).
+//!   `KHR_materials_iridescence`, `KHR_materials_anisotropy`,
+//!   `KHR_materials_dispersion`, and `KHR_texture_transform` (the last
+//!   on any of the five core PBR textureInfo slots).
 //! * `KHR_materials_anisotropy.anisotropyStrength` MUST sit in `[0, 1]`
 //!   per the extension spec's "Anisotropy" section ("a dimensionless
 //!   number in the range [0, 1]"). The `anisotropyRotation` is
 //!   interpreted modulo 2π so no range check is applied.
+//! * `KHR_materials_dispersion.dispersion` MUST be finite and `>= 0`
+//!   per the extension spec ("Any value zero or larger is considered
+//!   to be a valid dispersion value"). Values above `1.0` are allowed
+//!   for artistic exaggeration; only negative or non-finite values
+//!   are rejected.
 //!
 //! Animation channels (round 7):
 //!
@@ -603,6 +608,48 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         }
     }
 
+    // KHR_materials_dispersion — per-material extension. Same §3.12
+    // rule: the extension MUST be declared in `extensionsUsed` if any
+    // material carries the data block. Also enforce the spec's
+    // non-negativity constraint on `dispersion` here — per
+    // `docs/3d/gltf/extensions/KHR_materials_dispersion.md` §Extending
+    // Materials, "Any value zero or larger is considered to be a valid
+    // dispersion value". Values above `1.0` are explicitly allowed for
+    // artistic exaggeration; only negative or non-finite values are
+    // rejected.
+    let has_dispersion = root.materials.iter().any(|m| {
+        m.extensions
+            .as_ref()
+            .and_then(|e| e.khr_materials_dispersion.as_ref())
+            .is_some()
+    });
+    if has_dispersion && !used("KHR_materials_dispersion") {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_materials_dispersion data \
+             is present on a material but the extension is not listed in \
+             extensionsUsed (spec §3.12)",
+        ));
+    }
+    for (mi, m) in root.materials.iter().enumerate() {
+        let Some(dp) = m
+            .extensions
+            .as_ref()
+            .and_then(|e| e.khr_materials_dispersion.as_ref())
+        else {
+            continue;
+        };
+        if let Some(d) = dp.dispersion {
+            if !(d.is_finite() && d >= 0.0) {
+                return Err(invalid(format!(
+                    "ExtensionStackDispersionRange: materials[{mi}] \
+                     .extensions.KHR_materials_dispersion.dispersion = \
+                     {d} is not finite and >= 0 \
+                     (KHR_materials_dispersion §Extending Materials)"
+                )));
+            }
+        }
+    }
+
     // KHR_texture_transform — per-textureInfo extension. Same §3.12 rule:
     // the extension MUST be declared in `extensionsUsed` if any
     // textureInfo carries the data block. The block may appear on any of
@@ -1069,7 +1116,7 @@ mod tests {
     use crate::json_model::{
         Accessor, AccessorSparse, AccessorSparseIndices, AccessorSparseValues, Animation,
         AnimationChannel, AnimationChannelTarget, AnimationSampler, Asset, Buffer, BufferView,
-        KhrLightsPunctualRoot, Material, MaterialAnisotropy, MaterialClearcoat,
+        KhrLightsPunctualRoot, Material, MaterialAnisotropy, MaterialClearcoat, MaterialDispersion,
         MaterialEmissiveStrength, MaterialExtensions, MaterialIor, MaterialIridescence,
         MaterialSheen, MaterialSpecular, MaterialTransmission, MaterialUnlit, MaterialVolume, Mesh,
         Node, NodeExtensions, NodeLightRef, Primitive, RootExtensions, COMPONENT_TYPE_FLOAT,
@@ -1771,6 +1818,88 @@ mod tests {
         assert!(
             msg.contains("ExtensionStackAnisotropyRotationFinite"),
             "expected ExtensionStackAnisotropyRotationFinite, got {msg}"
+        );
+    }
+
+    // KHR_materials_dispersion —
+    // docs/3d/gltf/extensions/KHR_materials_dispersion.md.
+    fn dispersion_material(value: f32) -> Material {
+        Material {
+            extensions: Some(MaterialExtensions {
+                khr_materials_dispersion: Some(MaterialDispersion {
+                    dispersion: Some(value),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn extension_stack_rejects_dispersion_missing_used() {
+        let mut root = empty_root();
+        root.materials.push(dispersion_material(0.5));
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackUsedNotDeclared")
+                && msg.contains("KHR_materials_dispersion"),
+            "expected ExtensionStackUsedNotDeclared for \
+             KHR_materials_dispersion, got {msg}"
+        );
+    }
+
+    #[test]
+    fn extension_stack_accepts_dispersion_declared() {
+        let mut root = empty_root();
+        root.materials.push(dispersion_material(0.5));
+        root.extensions_used = vec!["KHR_materials_dispersion".into()];
+        validate_extension_stack(&root).unwrap();
+    }
+
+    #[test]
+    fn extension_stack_accepts_dispersion_zero() {
+        // Zero is the spec default and explicitly valid (means "no
+        // dispersion").
+        let mut root = empty_root();
+        root.materials.push(dispersion_material(0.0));
+        root.extensions_used = vec!["KHR_materials_dispersion".into()];
+        validate_extension_stack(&root).unwrap();
+    }
+
+    #[test]
+    fn extension_stack_accepts_dispersion_above_one() {
+        // The spec says values above 1.0 are valid for artists wanting
+        // to exaggerate the effect (Rutile = 2.04 is the listed example).
+        let mut root = empty_root();
+        root.materials.push(dispersion_material(2.04));
+        root.extensions_used = vec!["KHR_materials_dispersion".into()];
+        validate_extension_stack(&root).unwrap();
+    }
+
+    #[test]
+    fn extension_stack_rejects_dispersion_negative() {
+        let mut root = empty_root();
+        root.materials.push(dispersion_material(-0.1));
+        root.extensions_used = vec!["KHR_materials_dispersion".into()];
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackDispersionRange"),
+            "expected ExtensionStackDispersionRange, got {msg}"
+        );
+    }
+
+    #[test]
+    fn extension_stack_rejects_dispersion_not_finite() {
+        let mut root = empty_root();
+        root.materials.push(dispersion_material(f32::NAN));
+        root.extensions_used = vec!["KHR_materials_dispersion".into()];
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackDispersionRange"),
+            "expected ExtensionStackDispersionRange, got {msg}"
         );
     }
 

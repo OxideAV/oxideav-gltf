@@ -109,8 +109,9 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     // KHR_materials_sheen.md "Extending Materials",
     // KHR_materials_transmission.md "Extending Materials",
     // KHR_materials_volume.md "Extending Materials",
-    // KHR_materials_iridescence.md "Extending Materials", and
-    // KHR_materials_anisotropy.md "Extending Materials".
+    // KHR_materials_iridescence.md "Extending Materials",
+    // KHR_materials_anisotropy.md "Extending Materials", and
+    // KHR_materials_dispersion.md "Extending Materials".
     let mut emitted_unlit = false;
     let mut emitted_emissive_strength = false;
     let mut emitted_ior = false;
@@ -121,6 +122,7 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     let mut emitted_volume = false;
     let mut emitted_iridescence = false;
     let mut emitted_anisotropy = false;
+    let mut emitted_dispersion = false;
     // KHR_texture_transform — per-textureInfo extension. We scan each
     // material's five core PBR texture slots for the presence of a
     // transform after `encode_material` lifts it out of extras
@@ -163,6 +165,9 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
             if ext.khr_materials_anisotropy.is_some() {
                 emitted_anisotropy = true;
             }
+            if ext.khr_materials_dispersion.is_some() {
+                emitted_dispersion = true;
+            }
         }
         root.materials.push(m_json);
     }
@@ -201,6 +206,10 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     if emitted_anisotropy {
         root.extensions_used
             .push("KHR_materials_anisotropy".to_owned());
+    }
+    if emitted_dispersion {
+        root.extensions_used
+            .push("KHR_materials_dispersion".to_owned());
     }
     if emitted_texture_transform {
         root.extensions_used
@@ -924,6 +933,16 @@ fn encode_material(m: &Material) -> gj::Material {
     let anisotropy = effective_extras
         .remove("KHR_materials_anisotropy")
         .and_then(anisotropy_from_value);
+    // KHR_materials_dispersion — the decoder parks the whole extension
+    // object in extras as a `Value::Object` carrying the single
+    // spec-defined `dispersion` key (= 20/Vd). Lift it back into the
+    // typed extensions block so the round-trip emits the spec object
+    // rather than a surplus `extras` key
+    // (docs/3d/gltf/extensions/KHR_materials_dispersion.md §Extending
+    // Materials).
+    let dispersion = effective_extras
+        .remove("KHR_materials_dispersion")
+        .and_then(dispersion_from_value);
     let extensions = if unlit_flag
         || emissive_strength.is_some()
         || ior.is_some()
@@ -934,6 +953,7 @@ fn encode_material(m: &Material) -> gj::Material {
         || volume.is_some()
         || iridescence.is_some()
         || anisotropy.is_some()
+        || dispersion.is_some()
     {
         Some(gj::MaterialExtensions {
             khr_materials_unlit: if unlit_flag {
@@ -954,6 +974,7 @@ fn encode_material(m: &Material) -> gj::Material {
             khr_materials_volume: volume,
             khr_materials_iridescence: iridescence,
             khr_materials_anisotropy: anisotropy,
+            khr_materials_dispersion: dispersion,
         })
     } else {
         None
@@ -1662,6 +1683,23 @@ fn anisotropy_from_value(v: serde_json::Value) -> Option<gj::MaterialAnisotropy>
         anisotropy_rotation: rotation,
         anisotropy_texture: texture,
     })
+}
+
+// Parse the decoder's `Material::extras["KHR_materials_dispersion"]`
+// JSON object back into the typed `MaterialDispersion` for re-emission.
+// The decoder normalises the `dispersion` default, but consumers may
+// also construct partial objects directly; this helper accepts both,
+// ignoring keys outside the single spec-defined field. See
+// `docs/3d/gltf/extensions/KHR_materials_dispersion.md` §Extending
+// Materials.
+fn dispersion_from_value(v: serde_json::Value) -> Option<gj::MaterialDispersion> {
+    let obj = v.as_object()?;
+    let dispersion = obj
+        .get("dispersion")
+        .and_then(|x| x.as_f64())
+        .map(|x| x as f32);
+    dispersion.as_ref()?;
+    Some(gj::MaterialDispersion { dispersion })
 }
 
 // --- skin / animation encoders -------------------------------------------

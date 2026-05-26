@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 158)
+
+- `KHR_materials_dispersion` extension (Khronos ratified — see
+  `docs/3d/gltf/extensions/KHR_materials_dispersion.md`). Decoder
+  reads the per-material `extensions.KHR_materials_dispersion` block
+  with its single spec-defined key (`dispersion`, storing `20/Vd`
+  where `Vd` is the Abbe number — the same transform Adobe Standard
+  Material and ASWF OpenPBR use) and lifts it into
+  `oxideav_mesh3d::Material::extras["KHR_materials_dispersion"]` as a
+  JSON `Value::Object`; a bare `{}` resolves to the spec default
+  `dispersion = 0.0` (no dispersion, the backwards-compatibility
+  default). Values above `1.0` are explicitly allowed for artistic
+  exaggeration (Rutile = `2.04` is the spec-listed example). Encoder
+  lifts the object back into the typed extensions block and appends
+  `KHR_materials_dispersion` to `extensionsUsed`. §3.12 stack
+  validator additionally enforces the spec's "Any value zero or
+  larger is considered to be a valid dispersion value" rule —
+  `dispersion` MUST be finite and `>= 0`
+  (`ExtensionStackDispersionRange`) — and rejects materials carrying
+  the data block without the declaration
+  (`ExtensionStackUsedNotDeclared`). New
+  `tests/khr_materials_dispersion.rs` (11 tests) covers GLB
+  round-trip, `extensionsUsed` emission, the bare-object default,
+  the spec §"Extending Materials" sample, the §3.12 rejection path,
+  the negative-value rejection, the `> 1.0` artistic-exaggeration
+  passthrough, explicit-zero round-trip, full-record GLB round-trip,
+  and three-extension stack co-existence with `KHR_materials_volume`
+  + `KHR_materials_ior`. Six new validator unit tests cover the
+  declared/undeclared paths plus the `0`, `> 1`, negative, and
+  non-finite range cases.
+
 ### Added (round 153)
 
 - `KHR_materials_anisotropy` extension (Khronos ratified — see
