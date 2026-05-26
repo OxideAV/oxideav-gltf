@@ -339,7 +339,10 @@ pub struct Material {
     /// (a scalar index of refraction — `docs/3d/gltf/extensions/
     /// KHR_materials_ior.md`), and `KHR_materials_specular`
     /// (a specular reflection factor + F0 colour + optional textures
-    /// — `docs/3d/gltf/extensions/KHR_materials_specular.md`); future
+    /// — `docs/3d/gltf/extensions/KHR_materials_specular.md`),
+    /// `KHR_materials_anisotropy` (an anisotropic specular lobe
+    /// strength + rotation + optional direction/strength texture —
+    /// `docs/3d/gltf/extensions/KHR_materials_anisotropy.md`); future
     /// per-material KHR extensions land here too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extensions: Option<MaterialExtensions>,
@@ -373,7 +376,10 @@ fn is_default_false(b: &bool) -> bool {
 /// `docs/3d/gltf/extensions/KHR_materials_volume.md`), and
 /// `KHR_materials_iridescence` (a thin-film intensity + IOR + thickness
 /// range modelling the iridescence effect per
-/// `docs/3d/gltf/extensions/KHR_materials_iridescence.md`).
+/// `docs/3d/gltf/extensions/KHR_materials_iridescence.md`), and
+/// `KHR_materials_anisotropy` (an anisotropic specular lobe with a
+/// strength scalar + rotation angle + optional direction/strength
+/// texture per `docs/3d/gltf/extensions/KHR_materials_anisotropy.md`).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct MaterialExtensions {
     #[serde(
@@ -430,6 +436,12 @@ pub struct MaterialExtensions {
         skip_serializing_if = "Option::is_none"
     )]
     pub khr_materials_iridescence: Option<MaterialIridescence>,
+    #[serde(
+        rename = "KHR_materials_anisotropy",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_materials_anisotropy: Option<MaterialAnisotropy>,
 }
 
 /// `KHR_materials_unlit` extension object. Per the spec the schema
@@ -750,6 +762,49 @@ pub struct MaterialIridescence {
         skip_serializing_if = "Option::is_none"
     )]
     pub iridescence_thickness_texture: Option<TextureInfo>,
+}
+
+/// `KHR_materials_anisotropy` extension object — adds an asymmetric
+/// specular lobe (the elongated highlight visible on e.g. brushed
+/// metal) on top of the metallic-roughness material per
+/// `docs/3d/gltf/extensions/KHR_materials_anisotropy.md` §Extending
+/// Materials:
+///
+/// * `anisotropyStrength` (default `0.0`) — dimensionless strength in
+///   the `[0, 1]` range; when zero the whole anisotropy effect is
+///   disabled. When `anisotropyTexture` is present its blue channel
+///   multiplies this value.
+/// * `anisotropyRotation` (default `0.0`) — rotation of the anisotropy
+///   in tangent / bitangent space, in radians, counter-clockwise from
+///   the tangent. When `anisotropyTexture` is present this value
+///   provides additional rotation to the texture vectors. The spec
+///   does not bound the value (it is interpreted modulo 2π).
+/// * `anisotropyTexture` (a `textureInfo`) — red and green channels
+///   carry the XY components of the per-texel direction vector in
+///   `[-1, 1]` tangent / bitangent space (encoded as `[0, 1]` and
+///   remapped on dequantisation); blue carries strength in `[0, 1]`.
+///
+/// All three fields are optional per the spec.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MaterialAnisotropy {
+    #[serde(
+        rename = "anisotropyStrength",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub anisotropy_strength: Option<f32>,
+    #[serde(
+        rename = "anisotropyRotation",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub anisotropy_rotation: Option<f32>,
+    #[serde(
+        rename = "anisotropyTexture",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub anisotropy_texture: Option<TextureInfo>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

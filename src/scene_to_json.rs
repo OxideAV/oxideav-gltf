@@ -108,8 +108,9 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     // KHR_materials_clearcoat.md "Extending Materials",
     // KHR_materials_sheen.md "Extending Materials",
     // KHR_materials_transmission.md "Extending Materials",
-    // KHR_materials_volume.md "Extending Materials", and
-    // KHR_materials_iridescence.md "Extending Materials".
+    // KHR_materials_volume.md "Extending Materials",
+    // KHR_materials_iridescence.md "Extending Materials", and
+    // KHR_materials_anisotropy.md "Extending Materials".
     let mut emitted_unlit = false;
     let mut emitted_emissive_strength = false;
     let mut emitted_ior = false;
@@ -119,6 +120,7 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     let mut emitted_transmission = false;
     let mut emitted_volume = false;
     let mut emitted_iridescence = false;
+    let mut emitted_anisotropy = false;
     // KHR_texture_transform — per-textureInfo extension. We scan each
     // material's five core PBR texture slots for the presence of a
     // transform after `encode_material` lifts it out of extras
@@ -158,6 +160,9 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
             if ext.khr_materials_iridescence.is_some() {
                 emitted_iridescence = true;
             }
+            if ext.khr_materials_anisotropy.is_some() {
+                emitted_anisotropy = true;
+            }
         }
         root.materials.push(m_json);
     }
@@ -192,6 +197,10 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     if emitted_iridescence {
         root.extensions_used
             .push("KHR_materials_iridescence".to_owned());
+    }
+    if emitted_anisotropy {
+        root.extensions_used
+            .push("KHR_materials_anisotropy".to_owned());
     }
     if emitted_texture_transform {
         root.extensions_used
@@ -905,6 +914,16 @@ fn encode_material(m: &Material) -> gj::Material {
     let iridescence = effective_extras
         .remove("KHR_materials_iridescence")
         .and_then(iridescence_from_value);
+    // KHR_materials_anisotropy — the decoder parks the whole extension
+    // object in extras as a `Value::Object` carrying any of the three
+    // spec-defined keys (`anisotropyStrength`, `anisotropyRotation`,
+    // `anisotropyTexture`). Lift it back into the typed extensions block
+    // so the round-trip emits the spec object rather than a surplus
+    // `extras` key (docs/3d/gltf/extensions/KHR_materials_anisotropy.md
+    // §Extending Materials).
+    let anisotropy = effective_extras
+        .remove("KHR_materials_anisotropy")
+        .and_then(anisotropy_from_value);
     let extensions = if unlit_flag
         || emissive_strength.is_some()
         || ior.is_some()
@@ -914,6 +933,7 @@ fn encode_material(m: &Material) -> gj::Material {
         || transmission.is_some()
         || volume.is_some()
         || iridescence.is_some()
+        || anisotropy.is_some()
     {
         Some(gj::MaterialExtensions {
             khr_materials_unlit: if unlit_flag {
@@ -933,6 +953,7 @@ fn encode_material(m: &Material) -> gj::Material {
             khr_materials_transmission: transmission,
             khr_materials_volume: volume,
             khr_materials_iridescence: iridescence,
+            khr_materials_anisotropy: anisotropy,
         })
     } else {
         None
@@ -1610,6 +1631,36 @@ fn iridescence_from_value(v: serde_json::Value) -> Option<gj::MaterialIridescenc
         iridescence_thickness_minimum: thmin,
         iridescence_thickness_maximum: thmax,
         iridescence_thickness_texture: thickness_texture,
+    })
+}
+
+// Parse the decoder's `Material::extras["KHR_materials_anisotropy"]`
+// JSON object back into the typed `MaterialAnisotropy` for re-emission.
+// The decoder normalises the scalar defaults, but consumers may also
+// construct partial objects directly; this helper accepts both,
+// ignoring keys outside the three spec-defined fields. See
+// `docs/3d/gltf/extensions/KHR_materials_anisotropy.md` §Extending
+// Materials.
+fn anisotropy_from_value(v: serde_json::Value) -> Option<gj::MaterialAnisotropy> {
+    let obj = v.as_object()?;
+    let strength = obj
+        .get("anisotropyStrength")
+        .and_then(|x| x.as_f64())
+        .map(|x| x as f32);
+    let rotation = obj
+        .get("anisotropyRotation")
+        .and_then(|x| x.as_f64())
+        .map(|x| x as f32);
+    let texture = obj
+        .get("anisotropyTexture")
+        .and_then(texture_info_from_value);
+    if strength.is_none() && rotation.is_none() && texture.is_none() {
+        return None;
+    }
+    Some(gj::MaterialAnisotropy {
+        anisotropy_strength: strength,
+        anisotropy_rotation: rotation,
+        anisotropy_texture: texture,
     })
 }
 

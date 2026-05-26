@@ -160,6 +160,25 @@ framework but usable standalone.
   appends `KHR_materials_iridescence` to `extensionsUsed`. The §3.12
   stack validator rejects materials carrying the data block without the
   declaration (`ExtensionStackUsedNotDeclared`)
+- KHR_materials_anisotropy extension (Khronos ratified) — per-material
+  asymmetric specular lobe (the elongated highlight visible on e.g.
+  brushed metal) from
+  `docs/3d/gltf/extensions/KHR_materials_anisotropy.md`. The decoder
+  lifts the full JSON `materials[i].extensions.KHR_materials_anisotropy`
+  object into `oxideav_mesh3d::Material::extras["KHR_materials_anisotropy"]`
+  as a JSON `Value::Object` carrying any of the three spec-defined keys
+  (`anisotropyStrength`, `anisotropyRotation`, `anisotropyTexture`); a
+  bare `{}` resolves to the spec defaults `anisotropyStrength = 0.0`
+  (zero disables the effect) and `anisotropyRotation = 0.0` radians.
+  `anisotropyTexture` is a `textureInfo` (round-trip `index` + optional
+  `texCoord` preserved). The encoder lifts the object back into the
+  typed extensions block and appends `KHR_materials_anisotropy` to
+  `extensionsUsed`. The §3.12 stack validator additionally enforces the
+  spec's `anisotropyStrength ∈ [0, 1]` range
+  (`ExtensionStackAnisotropyStrengthRange`) and a finite-value check on
+  `anisotropyRotation` (`ExtensionStackAnisotropyRotationFinite`), and
+  rejects materials carrying the data block without the declaration
+  (`ExtensionStackUsedNotDeclared`)
 - KHR_texture_transform extension (Khronos ratified) — per-textureInfo
   affine UV transform (offset / rotation / scale / texCoord) from
   `docs/3d/gltf/extensions/KHR_texture_transform.md`. The decoder lifts

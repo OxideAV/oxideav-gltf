@@ -1161,6 +1161,35 @@ fn convert_material(
             mat.extras
                 .insert("KHR_materials_iridescence".to_owned(), Value::Object(obj));
         }
+        // KHR_materials_anisotropy — anisotropic specular lobe (e.g.
+        // brushed metal) on top of the metallic-roughness material per
+        // docs/3d/gltf/extensions/KHR_materials_anisotropy.md §Extending
+        // Materials. We surface it through
+        // `Material::extras["KHR_materials_anisotropy"]` as a JSON object
+        // carrying any of the three spec-defined keys
+        // (`anisotropyStrength`, `anisotropyRotation`,
+        // `anisotropyTexture`) rather than widening
+        // `oxideav_mesh3d::Material`. Per the spec all three fields are
+        // optional; we materialise the scalar defaults
+        // (`anisotropyStrength = 0.0`, `anisotropyRotation = 0.0`) so a
+        // bare `{}` resolves to a fully-specified record. The texture
+        // info passes through verbatim.
+        if let Some(an) = &ext.khr_materials_anisotropy {
+            let mut obj = serde_json::Map::new();
+            let strength = an.anisotropy_strength.unwrap_or(0.0);
+            if let Some(n) = serde_json::Number::from_f64(strength as f64) {
+                obj.insert("anisotropyStrength".to_owned(), Value::Number(n));
+            }
+            let rotation = an.anisotropy_rotation.unwrap_or(0.0);
+            if let Some(n) = serde_json::Number::from_f64(rotation as f64) {
+                obj.insert("anisotropyRotation".to_owned(), Value::Number(n));
+            }
+            if let Some(t) = &an.anisotropy_texture {
+                obj.insert("anisotropyTexture".to_owned(), texture_info_to_json(t));
+            }
+            mat.extras
+                .insert("KHR_materials_anisotropy".to_owned(), Value::Object(obj));
+        }
     }
     if let Some(extras) = &m.extras {
         extras_into(&mut mat.extras, extras.clone());

@@ -36,8 +36,13 @@
 //!   `KHR_materials_ior`, `KHR_materials_specular`,
 //!   `KHR_materials_clearcoat`, `KHR_materials_sheen`,
 //!   `KHR_materials_transmission`, `KHR_materials_volume`,
-//!   `KHR_materials_iridescence`, and `KHR_texture_transform` (the
-//!   last on any of the five core PBR textureInfo slots).
+//!   `KHR_materials_iridescence`, `KHR_materials_anisotropy`, and
+//!   `KHR_texture_transform` (the last on any of the five core PBR
+//!   textureInfo slots).
+//! * `KHR_materials_anisotropy.anisotropyStrength` MUST sit in `[0, 1]`
+//!   per the extension spec's "Anisotropy" section ("a dimensionless
+//!   number in the range [0, 1]"). The `anisotropyRotation` is
+//!   interpreted modulo 2π so no range check is applied.
 //!
 //! Animation channels (round 7):
 //!
@@ -550,6 +555,54 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         ));
     }
 
+    // KHR_materials_anisotropy — per-material extension. Same §3.12 rule:
+    // the extension MUST be declared in `extensionsUsed` if any material
+    // carries the data block. Also enforce the spec's range constraint
+    // on `anisotropyStrength` here (the spec says it is "a dimensionless
+    // number in the range [0, 1]"). See
+    // `docs/3d/gltf/extensions/KHR_materials_anisotropy.md`.
+    let has_anisotropy = root.materials.iter().any(|m| {
+        m.extensions
+            .as_ref()
+            .and_then(|e| e.khr_materials_anisotropy.as_ref())
+            .is_some()
+    });
+    if has_anisotropy && !used("KHR_materials_anisotropy") {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_materials_anisotropy data \
+             is present on a material but the extension is not listed in \
+             extensionsUsed (spec §3.12)",
+        ));
+    }
+    for (mi, m) in root.materials.iter().enumerate() {
+        let Some(an) = m
+            .extensions
+            .as_ref()
+            .and_then(|e| e.khr_materials_anisotropy.as_ref())
+        else {
+            continue;
+        };
+        if let Some(s) = an.anisotropy_strength {
+            if !(s.is_finite() && (0.0..=1.0).contains(&s)) {
+                return Err(invalid(format!(
+                    "ExtensionStackAnisotropyStrengthRange: materials[{mi}] \
+                     .extensions.KHR_materials_anisotropy.anisotropyStrength = \
+                     {s} outside [0, 1] (KHR_materials_anisotropy §Anisotropy)"
+                )));
+            }
+        }
+        if let Some(r) = an.anisotropy_rotation {
+            if !r.is_finite() {
+                return Err(invalid(format!(
+                    "ExtensionStackAnisotropyRotationFinite: materials[{mi}] \
+                     .extensions.KHR_materials_anisotropy.anisotropyRotation = \
+                     {r} is not finite \
+                     (KHR_materials_anisotropy §Extending Materials)"
+                )));
+            }
+        }
+    }
+
     // KHR_texture_transform — per-textureInfo extension. Same §3.12 rule:
     // the extension MUST be declared in `extensionsUsed` if any
     // textureInfo carries the data block. The block may appear on any of
@@ -1016,10 +1069,10 @@ mod tests {
     use crate::json_model::{
         Accessor, AccessorSparse, AccessorSparseIndices, AccessorSparseValues, Animation,
         AnimationChannel, AnimationChannelTarget, AnimationSampler, Asset, Buffer, BufferView,
-        KhrLightsPunctualRoot, Material, MaterialClearcoat, MaterialEmissiveStrength,
-        MaterialExtensions, MaterialIor, MaterialIridescence, MaterialSheen, MaterialSpecular,
-        MaterialTransmission, MaterialUnlit, MaterialVolume, Mesh, Node, NodeExtensions,
-        NodeLightRef, Primitive, RootExtensions, COMPONENT_TYPE_FLOAT,
+        KhrLightsPunctualRoot, Material, MaterialAnisotropy, MaterialClearcoat,
+        MaterialEmissiveStrength, MaterialExtensions, MaterialIor, MaterialIridescence,
+        MaterialSheen, MaterialSpecular, MaterialTransmission, MaterialUnlit, MaterialVolume, Mesh,
+        Node, NodeExtensions, NodeLightRef, Primitive, RootExtensions, COMPONENT_TYPE_FLOAT,
     };
     use std::collections::HashMap;
 
@@ -1612,6 +1665,113 @@ mod tests {
         root.materials.push(iridescence_material());
         root.extensions_used = vec!["KHR_materials_iridescence".into()];
         validate_extension_stack(&root).unwrap();
+    }
+
+    // KHR_materials_anisotropy —
+    // docs/3d/gltf/extensions/KHR_materials_anisotropy.md.
+    fn anisotropy_material() -> Material {
+        Material {
+            extensions: Some(MaterialExtensions {
+                khr_materials_anisotropy: Some(MaterialAnisotropy {
+                    anisotropy_strength: Some(0.6),
+                    anisotropy_rotation: Some(1.57),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn extension_stack_rejects_anisotropy_missing_used() {
+        let mut root = empty_root();
+        root.materials.push(anisotropy_material());
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackUsedNotDeclared")
+                && msg.contains("KHR_materials_anisotropy"),
+            "expected ExtensionStackUsedNotDeclared for \
+             KHR_materials_anisotropy, got {msg}"
+        );
+    }
+
+    #[test]
+    fn extension_stack_accepts_anisotropy_declared() {
+        let mut root = empty_root();
+        root.materials.push(anisotropy_material());
+        root.extensions_used = vec!["KHR_materials_anisotropy".into()];
+        validate_extension_stack(&root).unwrap();
+    }
+
+    #[test]
+    fn extension_stack_rejects_anisotropy_strength_above_one() {
+        let mut root = empty_root();
+        let mat = Material {
+            extensions: Some(MaterialExtensions {
+                khr_materials_anisotropy: Some(MaterialAnisotropy {
+                    anisotropy_strength: Some(1.5),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        root.materials.push(mat);
+        root.extensions_used = vec!["KHR_materials_anisotropy".into()];
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackAnisotropyStrengthRange"),
+            "expected ExtensionStackAnisotropyStrengthRange, got {msg}"
+        );
+    }
+
+    #[test]
+    fn extension_stack_rejects_anisotropy_strength_below_zero() {
+        let mut root = empty_root();
+        let mat = Material {
+            extensions: Some(MaterialExtensions {
+                khr_materials_anisotropy: Some(MaterialAnisotropy {
+                    anisotropy_strength: Some(-0.1),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        root.materials.push(mat);
+        root.extensions_used = vec!["KHR_materials_anisotropy".into()];
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackAnisotropyStrengthRange"),
+            "expected ExtensionStackAnisotropyStrengthRange, got {msg}"
+        );
+    }
+
+    #[test]
+    fn extension_stack_rejects_anisotropy_rotation_not_finite() {
+        let mut root = empty_root();
+        let mat = Material {
+            extensions: Some(MaterialExtensions {
+                khr_materials_anisotropy: Some(MaterialAnisotropy {
+                    anisotropy_rotation: Some(f32::NAN),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        root.materials.push(mat);
+        root.extensions_used = vec!["KHR_materials_anisotropy".into()];
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackAnisotropyRotationFinite"),
+            "expected ExtensionStackAnisotropyRotationFinite, got {msg}"
+        );
     }
 
     // --- Animation channel target-path validation ------------------

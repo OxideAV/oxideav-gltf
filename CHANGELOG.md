@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 153)
+
+- `KHR_materials_anisotropy` extension (Khronos ratified — see
+  `docs/3d/gltf/extensions/KHR_materials_anisotropy.md`). Decoder reads
+  the per-material `extensions.KHR_materials_anisotropy` block with the
+  three spec-defined keys (`anisotropyStrength`, `anisotropyRotation`,
+  `anisotropyTexture`) and lifts it into
+  `oxideav_mesh3d::Material::extras["KHR_materials_anisotropy"]` as a
+  JSON `Value::Object`; a bare `{}` resolves to the spec defaults
+  (`anisotropyStrength = 0.0` — zero disables the asymmetric specular
+  lobe — and `anisotropyRotation = 0.0` radians). `anisotropyTexture`
+  is a plain `textureInfo` (round-trip `index` + optional `texCoord`
+  preserved). Encoder lifts the object back into the typed extensions
+  block and appends `KHR_materials_anisotropy` to `extensionsUsed`.
+  §3.12 stack validator additionally enforces the spec's "dimensionless
+  number in the range [0, 1]" range for `anisotropyStrength`
+  (`ExtensionStackAnisotropyStrengthRange`) and a finite-value check on
+  `anisotropyRotation` (`ExtensionStackAnisotropyRotationFinite`), and
+  rejects materials carrying the data block without the declaration
+  (`ExtensionStackUsedNotDeclared`). New
+  `tests/khr_materials_anisotropy.rs` (12 tests) covers GLB round-trip,
+  `extensionsUsed` emission, the bare-object default, the spec
+  §"Extending Materials" sample, textureInfo + texCoord round-trip,
+  default-texCoord omission, the §3.12 rejection path, both strength
+  range violations (`-0.5` and `1.5`), full-record GLB round-trip, and
+  rotation > 2π passthrough.
+
 ### Added (round 132)
 
 - `KHR_texture_transform` extension (Khronos ratified — see
