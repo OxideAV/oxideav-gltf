@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 164)
+
+- `KHR_materials_diffuse_transmission` extension (Khronos ratified —
+  see `docs/3d/gltf/extensions/KHR_materials_diffuse_transmission.md`).
+  Decoder reads the per-material
+  `extensions.KHR_materials_diffuse_transmission` block carrying any of
+  the four spec-defined keys (`diffuseTransmissionFactor`,
+  `diffuseTransmissionTexture`, `diffuseTransmissionColorFactor`,
+  `diffuseTransmissionColorTexture`) and lifts it into
+  `oxideav_mesh3d::Material::extras["KHR_materials_diffuse_transmission"]`
+  as a JSON `Value::Object`; a bare `{}` resolves to the spec defaults
+  `diffuseTransmissionFactor = 0.0` (zero disables the layer) and
+  `diffuseTransmissionColorFactor = [1, 1, 1]`. Texture infos
+  round-trip with `index` + optional `texCoord` preserved. Encoder
+  lifts the object back into the typed extensions block and appends
+  `KHR_materials_diffuse_transmission` to `extensionsUsed`. §3.12
+  stack validator additionally enforces the spec's implicit range
+  constraints — `diffuseTransmissionFactor` MUST be finite and within
+  `[0, 1]` (the spec defines it as a percentage with `1.0` meaning
+  100% of penetrating light is transmitted —
+  `ExtensionStackDiffuseTransmissionFactorRange`), and each component
+  of `diffuseTransmissionColorFactor` MUST be finite and within
+  `[0, 1]` (it is a "proportion of light at each color channel" —
+  `ExtensionStackDiffuseTransmissionColorRange`) — and rejects
+  materials carrying the data block without the declaration
+  (`ExtensionStackUsedNotDeclared`). New
+  `tests/khr_materials_diffuse_transmission.rs` (13 tests) covers GLB
+  round-trip of factor + colour, `extensionsUsed` emission, the
+  bare-object default, the spec §"Extending Materials" sample, the
+  §3.12 rejection path, factor-above-1.0 rejection, factor-negative
+  rejection, colour-out-of-range rejection, explicit-zero round-trip,
+  full-record GLB round-trip, and three-extension stack co-existence
+  with `KHR_materials_volume` + `KHR_materials_transmission`. Seven
+  new validator unit tests cover the declared/undeclared paths plus
+  the factor range (zero default, above-one, negative, non-finite)
+  and the colour range (negative, above-one).
+
 ### Added (round 158)
 
 - `KHR_materials_dispersion` extension (Khronos ratified — see

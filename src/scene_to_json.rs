@@ -110,8 +110,9 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     // KHR_materials_transmission.md "Extending Materials",
     // KHR_materials_volume.md "Extending Materials",
     // KHR_materials_iridescence.md "Extending Materials",
-    // KHR_materials_anisotropy.md "Extending Materials", and
-    // KHR_materials_dispersion.md "Extending Materials".
+    // KHR_materials_anisotropy.md "Extending Materials",
+    // KHR_materials_dispersion.md "Extending Materials", and
+    // KHR_materials_diffuse_transmission.md "Extending Materials".
     let mut emitted_unlit = false;
     let mut emitted_emissive_strength = false;
     let mut emitted_ior = false;
@@ -123,6 +124,7 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     let mut emitted_iridescence = false;
     let mut emitted_anisotropy = false;
     let mut emitted_dispersion = false;
+    let mut emitted_diffuse_transmission = false;
     // KHR_texture_transform — per-textureInfo extension. We scan each
     // material's five core PBR texture slots for the presence of a
     // transform after `encode_material` lifts it out of extras
@@ -168,6 +170,9 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
             if ext.khr_materials_dispersion.is_some() {
                 emitted_dispersion = true;
             }
+            if ext.khr_materials_diffuse_transmission.is_some() {
+                emitted_diffuse_transmission = true;
+            }
         }
         root.materials.push(m_json);
     }
@@ -210,6 +215,10 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     if emitted_dispersion {
         root.extensions_used
             .push("KHR_materials_dispersion".to_owned());
+    }
+    if emitted_diffuse_transmission {
+        root.extensions_used
+            .push("KHR_materials_diffuse_transmission".to_owned());
     }
     if emitted_texture_transform {
         root.extensions_used
@@ -943,6 +952,18 @@ fn encode_material(m: &Material) -> gj::Material {
     let dispersion = effective_extras
         .remove("KHR_materials_dispersion")
         .and_then(dispersion_from_value);
+    // KHR_materials_diffuse_transmission — the decoder parks the whole
+    // extension object in extras as a `Value::Object` carrying any of
+    // the four spec-defined keys (`diffuseTransmissionFactor`,
+    // `diffuseTransmissionTexture`, `diffuseTransmissionColorFactor`,
+    // `diffuseTransmissionColorTexture`). Lift it back into the typed
+    // extensions block so the round-trip emits the spec object rather
+    // than a surplus `extras` key
+    // (docs/3d/gltf/extensions/KHR_materials_diffuse_transmission.md
+    // §Extending Materials).
+    let diffuse_transmission = effective_extras
+        .remove("KHR_materials_diffuse_transmission")
+        .and_then(diffuse_transmission_from_value);
     let extensions = if unlit_flag
         || emissive_strength.is_some()
         || ior.is_some()
@@ -954,6 +975,7 @@ fn encode_material(m: &Material) -> gj::Material {
         || iridescence.is_some()
         || anisotropy.is_some()
         || dispersion.is_some()
+        || diffuse_transmission.is_some()
     {
         Some(gj::MaterialExtensions {
             khr_materials_unlit: if unlit_flag {
@@ -975,6 +997,7 @@ fn encode_material(m: &Material) -> gj::Material {
             khr_materials_iridescence: iridescence,
             khr_materials_anisotropy: anisotropy,
             khr_materials_dispersion: dispersion,
+            khr_materials_diffuse_transmission: diffuse_transmission,
         })
     } else {
         None
@@ -1700,6 +1723,52 @@ fn dispersion_from_value(v: serde_json::Value) -> Option<gj::MaterialDispersion>
         .map(|x| x as f32);
     dispersion.as_ref()?;
     Some(gj::MaterialDispersion { dispersion })
+}
+
+// Parse the decoder's
+// `Material::extras["KHR_materials_diffuse_transmission"]` JSON object
+// back into the typed `MaterialDiffuseTransmission` for re-emission.
+// The decoder normalises the factor / colour defaults, but consumers
+// may also construct partial objects directly; this helper accepts
+// both, ignoring keys outside the four spec-defined fields. See
+// `docs/3d/gltf/extensions/KHR_materials_diffuse_transmission.md`
+// §Extending Materials.
+fn diffuse_transmission_from_value(
+    v: serde_json::Value,
+) -> Option<gj::MaterialDiffuseTransmission> {
+    let obj = v.as_object()?;
+    let factor = obj
+        .get("diffuseTransmissionFactor")
+        .and_then(|x| x.as_f64())
+        .map(|x| x as f32);
+    let texture = obj
+        .get("diffuseTransmissionTexture")
+        .and_then(texture_info_from_value);
+    let color_factor = obj
+        .get("diffuseTransmissionColorFactor")
+        .and_then(|x| x.as_array())
+        .and_then(|arr| {
+            if arr.len() == 3 {
+                let r = arr[0].as_f64()? as f32;
+                let g = arr[1].as_f64()? as f32;
+                let b = arr[2].as_f64()? as f32;
+                Some([r, g, b])
+            } else {
+                None
+            }
+        });
+    let color_texture = obj
+        .get("diffuseTransmissionColorTexture")
+        .and_then(texture_info_from_value);
+    if factor.is_none() && texture.is_none() && color_factor.is_none() && color_texture.is_none() {
+        return None;
+    }
+    Some(gj::MaterialDiffuseTransmission {
+        diffuse_transmission_factor: factor,
+        diffuse_transmission_texture: texture,
+        diffuse_transmission_color_factor: color_factor,
+        diffuse_transmission_color_texture: color_texture,
+    })
 }
 
 // --- skin / animation encoders -------------------------------------------

@@ -199,6 +199,34 @@ framework but usable standalone.
   finite and `>= 0` (`ExtensionStackDispersionRange`) — and rejects
   materials carrying the data block without the declaration
   (`ExtensionStackUsedNotDeclared`)
+- KHR_materials_diffuse_transmission extension (Khronos ratified) —
+  per-material diffuse-transmission factor + colour + optional textures
+  modelling light that diffuses through infinitely-thin surfaces
+  (leaves, paper, candle wax …) from
+  `docs/3d/gltf/extensions/KHR_materials_diffuse_transmission.md`. The
+  decoder lifts the full JSON
+  `materials[i].extensions.KHR_materials_diffuse_transmission` object
+  into
+  `oxideav_mesh3d::Material::extras["KHR_materials_diffuse_transmission"]`
+  as a JSON `Value::Object` carrying any of the four spec-defined keys
+  (`diffuseTransmissionFactor`, `diffuseTransmissionTexture`,
+  `diffuseTransmissionColorFactor`, `diffuseTransmissionColorTexture`);
+  a bare `{}` resolves to the spec defaults
+  `diffuseTransmissionFactor = 0.0` (zero disables the layer) and
+  `diffuseTransmissionColorFactor = [1, 1, 1]`. The texture infos
+  round-trip with both `index` and optional `texCoord` preserved. The
+  encoder lifts the object back into the typed extensions block and
+  appends `KHR_materials_diffuse_transmission` to `extensionsUsed`.
+  The §3.12 stack validator additionally enforces the spec's implicit
+  range constraints — `diffuseTransmissionFactor` MUST be finite and
+  within `[0, 1]` (the spec defines `1.0` as 100% of the penetrating
+  light being transmitted —
+  `ExtensionStackDiffuseTransmissionFactorRange`), each component of
+  `diffuseTransmissionColorFactor` MUST be finite and within `[0, 1]`
+  (it is a "proportion of light at each color channel" —
+  `ExtensionStackDiffuseTransmissionColorRange`) — and rejects
+  materials carrying the data block without the declaration
+  (`ExtensionStackUsedNotDeclared`)
 - KHR_texture_transform extension (Khronos ratified) — per-textureInfo
   affine UV transform (offset / rotation / scale / texCoord) from
   `docs/3d/gltf/extensions/KHR_texture_transform.md`. The decoder lifts
@@ -312,13 +340,6 @@ The KHR extension registry is now staged under
 `docs/3d/gltf/extensions/` (25 specs + index), so the remaining work
 is implementation, not docs:
 
-- Material PBR-extension surfaces: KHR_materials_diffuse_transmission —
-  scalar/colour factors ready to lift through the same
-  `Material::extras` side-channel the `emissive_strength`, `ior`,
-  `specular`, `clearcoat`, `sheen`, `transmission`, `volume`,
-  `iridescence`, `anisotropy`, and `dispersion` blocks already use
-- KHR_texture_transform UV transform (offset / rotation / scale) on
-  texture references
 - KHR_mesh_quantization int8/int16 quantised POSITION / NORMAL /
   TANGENT / TEXCOORD — needs the dequantisation path
 - KHR_audio_emitter wiring against `oxideav_mesh3d::AudioSource` /

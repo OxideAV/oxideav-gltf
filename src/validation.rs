@@ -37,8 +37,9 @@
 //!   `KHR_materials_clearcoat`, `KHR_materials_sheen`,
 //!   `KHR_materials_transmission`, `KHR_materials_volume`,
 //!   `KHR_materials_iridescence`, `KHR_materials_anisotropy`,
-//!   `KHR_materials_dispersion`, and `KHR_texture_transform` (the last
-//!   on any of the five core PBR textureInfo slots).
+//!   `KHR_materials_dispersion`, `KHR_materials_diffuse_transmission`,
+//!   and `KHR_texture_transform` (the last on any of the five core
+//!   PBR textureInfo slots).
 //! * `KHR_materials_anisotropy.anisotropyStrength` MUST sit in `[0, 1]`
 //!   per the extension spec's "Anisotropy" section ("a dimensionless
 //!   number in the range [0, 1]"). The `anisotropyRotation` is
@@ -48,6 +49,11 @@
 //!   to be a valid dispersion value"). Values above `1.0` are allowed
 //!   for artistic exaggeration; only negative or non-finite values
 //!   are rejected.
+//! * `KHR_materials_diffuse_transmission.diffuseTransmissionFactor`
+//!   MUST be finite and within `[0, 1]` (it is a percentage of the
+//!   non-specularly-reflected light that is diffusely transmitted);
+//!   `diffuseTransmissionColorFactor` MUST be finite and within
+//!   `[0, 1]^3` (each component is a proportion).
 //!
 //! Animation channels (round 7):
 //!
@@ -650,6 +656,66 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         }
     }
 
+    // KHR_materials_diffuse_transmission — per-material extension.
+    // Same §3.12 rule: the extension MUST be declared in
+    // `extensionsUsed` if any material carries the data block. Also
+    // enforce the spec's implicit range constraints — per
+    // `docs/3d/gltf/extensions/KHR_materials_diffuse_transmission.md`
+    // §Properties / §Diffuse Transmission, `diffuseTransmissionFactor`
+    // is a "percentage" with a normative reading of `1.0 indicates
+    // that 100% of the light that penetrates the surface is
+    // transmitted", and `diffuseTransmissionColorFactor` is a
+    // "proportion of light at each color channel". Both must be
+    // finite and within `[0, 1]` (resp. `[0, 1]^3` per channel).
+    let has_diffuse_transmission = root.materials.iter().any(|m| {
+        m.extensions
+            .as_ref()
+            .and_then(|e| e.khr_materials_diffuse_transmission.as_ref())
+            .is_some()
+    });
+    if has_diffuse_transmission && !used("KHR_materials_diffuse_transmission") {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_materials_diffuse_transmission \
+             data is present on a material but the extension is not listed in \
+             extensionsUsed (spec §3.12)",
+        ));
+    }
+    for (mi, m) in root.materials.iter().enumerate() {
+        let Some(dt) = m
+            .extensions
+            .as_ref()
+            .and_then(|e| e.khr_materials_diffuse_transmission.as_ref())
+        else {
+            continue;
+        };
+        if let Some(f) = dt.diffuse_transmission_factor {
+            if !(f.is_finite() && (0.0..=1.0).contains(&f)) {
+                return Err(invalid(format!(
+                    "ExtensionStackDiffuseTransmissionFactorRange: \
+                     materials[{mi}].extensions.\
+                     KHR_materials_diffuse_transmission.diffuseTransmissionFactor \
+                     = {f} is not finite and within [0, 1] \
+                     (KHR_materials_diffuse_transmission §Diffuse Transmission)"
+                )));
+            }
+        }
+        if let Some(cf) = dt.diffuse_transmission_color_factor {
+            for (ci, c) in cf.iter().enumerate() {
+                if !(c.is_finite() && (0.0..=1.0).contains(c)) {
+                    return Err(invalid(format!(
+                        "ExtensionStackDiffuseTransmissionColorRange: \
+                         materials[{mi}].extensions.\
+                         KHR_materials_diffuse_transmission.\
+                         diffuseTransmissionColorFactor[{ci}] = {c} is not \
+                         finite and within [0, 1] \
+                         (KHR_materials_diffuse_transmission \
+                         §Diffuse Transmission Color)"
+                    )));
+                }
+            }
+        }
+    }
+
     // KHR_texture_transform — per-textureInfo extension. Same §3.12 rule:
     // the extension MUST be declared in `extensionsUsed` if any
     // textureInfo carries the data block. The block may appear on any of
@@ -1116,10 +1182,11 @@ mod tests {
     use crate::json_model::{
         Accessor, AccessorSparse, AccessorSparseIndices, AccessorSparseValues, Animation,
         AnimationChannel, AnimationChannelTarget, AnimationSampler, Asset, Buffer, BufferView,
-        KhrLightsPunctualRoot, Material, MaterialAnisotropy, MaterialClearcoat, MaterialDispersion,
-        MaterialEmissiveStrength, MaterialExtensions, MaterialIor, MaterialIridescence,
-        MaterialSheen, MaterialSpecular, MaterialTransmission, MaterialUnlit, MaterialVolume, Mesh,
-        Node, NodeExtensions, NodeLightRef, Primitive, RootExtensions, COMPONENT_TYPE_FLOAT,
+        KhrLightsPunctualRoot, Material, MaterialAnisotropy, MaterialClearcoat,
+        MaterialDiffuseTransmission, MaterialDispersion, MaterialEmissiveStrength,
+        MaterialExtensions, MaterialIor, MaterialIridescence, MaterialSheen, MaterialSpecular,
+        MaterialTransmission, MaterialUnlit, MaterialVolume, Mesh, Node, NodeExtensions,
+        NodeLightRef, Primitive, RootExtensions, COMPONENT_TYPE_FLOAT,
     };
     use std::collections::HashMap;
 
@@ -1900,6 +1967,135 @@ mod tests {
         assert!(
             msg.contains("ExtensionStackDispersionRange"),
             "expected ExtensionStackDispersionRange, got {msg}"
+        );
+    }
+
+    // KHR_materials_diffuse_transmission —
+    // docs/3d/gltf/extensions/KHR_materials_diffuse_transmission.md.
+    fn diffuse_transmission_material(factor: Option<f32>, color: Option<[f32; 3]>) -> Material {
+        Material {
+            extensions: Some(MaterialExtensions {
+                khr_materials_diffuse_transmission: Some(MaterialDiffuseTransmission {
+                    diffuse_transmission_factor: factor,
+                    diffuse_transmission_color_factor: color,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn extension_stack_rejects_diffuse_transmission_missing_used() {
+        let mut root = empty_root();
+        root.materials
+            .push(diffuse_transmission_material(Some(0.25), None));
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackUsedNotDeclared")
+                && msg.contains("KHR_materials_diffuse_transmission"),
+            "expected ExtensionStackUsedNotDeclared for \
+             KHR_materials_diffuse_transmission, got {msg}"
+        );
+    }
+
+    #[test]
+    fn extension_stack_accepts_diffuse_transmission_declared() {
+        let mut root = empty_root();
+        root.materials.push(diffuse_transmission_material(
+            Some(0.25),
+            Some([1.0, 0.9, 0.85]),
+        ));
+        root.extensions_used = vec!["KHR_materials_diffuse_transmission".into()];
+        validate_extension_stack(&root).unwrap();
+    }
+
+    #[test]
+    fn extension_stack_accepts_diffuse_transmission_defaults_only() {
+        // Spec defaults: factor = 0.0, color = [1, 1, 1]. Both must be
+        // accepted.
+        let mut root = empty_root();
+        root.materials.push(diffuse_transmission_material(
+            Some(0.0),
+            Some([1.0, 1.0, 1.0]),
+        ));
+        root.extensions_used = vec!["KHR_materials_diffuse_transmission".into()];
+        validate_extension_stack(&root).unwrap();
+    }
+
+    #[test]
+    fn extension_stack_rejects_diffuse_transmission_factor_above_one() {
+        // Per the spec "A value of 1.0 indicates that 100% of the light
+        // that penetrates the surface is transmitted through it." A
+        // factor above 1.0 is non-sensical (you cannot transmit more
+        // than the available light).
+        let mut root = empty_root();
+        root.materials
+            .push(diffuse_transmission_material(Some(1.5), None));
+        root.extensions_used = vec!["KHR_materials_diffuse_transmission".into()];
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackDiffuseTransmissionFactorRange"),
+            "expected ExtensionStackDiffuseTransmissionFactorRange, got {msg}"
+        );
+    }
+
+    #[test]
+    fn extension_stack_rejects_diffuse_transmission_factor_negative() {
+        let mut root = empty_root();
+        root.materials
+            .push(diffuse_transmission_material(Some(-0.1), None));
+        root.extensions_used = vec!["KHR_materials_diffuse_transmission".into()];
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackDiffuseTransmissionFactorRange"),
+            "expected ExtensionStackDiffuseTransmissionFactorRange, got {msg}"
+        );
+    }
+
+    #[test]
+    fn extension_stack_rejects_diffuse_transmission_factor_not_finite() {
+        let mut root = empty_root();
+        root.materials
+            .push(diffuse_transmission_material(Some(f32::NAN), None));
+        root.extensions_used = vec!["KHR_materials_diffuse_transmission".into()];
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackDiffuseTransmissionFactorRange"),
+            "expected ExtensionStackDiffuseTransmissionFactorRange, got {msg}"
+        );
+    }
+
+    #[test]
+    fn extension_stack_rejects_diffuse_transmission_color_negative() {
+        let mut root = empty_root();
+        root.materials
+            .push(diffuse_transmission_material(None, Some([1.0, -0.1, 1.0])));
+        root.extensions_used = vec!["KHR_materials_diffuse_transmission".into()];
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackDiffuseTransmissionColorRange"),
+            "expected ExtensionStackDiffuseTransmissionColorRange, got {msg}"
+        );
+    }
+
+    #[test]
+    fn extension_stack_rejects_diffuse_transmission_color_above_one() {
+        let mut root = empty_root();
+        root.materials
+            .push(diffuse_transmission_material(None, Some([1.0, 1.0, 1.5])));
+        root.extensions_used = vec!["KHR_materials_diffuse_transmission".into()];
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackDiffuseTransmissionColorRange"),
+            "expected ExtensionStackDiffuseTransmissionColorRange, got {msg}"
         );
     }
 

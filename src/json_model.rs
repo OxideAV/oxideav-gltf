@@ -346,8 +346,13 @@ pub struct Material {
     /// `KHR_materials_dispersion` (a single `dispersion` scalar = 20/Vd
     /// driving the chromatic-aberration spread for the volumetric
     /// transmission model per `docs/3d/gltf/extensions/
-    /// KHR_materials_dispersion.md`); future per-material KHR extensions
-    /// land here too.
+    /// KHR_materials_dispersion.md`), and
+    /// `KHR_materials_diffuse_transmission` (a diffuse-transmission
+    /// factor, colour, and optional textures modelling light that
+    /// diffuses through infinitely-thin surfaces like leaves or paper
+    /// per `docs/3d/gltf/extensions/
+    /// KHR_materials_diffuse_transmission.md`); future per-material KHR
+    /// extensions land here too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extensions: Option<MaterialExtensions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -387,7 +392,11 @@ fn is_default_false(b: &bool) -> bool {
 /// and `KHR_materials_dispersion` (a single `dispersion` scalar set to
 /// `20/Vd` driving the wavelength-dependent index-of-refraction
 /// spread used by the volumetric transmission model per
-/// `docs/3d/gltf/extensions/KHR_materials_dispersion.md`).
+/// `docs/3d/gltf/extensions/KHR_materials_dispersion.md`), and
+/// `KHR_materials_diffuse_transmission` (a diffuse-transmission factor,
+/// colour, and optional textures modelling light that diffuses through
+/// infinitely-thin surfaces like leaves or paper per
+/// `docs/3d/gltf/extensions/KHR_materials_diffuse_transmission.md`).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct MaterialExtensions {
     #[serde(
@@ -456,6 +465,12 @@ pub struct MaterialExtensions {
         skip_serializing_if = "Option::is_none"
     )]
     pub khr_materials_dispersion: Option<MaterialDispersion>,
+    #[serde(
+        rename = "KHR_materials_diffuse_transmission",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_materials_diffuse_transmission: Option<MaterialDiffuseTransmission>,
 }
 
 /// `KHR_materials_unlit` extension object. Per the spec the schema
@@ -842,6 +857,60 @@ pub struct MaterialAnisotropy {
 pub struct MaterialDispersion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispersion: Option<f32>,
+}
+
+/// `KHR_materials_diffuse_transmission` extension object — models
+/// diffusely-transmitted light through an infinitely-thin surface
+/// (leaves, paper, candle wax …) on top of the metallic-roughness
+/// material per `docs/3d/gltf/extensions/
+/// KHR_materials_diffuse_transmission.md` §Extending Materials.
+///
+/// * `diffuseTransmissionFactor` (default `0.0`) — percentage of
+///   non-specularly-reflected light that is diffusely transmitted
+///   through the surface. A value of `1.0` indicates 100% of the
+///   penetrating light is transmitted; `0.0` (the default) disables
+///   the layer.
+/// * `diffuseTransmissionTexture` (a `textureInfo`) — the factor is
+///   sampled from the texture's alpha channel and multiplied by
+///   `diffuseTransmissionFactor`.
+/// * `diffuseTransmissionColorFactor` (default `[1, 1, 1]`) — the
+///   colour that modulates the transmitted light (attenuation is the
+///   complement: `1.0 - diffuseTransmissionColor`).
+/// * `diffuseTransmissionColorTexture` (a `textureInfo`) — the colour
+///   is sampled from the texture's RGB channels (sRGB-encoded) and
+///   multiplied by `diffuseTransmissionColorFactor`.
+///
+/// All four fields are optional per the spec. The extension is
+/// mutually exclusive with `KHR_materials_pbrSpecularGlossiness` and
+/// `KHR_materials_unlit` per the spec §Exclusions; we don't enforce
+/// those pairings here (neither sibling is in the registry's
+/// per-material set).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MaterialDiffuseTransmission {
+    #[serde(
+        rename = "diffuseTransmissionFactor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub diffuse_transmission_factor: Option<f32>,
+    #[serde(
+        rename = "diffuseTransmissionTexture",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub diffuse_transmission_texture: Option<TextureInfo>,
+    #[serde(
+        rename = "diffuseTransmissionColorFactor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub diffuse_transmission_color_factor: Option<[f32; 3]>,
+    #[serde(
+        rename = "diffuseTransmissionColorTexture",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub diffuse_transmission_color_texture: Option<TextureInfo>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
