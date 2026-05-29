@@ -242,6 +242,22 @@ framework but usable standalone.
   appends `KHR_texture_transform` to `extensionsUsed`. The §3.12 stack
   validator rejects textureInfos carrying the data block without the
   declaration (`ExtensionStackUsedNotDeclared`)
+- KHR_mesh_quantization decode (Khronos ratified) — quantized vertex
+  attributes from `docs/3d/gltf/extensions/KHR_mesh_quantization.md`.
+  `POSITION` / `NORMAL` / `TANGENT` / `TEXCOORD_n` accessors may store
+  8-/16-bit signed/unsigned integers (normalized or unnormalized) in
+  place of `FLOAT`. The decoder dequantizes per the spec int→float
+  table — BYTE `f = max(c/127, -1)`, UNSIGNED_BYTE `f = c/255`, SHORT
+  `f = max(c/32767, -1)`, UNSIGNED_SHORT `f = c/65535`; unnormalized
+  integers cast directly to `f32`. A quantized base attribute is gated
+  on `KHR_mesh_quantization` being declared in `extensionsUsed` and the
+  (componentType, normalized) pair being in the extension's allowed set
+  for that attribute; the base-spec UNSIGNED_BYTE / UNSIGNED_SHORT
+  *normalized* `TEXCOORD` types stay accepted without the extension.
+  Each quantized attribute's storage form (componentType + normalized)
+  is recorded under the primitive `extras["__attr_quant"]` sentinel for
+  a future encoder round-trip. Encoder emission of quantized attributes
+  is not yet wired (see roadmap)
 - Skins + skeletons (joint roster, inverseBindMatrices accessor,
   optional skeleton root) per spec §3.7.3 — `node.skin` round-trips
 - Animations (channels + samplers) per spec §3.11 — translation /
@@ -340,8 +356,13 @@ The KHR extension registry is now staged under
 `docs/3d/gltf/extensions/` (25 specs + index), so the remaining work
 is implementation, not docs:
 
-- KHR_mesh_quantization int8/int16 quantised POSITION / NORMAL /
-  TANGENT / TEXCOORD — needs the dequantisation path
+- KHR_mesh_quantization encoder — the decode path (dequantisation of
+  int8/int16 POSITION / NORMAL / TANGENT / TEXCOORD) landed in round
+  188; the remaining work is the float→int emit path (re-quantising
+  attributes recorded under the `__attr_quant` sentinel and appending
+  the extension to `extensionsUsed` + `extensionsRequired`), plus
+  decode of quantized morph-target attributes (§Extending Morph Target
+  Attributes)
 - KHR_audio_emitter wiring against `oxideav_mesh3d::AudioSource` /
   `AudioEmitter`
 

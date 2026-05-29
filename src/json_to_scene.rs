@@ -33,6 +33,7 @@ use crate::accessor::{
 use crate::asset_source::BufferViewAsset;
 use crate::error::{invalid, unsupported, Error, Result};
 use crate::json_model::{self as gj, GltfRoot};
+use crate::quantization::{self, ATTR_QUANT_KEY, EXTENSION_NAME};
 use crate::validation::{
     check_asset_version, validate_accessor_fits_bufferview, validate_alignment,
     validate_animation_channels, validate_attribute_counts, validate_bufferview_fits_buffer,
@@ -1288,26 +1289,43 @@ fn convert_primitive(
         }
     }
 
+    // KHR_mesh_quantization is declared in extensionsUsed when any of
+    // this primitive's attribute accessors lift a quantised integer
+    // type per the extension table.
+    let ext_used = root.extensions_used.iter().any(|e| e == EXTENSION_NAME);
+
+    // Per-attribute quantisation roster: name → {componentType,
+    // normalized}. Stashed on the primitive's extras under
+    // `__attr_quant` so the encoder can round-trip each attribute in
+    // its original form.
+    let mut attr_quant = serde_json::Map::new();
+
     // POSITION is mandatory per spec §3.7.2.1.
     let position_idx = *p
         .attributes
         .get("POSITION")
         .ok_or_else(|| invalid("primitive: missing POSITION attribute"))?;
-    prim.positions = read_attr_vec3(root, buffers, position_idx)?;
+    prim.positions = read_attr_vec3(root, buffers, position_idx, ext_used, "POSITION")?;
+    record_attr_quant(&mut attr_quant, &root.accessors, position_idx, "POSITION");
 
     if let Some(&i) = p.attributes.get("NORMAL") {
-        prim.normals = Some(read_attr_vec3(root, buffers, i)?);
+        prim.normals = Some(read_attr_vec3(root, buffers, i, ext_used, "NORMAL")?);
+        record_attr_quant(&mut attr_quant, &root.accessors, i, "NORMAL");
     }
     if let Some(&i) = p.attributes.get("TANGENT") {
-        let tangents = read_attr_vec4(root, buffers, i)?;
+        let tangents = read_attr_vec4(root, buffers, i, ext_used, "TANGENT")?;
         // Spec §3.7.2.1: TANGENT.w MUST be ±1.0.
         validate_tangent_w(&tangents)?;
         prim.tangents = Some(tangents);
+        record_attr_quant(&mut attr_quant, &root.accessors, i, "TANGENT");
     }
     // TEXCOORD_n
     let mut texcoord_idx = 0;
     while let Some(&i) = p.attributes.get(&format!("TEXCOORD_{texcoord_idx}")) {
-        prim.uvs.push(read_attr_vec2(root, buffers, i)?);
+        let name = format!("TEXCOORD_{texcoord_idx}");
+        prim.uvs
+            .push(read_attr_vec2(root, buffers, i, ext_used, &name)?);
+        record_attr_quant(&mut attr_quant, &root.accessors, i, &name);
         texcoord_idx += 1;
     }
     // COLOR_n — accept VEC3 or VEC4 (we promote VEC3 to VEC4 with alpha=1.0).
@@ -1368,6 +1386,23 @@ fn convert_primitive(
         extras_into(&mut prim.extras, extras.clone());
     }
 
+    // Stash per-attribute quantisation metadata so the encoder can
+    // round-trip each attribute in its original component-type form.
+    // Only emit the sentinel if at least one attribute is not the
+    // spec's default FLOAT — keeping plain FLOAT primitives identical
+    // to pre-r179 output.
+    if attr_quant.values().any(|v| {
+        v.as_object()
+            .and_then(|o| o.get("componentType"))
+            .and_then(|c| c.as_u64())
+            != Some(u64::from(gj::COMPONENT_TYPE_FLOAT))
+    }) {
+        prim.extras.insert(
+            ATTR_QUANT_KEY.to_owned(),
+            serde_json::Value::Object(attr_quant),
+        );
+    }
+
     // Morph targets (§3.7.2.2). The typed `oxideav_mesh3d::Primitive`
     // model doesn't carry a dedicated field, so we serialise the
     // resolved per-target attribute deltas into a JSON sentinel under
@@ -1426,16 +1461,28 @@ fn read_attr_vec3(
     root: &GltfRoot,
     buffers: &[Arc<Vec<u8>>],
     accessor_idx: u32,
+    ext_used: bool,
+    attr_name: &str,
 ) -> Result<Vec<[f32; 3]>> {
     let acc = root
         .accessors
         .get(accessor_idx as usize)
         .ok_or_else(|| invalid(format!("accessor {accessor_idx} out of range")))?;
-    if acc.kind != "VEC3" || acc.component_type != gj::COMPONENT_TYPE_FLOAT {
+    if acc.kind != "VEC3" {
         return Err(unsupported(format!(
-            "attribute accessor: expected VEC3 FLOAT, got {:?} {}",
-            acc.kind, acc.component_type
+            "attribute accessor: expected VEC3, got {:?}",
+            acc.kind
         )));
+    }
+    // Non-FLOAT VEC3 storage is only legal when KHR_mesh_quantization is
+    // active (extensionsUsed declares it) AND the
+    // (componentType, normalized) pair is in the extension's allowed set
+    // for this base attribute (§Extending Mesh Attributes).
+    if acc.component_type != gj::COMPONENT_TYPE_FLOAT {
+        require_quantization_combo(ext_used, attr_name, "VEC3", acc)?;
+        let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
+        let view = view_from_materialised(acc, &bytes)?;
+        return quantization::dequantize_vec3(acc, &view);
     }
     let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
     let view = view_from_materialised(acc, &bytes)?;
@@ -1511,16 +1558,44 @@ fn read_attr_vec2(
     root: &GltfRoot,
     buffers: &[Arc<Vec<u8>>],
     accessor_idx: u32,
+    ext_used: bool,
+    attr_name: &str,
 ) -> Result<Vec<[f32; 2]>> {
     let acc = root
         .accessors
         .get(accessor_idx as usize)
         .ok_or_else(|| invalid(format!("accessor {accessor_idx} out of range")))?;
-    if acc.kind != "VEC2" || acc.component_type != gj::COMPONENT_TYPE_FLOAT {
+    if acc.kind != "VEC2" {
         return Err(unsupported(format!(
-            "TEXCOORD accessor: expected VEC2 FLOAT, got {:?} {}",
-            acc.kind, acc.component_type
+            "TEXCOORD accessor: expected VEC2, got {:?}",
+            acc.kind
         )));
+    }
+    // TEXCOORD allows UNSIGNED_BYTE / UNSIGNED_SHORT *normalized* in the
+    // base spec §3.7.2.1 (no extension needed). Any other non-FLOAT
+    // form requires KHR_mesh_quantization.
+    if acc.component_type != gj::COMPONENT_TYPE_FLOAT {
+        if quantization::requires_extension_for_base_attr(
+            attr_name,
+            "VEC2",
+            acc.component_type,
+            acc.normalized,
+        ) {
+            require_quantization_combo(ext_used, attr_name, "VEC2", acc)?;
+        } else if !quantization::is_base_attr_combo_allowed(
+            attr_name,
+            "VEC2",
+            acc.component_type,
+            acc.normalized,
+        ) {
+            return Err(unsupported(format!(
+                "TEXCOORD accessor: componentType {} (normalized={}) not allowed",
+                acc.component_type, acc.normalized
+            )));
+        }
+        let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
+        let view = view_from_materialised(acc, &bytes)?;
+        return quantization::dequantize_vec2(acc, &view);
     }
     let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
     let view = view_from_materialised(acc, &bytes)?;
@@ -1531,20 +1606,86 @@ fn read_attr_vec4(
     root: &GltfRoot,
     buffers: &[Arc<Vec<u8>>],
     accessor_idx: u32,
+    ext_used: bool,
+    attr_name: &str,
 ) -> Result<Vec<[f32; 4]>> {
     let acc = root
         .accessors
         .get(accessor_idx as usize)
         .ok_or_else(|| invalid(format!("accessor {accessor_idx} out of range")))?;
-    if acc.kind != "VEC4" || acc.component_type != gj::COMPONENT_TYPE_FLOAT {
+    if acc.kind != "VEC4" {
         return Err(unsupported(format!(
-            "TANGENT accessor: expected VEC4 FLOAT, got {:?} {}",
-            acc.kind, acc.component_type
+            "TANGENT accessor: expected VEC4, got {:?}",
+            acc.kind
         )));
+    }
+    // TANGENT non-FLOAT storage requires KHR_mesh_quantization
+    // (byte/short normalized only, per §Extending Mesh Attributes).
+    if acc.component_type != gj::COMPONENT_TYPE_FLOAT {
+        require_quantization_combo(ext_used, attr_name, "VEC4", acc)?;
+        let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
+        let view = view_from_materialised(acc, &bytes)?;
+        return quantization::dequantize_vec4(acc, &view);
     }
     let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
     let view = view_from_materialised(acc, &bytes)?;
     read_vec_f32::<4>(&view)
+}
+
+/// Gate a quantised (non-FLOAT) base-mesh attribute on the extension
+/// being declared in `extensionsUsed` and the (componentType,
+/// normalized) pair being in the extension's allowed set for the named
+/// attribute (`POSITION` / `NORMAL` / `TANGENT` / `TEXCOORD_n`).
+fn require_quantization_combo(
+    ext_used: bool,
+    attr_name: &str,
+    kind: &str,
+    acc: &gj::Accessor,
+) -> Result<()> {
+    if !ext_used {
+        return Err(unsupported(format!(
+            "{attr_name} accessor uses componentType {} but {} is not in extensionsUsed",
+            acc.component_type,
+            quantization::EXTENSION_NAME
+        )));
+    }
+    if !quantization::is_base_attr_combo_allowed(
+        attr_name,
+        kind,
+        acc.component_type,
+        acc.normalized,
+    ) {
+        return Err(unsupported(format!(
+            "{} {attr_name} accessor: componentType {} (normalized={}) not in the extension's allowed set",
+            quantization::EXTENSION_NAME, acc.component_type, acc.normalized
+        )));
+    }
+    Ok(())
+}
+
+/// Record an attribute's storage form (`componentType` + `normalized`)
+/// into the per-primitive `__attr_quant` roster so the encoder can
+/// round-trip each attribute in its original quantised form. Always
+/// records — the caller only emits the sentinel when at least one
+/// attribute is non-FLOAT (see [`convert_primitive`]).
+fn record_attr_quant(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    accessors: &[gj::Accessor],
+    accessor_idx: u32,
+    attr_name: &str,
+) {
+    if let Some(acc) = accessors.get(accessor_idx as usize) {
+        let mut entry = serde_json::Map::new();
+        entry.insert(
+            "componentType".to_owned(),
+            serde_json::Value::Number(acc.component_type.into()),
+        );
+        entry.insert(
+            "normalized".to_owned(),
+            serde_json::Value::Bool(acc.normalized),
+        );
+        map.insert(attr_name.to_owned(), serde_json::Value::Object(entry));
+    }
 }
 
 fn read_attr_color(

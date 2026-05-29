@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 188)
+
+- `KHR_mesh_quantization` decode support (Khronos ratified — see
+  `docs/3d/gltf/extensions/KHR_mesh_quantization.md`). The extension
+  widens the allowed vertex-attribute component types beyond `FLOAT`:
+  `POSITION` / `NORMAL` / `TANGENT` / `TEXCOORD_n` accessors may now use
+  8-/16-bit signed/unsigned integer storage (normalized or
+  unnormalized). New `src/quantization.rs` module implements the spec's
+  int→float dequantization table — `5120` BYTE `f = max(c/127, -1)`,
+  `5121` UNSIGNED_BYTE `f = c/255`, `5122` SHORT `f = max(c/32767, -1)`,
+  `5123` UNSIGNED_SHORT `f = c/65535` — plus the matching float→int
+  helpers and the §Extending Mesh / Morph Target Attributes allowed-combo
+  tables. The decoder (`json_to_scene.rs`) dispatches `read_attr_vec2`
+  / `vec3` / `vec4` to the dequantizer when an attribute accessor is a
+  non-`FLOAT` quantized type: normalized integers run the spec equation,
+  unnormalized integers cast directly to `f32` (spec: "unnormalized
+  integer 2 corresponds to 2.0"). A quantized base attribute is gated on
+  `KHR_mesh_quantization` appearing in `extensionsUsed` AND the
+  (componentType, normalized) pair being in the extension's allowed set
+  for that attribute — otherwise the decode is rejected with a stable
+  message. The base-spec §3.7.2.1 UNSIGNED_BYTE / UNSIGNED_SHORT
+  *normalized* `TEXCOORD` types remain accepted without the extension.
+  Each quantized attribute's storage form is recorded under the
+  primitive's `extras["__attr_quant"]` sentinel (componentType +
+  normalized, per attribute name) so a future encoder pass can
+  round-trip the original quantized form; plain all-`FLOAT` primitives
+  do not gain the sentinel. New `tests/khr_mesh_quantization.rs` (7
+  tests) covers SHORT-normalized POSITION dequantization with the
+  `-32768/32767 → -1.0` clamp, BYTE-normalized NORMAL, unnormalized
+  SHORT TEXCOORD direct-cast, base-spec UBYTE-normalized TEXCOORD
+  without the extension, the extension-required rejection path, the
+  `__attr_quant` sentinel shape, and FLOAT-primitive sentinel absence.
+  Encoder emission of quantized attributes is deferred to a follow-up
+  round.
+
 ### Added (round 164)
 
 - `KHR_materials_diffuse_transmission` extension (Khronos ratified —
