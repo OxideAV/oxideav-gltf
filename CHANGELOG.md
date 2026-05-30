@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.2](https://github.com/OxideAV/oxideav-gltf/compare/v0.0.1...v0.0.2) - 2026-05-29
+
+### Added
+
+- KHR_mesh_quantization decode (quantized vertex attributes)
+- KHR_materials_diffuse_transmission extension (round 164)
+- KHR_materials_dispersion extension (chromatic-aberration scalar)
+- KHR_materials_anisotropy extension (asymmetric specular lobe)
+- KHR_texture_transform extension (per-textureInfo UV affine transform)
+- KHR_materials_volume extension (round 120)
+- KHR_materials_transmission extension (round 117)
+- KHR_materials_sheen extension (round 114)
+- KHR_materials_clearcoat extension (decode + encode + §3.12 validation)
+
+### Other
+
+- Add KHR_materials_iridescence extension (round 129)
+- round 126: cargo-fuzz harness for glTF JSON + .glb binary parser
+- Add KHR_materials_specular extension (decode + encode + §3.12 validation)
+- add KHR_materials_ior extension (decode + encode + §3.12 validation)
+- KHR_materials_emissive_strength — decode + encode + §3.12 validation (r98)
+- KHR_materials_unlit — decode + encode + §3.12 validation (r93)
+- round 8: accessor/bufferView fit + sparse-indices restriction validation
+- Round 75: GLB hardening + JSON-to-scene validation extension
+- Validate extension stack + animation paths; harden JSON parser (r7)
+
 ### Added (round 188)
 
 - `KHR_mesh_quantization` decode support (Khronos ratified — see
