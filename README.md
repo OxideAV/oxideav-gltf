@@ -242,6 +242,19 @@ framework but usable standalone.
   appends `KHR_texture_transform` to `extensionsUsed`. The §3.12 stack
   validator rejects textureInfos carrying the data block without the
   declaration (`ExtensionStackUsedNotDeclared`)
+- KHR_node_visibility extension (Khronos ratified) — per-node Boolean
+  `visible` flag from `docs/3d/gltf/extensions/KHR_node_visibility.md`.
+  The decoder lifts the JSON `nodes[i].extensions.KHR_node_visibility.visible`
+  value into the typed `oxideav_mesh3d::Node::extras["KHR_node_visibility"]`
+  side-channel as a JSON boolean; a bare `{}` object resolves to the
+  spec default of `true` (the spec defines `visible` as optional with
+  default `true` per §Extending Nodes). The encoder lifts the boolean
+  back into the typed `KHR_node_visibility` extension object on write
+  and appends `KHR_node_visibility` to `extensionsUsed`. The §3.12
+  stack validator rejects nodes carrying the data block without the
+  declaration (`ExtensionStackUsedNotDeclared`). The two per-node
+  extensions (`KHR_lights_punctual` + `KHR_node_visibility`) coexist
+  on a single node so a hidden subtree can still own a light
 - KHR_mesh_quantization decode (Khronos ratified) — quantized vertex
   attributes from `docs/3d/gltf/extensions/KHR_mesh_quantization.md`.
   `POSITION` / `NORMAL` / `TANGENT` / `TEXCOORD_n` accessors may store

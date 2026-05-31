@@ -184,6 +184,19 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
             if let Some(lr) = &ext.khr_lights_punctual {
                 node.light = light_id_map.get(&lr.light).copied();
             }
+            // KHR_node_visibility — boolean `visible` flag on a node
+            // (docs/3d/gltf/extensions/KHR_node_visibility.md
+            // §Extending Nodes). The spec defines `visible` as
+            // optional with a default of `true`, so a bare `{}`
+            // object resolves to that default. We surface the value
+            // through `Node::extras["KHR_node_visibility"]` as a
+            // JSON boolean rather than widening
+            // `oxideav_mesh3d::Node`.
+            if let Some(nv) = &ext.khr_node_visibility {
+                let visible = nv.visible.unwrap_or(true);
+                node.extras
+                    .insert("KHR_node_visibility".to_owned(), Value::Bool(visible));
+            }
         }
         if let Some(extras) = &n.extras {
             extras_into(&mut node.extras, extras.clone());

@@ -255,8 +255,24 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     }
 
     // --- nodes ---
+    let mut emitted_node_visibility = false;
     for n in &scene.nodes {
-        root.nodes.push(encode_node(n, scene));
+        let n_json = encode_node(n, scene);
+        if n_json
+            .extensions
+            .as_ref()
+            .map(|e| e.khr_node_visibility.is_some())
+            .unwrap_or(false)
+        {
+            emitted_node_visibility = true;
+        }
+        root.nodes.push(n_json);
+    }
+    if emitted_node_visibility {
+        // Per docs/3d/gltf/extensions/KHR_node_visibility.md §Extending
+        // Nodes the extension MUST be declared in `extensionsUsed`
+        // when any node carries the data block (spec §3.12 stack rule).
+        root.extensions_used.push("KHR_node_visibility".to_owned());
     }
 
     // --- animations ---
@@ -1252,13 +1268,31 @@ fn encode_node(n: &Node, _scene: &Scene3D) -> gj::Node {
             },
         ),
     };
-    let extensions = n.light.map(|lid| gj::NodeExtensions {
-        khr_lights_punctual: Some(gj::NodeLightRef { light: lid.0 }),
-    });
-    let extras = if n.extras.is_empty() {
+    // Pull the `KHR_node_visibility` boolean back out of extras (the
+    // decoder lifted the JSON `visible` field there); when present we
+    // re-emit the typed extension object on the node so the consumer
+    // sees an exact JSON round-trip. Per the KHR_node_visibility spec
+    // §Extending Nodes the default is `true`, so we omit the object on
+    // a bare `true` to match what the spec considers idle and only
+    // emit it when the value differs from the default OR when the
+    // decoder explicitly carried it through (the latter so a literal
+    // `{"visible": true}` round-trips).
+    let mut effective_extras = n.extras.clone();
+    let visibility = effective_extras
+        .remove("KHR_node_visibility")
+        .and_then(|v| v.as_bool());
+    let extensions = if n.light.is_some() || visibility.is_some() {
+        Some(gj::NodeExtensions {
+            khr_lights_punctual: n.light.map(|lid| gj::NodeLightRef { light: lid.0 }),
+            khr_node_visibility: visibility.map(|v| gj::NodeVisibility { visible: Some(v) }),
+        })
+    } else {
+        None
+    };
+    let extras = if effective_extras.is_empty() {
         None
     } else {
-        Some(map_to_value(&n.extras))
+        Some(map_to_value(&effective_extras))
     };
     gj::Node {
         mesh: n.mesh.map(|m| m.0),

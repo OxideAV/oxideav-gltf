@@ -1160,7 +1160,9 @@ pub struct KhrLightSpot {
 }
 
 /// Per-node `extensions` block. Used by `KHR_lights_punctual` to point
-/// a node at one of the root `lights[]`.
+/// a node at one of the root `lights[]`, and by `KHR_node_visibility`
+/// to toggle a node subtree's visibility per
+/// `docs/3d/gltf/extensions/KHR_node_visibility.md`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct NodeExtensions {
     #[serde(
@@ -1169,11 +1171,32 @@ pub struct NodeExtensions {
         skip_serializing_if = "Option::is_none"
     )]
     pub khr_lights_punctual: Option<NodeLightRef>,
+    /// `KHR_node_visibility` — boolean `visible` flag that hides the
+    /// node and its descendant subtree per
+    /// `docs/3d/gltf/extensions/KHR_node_visibility.md`.
+    #[serde(
+        rename = "KHR_node_visibility",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_node_visibility: Option<NodeVisibility>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct NodeLightRef {
     pub light: u32,
+}
+
+/// `KHR_node_visibility` extension object — a single optional boolean
+/// `visible` property per
+/// `docs/3d/gltf/extensions/KHR_node_visibility.md` §Extending Nodes.
+/// The spec defines `visible` as optional with a default of `true`;
+/// a value of `false` hides the node and all its descendants
+/// (visibility is the logical AND of every ancestor's value).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct NodeVisibility {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible: Option<bool>,
 }
 
 /// `animations[i]` — a bag of channels played as one timeline.

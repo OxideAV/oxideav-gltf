@@ -38,8 +38,8 @@
 //!   `KHR_materials_transmission`, `KHR_materials_volume`,
 //!   `KHR_materials_iridescence`, `KHR_materials_anisotropy`,
 //!   `KHR_materials_dispersion`, `KHR_materials_diffuse_transmission`,
-//!   and `KHR_texture_transform` (the last on any of the five core
-//!   PBR textureInfo slots).
+//!   `KHR_texture_transform` (on any of the five core PBR textureInfo
+//!   slots), and `KHR_node_visibility` (on any node).
 //! * `KHR_materials_anisotropy.anisotropyStrength` MUST sit in `[0, 1]`
 //!   per the extension spec's "Anisotropy" section ("a dimensionless
 //!   number in the range [0, 1]"). The `anisotropyRotation` is
@@ -755,6 +755,26 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         ));
     }
 
+    // KHR_node_visibility — per-node extension. Same §3.12 rule: the
+    // extension MUST be declared in `extensionsUsed` if any node
+    // carries the data block. The extension defines a single optional
+    // boolean `visible` flag per `docs/3d/gltf/extensions/
+    // KHR_node_visibility.md` §Extending Nodes (default `true`); the
+    // boolean has no out-of-range case so no value check is needed.
+    let has_node_visibility = root.nodes.iter().any(|n| {
+        n.extensions
+            .as_ref()
+            .and_then(|e| e.khr_node_visibility.as_ref())
+            .is_some()
+    });
+    if has_node_visibility && !used("KHR_node_visibility") {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_node_visibility data is \
+             present on a node but the extension is not listed in \
+             extensionsUsed (spec §3.12)",
+        ));
+    }
+
     Ok(())
 }
 
@@ -1442,11 +1462,48 @@ mod tests {
         root.nodes.push(Node {
             extensions: Some(NodeExtensions {
                 khr_lights_punctual: Some(NodeLightRef { light: 0 }),
+                khr_node_visibility: None,
             }),
             ..Default::default()
         });
         let err = validate_extension_stack(&root).unwrap_err();
         assert!(format!("{err}").contains("ExtensionStackUsedNotDeclared"));
+    }
+
+    #[test]
+    fn extension_stack_rejects_node_visibility_missing_used() {
+        let mut root = empty_root();
+        root.nodes.push(Node {
+            extensions: Some(NodeExtensions {
+                khr_lights_punctual: None,
+                khr_node_visibility: Some(crate::json_model::NodeVisibility {
+                    visible: Some(false),
+                }),
+            }),
+            ..Default::default()
+        });
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackUsedNotDeclared") && msg.contains("KHR_node_visibility"),
+            "expected ExtensionStackUsedNotDeclared for KHR_node_visibility, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn extension_stack_accepts_node_visibility_declared() {
+        let mut root = empty_root();
+        root.extensions_used.push("KHR_node_visibility".to_owned());
+        root.nodes.push(Node {
+            extensions: Some(NodeExtensions {
+                khr_lights_punctual: None,
+                khr_node_visibility: Some(crate::json_model::NodeVisibility {
+                    visible: Some(false),
+                }),
+            }),
+            ..Default::default()
+        });
+        validate_extension_stack(&root).expect("declared extension must pass");
     }
 
     #[test]

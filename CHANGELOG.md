@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 199)
+
+- `KHR_node_visibility` extension (Khronos ratified — see
+  `docs/3d/gltf/extensions/KHR_node_visibility.md`). The extension
+  defines a single optional Boolean `visible` flag on a node, with a
+  spec default of `true` per §Extending Nodes; a value of `false`
+  hides the node and all its descendant subtree. Decoder reads the
+  per-node `extensions.KHR_node_visibility.visible` field and lifts it
+  into `oxideav_mesh3d::Node::extras["KHR_node_visibility"]` as a
+  `Value::Bool` (a bare `{}` object resolves to the spec default of
+  `true`). Encoder pulls the boolean back out of `Node::extras`,
+  rebuilds the typed `KHR_node_visibility` extension object on the
+  node, and appends `KHR_node_visibility` to `extensionsUsed`. New
+  `validate_extension_stack` arm rejects nodes carrying the data block
+  without the declaration with the stable `ExtensionStackUsedNotDeclared`
+  prefix. The two per-node extensions (`KHR_lights_punctual` +
+  `KHR_node_visibility`) coexist on a single node, exercised by an
+  integration test. New `tests/khr_node_visibility.rs` (8 tests)
+  covers `visible=false` and `visible=true` round-trips, the
+  `extensionsUsed` emission shape, omission when no node sets the
+  flag, the §3.12 rejection path, the declared-decode path, the bare
+  `{}` → default-`true` resolution, and the coexistence with
+  `KHR_lights_punctual` on the same node. Two new unit tests in
+  `validation.rs` cover the `validate_extension_stack`
+  rejection-and-acceptance arms directly.
+
 ## [0.0.2](https://github.com/OxideAV/oxideav-gltf/compare/v0.0.1...v0.0.2) - 2026-05-29
 
 ### Added
