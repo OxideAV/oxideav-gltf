@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 205)
+
+- `KHR_materials_variants` extension (Khronos ratified — see
+  `docs/3d/gltf/extensions/KHR_materials_variants.md`). The extension
+  stores a root-level array of named material variants the document
+  can switch between, paired with per-primitive `mappings` tables that
+  pair a material index with the variant indices that should select it.
+  Decoder reads the root `extensions.KHR_materials_variants.variants`
+  roster and lifts it into `oxideav_mesh3d::Scene3D::extras
+  ["KHR_materials_variants"]` as `{ "variants": [{ "name": "...",
+  "extras": ... }, ...] }`; the per-primitive `extensions.KHR_materials_variants.mappings`
+  list lifts into `oxideav_mesh3d::Primitive::extras["KHR_materials_variants"]`
+  as `{ "mappings": [{ "material": idx, "variants": [idx, ...],
+  "name": "...", "extras": ... }, ...] }`. Encoder lifts both back into
+  the typed root + primitive extension blocks and appends
+  `KHR_materials_variants` to `extensionsUsed` whenever the roster or
+  any per-primitive mapping survives. New `validate_extension_stack`
+  arm rejects documents carrying either data block without the
+  declaration with the stable `ExtensionStackUsedNotDeclared` prefix;
+  three further spec-explicit value-range checks reject mapping
+  `material` indices outside the materials roster
+  (`ExtensionStackVariantsMaterialIndex`), variant indices outside the
+  root roster (`ExtensionStackVariantsIndex`), and per-primitive
+  duplicate variant indices (`ExtensionStackVariantsDuplicate` — per
+  the spec "Across the entire mappings array, each variant index must
+  be used no more than one time"). New `tests/khr_materials_variants.rs`
+  (11 tests) covers GLB round-trips for the roster + mappings, the
+  `extensionsUsed` emission shape, omission when no variants are
+  present, the §3.12 rejection path, the declared-decode path, the
+  three value-range rejections, the docs-example sneaker mapping, the
+  empty-roster edge case, the per-mapping `name`/`extras` passthrough,
+  and the typed-JSON-shape sanity check. Six new unit tests in
+  `validation.rs` cover each branch of the new validator directly.
+
 ### Added (round 199)
 
 - `KHR_node_visibility` extension (Khronos ratified — see

@@ -65,12 +65,24 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     let mut bin: Vec<u8> = Vec::new();
 
     // --- meshes + accessors + bufferViews ---
+    let mut emitted_primitive_variants = false;
     for mesh in &scene.meshes {
         let primitives = mesh
             .primitives
             .iter()
             .map(|p| encode_primitive(p, &mut root, &mut bin, opts))
             .collect::<Result<Vec<_>>>()?;
+        // Track KHR_materials_variants per-primitive mappings so we can
+        // append the extension to `extensionsUsed` once at root scope
+        // (spec §3.12 — see docs/3d/gltf/extensions/KHR_materials_variants.md).
+        if primitives.iter().any(|p| {
+            p.extensions
+                .as_ref()
+                .and_then(|e| e.khr_materials_variants.as_ref())
+                .is_some()
+        }) {
+            emitted_primitive_variants = true;
+        }
         // Lift primitive[0]'s `__mesh_extras` sentinel back to mesh-level
         // extras (matches the decoder's stash; loss-tolerant if absent).
         let mesh_extras = mesh
@@ -239,10 +251,39 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
         for l in &scene.lights {
             lights.push(encode_light(*l));
         }
-        root.extensions = Some(gj::RootExtensions {
-            khr_lights_punctual: Some(gj::KhrLightsPunctualRoot { lights }),
-        });
+        let ext = root.extensions.get_or_insert(gj::RootExtensions::default());
+        ext.khr_lights_punctual = Some(gj::KhrLightsPunctualRoot { lights });
         root.extensions_used.push("KHR_lights_punctual".to_owned());
+    }
+
+    // --- KHR_materials_variants root-level roster ---
+    // The decoder stashes the document's `extensions.KHR_materials_variants.variants`
+    // array under `scene.extras["KHR_materials_variants"]` as the JSON
+    // object `{ "variants": [...] }`. Lift it back into the typed
+    // root-level extension block; declare the extension in
+    // `extensionsUsed` whenever any root variants OR any per-primitive
+    // mapping survives the round-trip (the per-primitive walk below
+    // records the latter via `emitted_primitive_variants`).
+    let mut emitted_root_variants = false;
+    if let Some(serde_json::Value::Object(obj)) = scene.extras.get("KHR_materials_variants") {
+        if let Some(serde_json::Value::Array(arr)) = obj.get("variants") {
+            let variants: Vec<gj::MaterialVariant> = arr
+                .iter()
+                .filter_map(|v| {
+                    let o = v.as_object()?;
+                    let name = o.get("name").and_then(|v| v.as_str())?.to_owned();
+                    let extras = o.get("extras").cloned();
+                    Some(gj::MaterialVariant { name, extras })
+                })
+                .collect();
+            let ext = root.extensions.get_or_insert(gj::RootExtensions::default());
+            ext.khr_materials_variants = Some(gj::KhrMaterialsVariantsRoot { variants });
+            emitted_root_variants = true;
+        }
+    }
+    if emitted_root_variants || emitted_primitive_variants {
+        root.extensions_used
+            .push("KHR_materials_variants".to_owned());
     }
 
     // --- skins ---
@@ -287,6 +328,12 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     // pulls them back out and recreates the original `scenes[]` order.
     let mut effective_extras = scene.extras.clone();
     let additional_scenes = effective_extras.remove("__additional_scenes");
+    // KHR_materials_variants — root-level roster lives on the typed
+    // `root.extensions.khr_materials_variants` block emitted above, NOT
+    // duplicated into the scene `extras` (which is what the decoder
+    // stashes it under to keep Scene3D narrow). Strip it here so the
+    // primary scene's `extras` field doesn't carry a stale copy.
+    effective_extras.remove("KHR_materials_variants");
     let scene_extras = if effective_extras.is_empty() {
         None
     } else {
@@ -454,16 +501,63 @@ fn encode_primitive(
 
     // Drop the synthetic sentinels (`__mesh_extras`, `__mesh_weights`,
     // `__morph_targets`) when emitting per-primitive extras — they're
-    // re-materialised through their dedicated JSON paths.
+    // re-materialised through their dedicated JSON paths. Also strip
+    // `KHR_materials_variants` — the mapping table is lifted into the
+    // typed primitive `extensions` block (below) rather than emitted
+    // as raw extras.
     let mut prim_extras = p.extras.clone();
     let morph_targets_extra = prim_extras.remove("__morph_targets");
     prim_extras.remove("__mesh_extras");
     prim_extras.remove("__mesh_weights");
+    let variants_extra = prim_extras.remove("KHR_materials_variants");
     let extras = if prim_extras.is_empty() {
         None
     } else {
         Some(map_to_value(&prim_extras))
     };
+
+    // KHR_materials_variants — per-primitive mapping table per
+    // `docs/3d/gltf/extensions/KHR_materials_variants.md`. The decoder
+    // stashes the full mappings array under
+    // `primitive.extras["KHR_materials_variants"]`; the encoder lifts
+    // it back into the typed `PrimitiveExtensions` block on write. The
+    // caller is responsible for declaring `KHR_materials_variants` in
+    // `extensionsUsed` — the surrounding `convert_with_options` walk
+    // tracks the surfacing and appends it once.
+    let prim_extensions = variants_extra
+        .as_ref()
+        .and_then(|v| v.as_object())
+        .and_then(|o| o.get("mappings"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            let mappings: Vec<gj::VariantMapping> = arr
+                .iter()
+                .filter_map(|m| {
+                    let obj = m.as_object()?;
+                    let material = obj.get("material").and_then(|v| v.as_u64())? as u32;
+                    let variants: Vec<u32> = obj
+                        .get("variants")
+                        .and_then(|v| v.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_u64().map(|v| v as u32))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let name = obj.get("name").and_then(|v| v.as_str()).map(String::from);
+                    let extras = obj.get("extras").cloned();
+                    Some(gj::VariantMapping {
+                        material,
+                        variants,
+                        name,
+                        extras,
+                    })
+                })
+                .collect();
+            gj::PrimitiveExtensions {
+                khr_materials_variants: Some(gj::PrimitiveVariantMappings { mappings }),
+            }
+        });
 
     // Re-emit morph targets as accessors per §3.7.2.2. Two paths feed
     // this:
@@ -490,6 +584,7 @@ fn encode_primitive(
         material: p.material.map(|m| m.0),
         mode,
         targets,
+        extensions: prim_extensions,
         extras,
     })
 }

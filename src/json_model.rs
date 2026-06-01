@@ -170,6 +170,49 @@ pub struct Primitive {
     /// MUST have the same number of targets in the same order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<HashMap<String, u32>>,
+    /// Per-spec primitive-level `extensions` block. Currently surfaces
+    /// `KHR_materials_variants` mappings per
+    /// `docs/3d/gltf/extensions/KHR_materials_variants.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<PrimitiveExtensions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<Value>,
+}
+
+/// Per-primitive `extensions` block. Today carries the
+/// `KHR_materials_variants` mapping table that pairs material indices
+/// with the root-level variant indices they apply to.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct PrimitiveExtensions {
+    #[serde(
+        rename = "KHR_materials_variants",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_materials_variants: Option<PrimitiveVariantMappings>,
+}
+
+/// `KHR_materials_variants` per-primitive extension object — a
+/// `mappings` list pairing material indices with variant indices.
+/// Per `docs/3d/gltf/extensions/KHR_materials_variants.md` each
+/// `variant` index across one primitive's mappings list MUST appear at
+/// most once.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct PrimitiveVariantMappings {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mappings: Vec<VariantMapping>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct VariantMapping {
+    /// Index into the root-level `materials[]` array.
+    pub material: u32,
+    /// Indices into the root-level
+    /// `extensions.KHR_materials_variants.variants[]` array.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extras: Option<Value>,
 }
@@ -1110,7 +1153,8 @@ pub struct CameraOrthographic {
 
 /// `extensions` block at root scope. Currently we surface
 /// `KHR_lights_punctual` (the punctual-lights light table lives there
-/// per the extension spec); other extensions pass through as `extras`.
+/// per the extension spec) and the root-level variant roster for
+/// `KHR_materials_variants`; other extensions pass through as `extras`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct RootExtensions {
     #[serde(
@@ -1119,6 +1163,29 @@ pub struct RootExtensions {
         skip_serializing_if = "Option::is_none"
     )]
     pub khr_lights_punctual: Option<KhrLightsPunctualRoot>,
+    /// `KHR_materials_variants` root-level variant roster per
+    /// `docs/3d/gltf/extensions/KHR_materials_variants.md`.
+    #[serde(
+        rename = "KHR_materials_variants",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_materials_variants: Option<KhrMaterialsVariantsRoot>,
+}
+
+/// `extensions.KHR_materials_variants` root-level object — the array
+/// of named variants the document can switch between.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct KhrMaterialsVariantsRoot {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<MaterialVariant>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MaterialVariant {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<Value>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

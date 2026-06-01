@@ -255,6 +255,30 @@ framework but usable standalone.
   declaration (`ExtensionStackUsedNotDeclared`). The two per-node
   extensions (`KHR_lights_punctual` + `KHR_node_visibility`) coexist
   on a single node so a hidden subtree can still own a light
+- KHR_materials_variants extension (Khronos ratified) — named
+  document-level variants paired with per-primitive material mappings
+  from `docs/3d/gltf/extensions/KHR_materials_variants.md`. The decoder
+  lifts the root-level `extensions.KHR_materials_variants.variants`
+  roster into `oxideav_mesh3d::Scene3D::extras["KHR_materials_variants"]`
+  as a JSON `Value::Object` of the form
+  `{ "variants": [ { "name": "...", "extras": ... }, ... ] }`, and each
+  primitive's `extensions.KHR_materials_variants.mappings` list into
+  `oxideav_mesh3d::Primitive::extras["KHR_materials_variants"]` as
+  `{ "mappings": [ { "material": idx, "variants": [idx, ...], "name": "...",
+  "extras": ... }, ... ] }`. The encoder lifts both back into the typed
+  root + primitive extension blocks on write and appends
+  `KHR_materials_variants` to `extensionsUsed` whenever a roster or any
+  primitive mapping is present. The §3.12 stack validator additionally
+  enforces three spec-explicit value-range rules: every mapping
+  `material` index MUST resolve into the root `materials[]` array
+  (`ExtensionStackVariantsMaterialIndex`), every variant index in a
+  mapping MUST resolve into the root variants roster
+  (`ExtensionStackVariantsIndex`), and across one primitive's mappings
+  each variant index MUST appear at most once
+  (`ExtensionStackVariantsDuplicate` — the spec's "each variant index
+  must be used no more than one time" rule). Documents carrying either
+  data block without the declaration are rejected with
+  `ExtensionStackUsedNotDeclared`
 - KHR_mesh_quantization decode (Khronos ratified) — quantized vertex
   attributes from `docs/3d/gltf/extensions/KHR_mesh_quantization.md`.
   `POSITION` / `NORMAL` / `TANGENT` / `TEXCOORD_n` accessors may store

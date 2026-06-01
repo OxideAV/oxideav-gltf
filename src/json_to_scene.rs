@@ -270,6 +270,41 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
         extras_into(&mut scene.extras, extras.clone());
     }
 
+    // KHR_materials_variants — root-level variant roster per
+    // `docs/3d/gltf/extensions/KHR_materials_variants.md`. The
+    // extension stores up to `N` named variants on the document; each
+    // primitive then maps a `material` index to one or more variant
+    // indices via the per-primitive extension block. The typed
+    // `oxideav_mesh3d::Scene3D` has no first-class variants field, so
+    // the roster is surfaced through `scene.extras["KHR_materials_variants"]`
+    // as the JSON object `{ "variants": [ { "name": "...", ... }, ... ] }`
+    // — the same shape the encoder lifts back out for emission. Each
+    // primitive's mappings array is preserved under
+    // `primitive.extras["KHR_materials_variants"] = { "mappings": [...] }`
+    // (see `convert_primitive`).
+    if let Some(ext) = &root.extensions {
+        if let Some(vroot) = &ext.khr_materials_variants {
+            let arr: Vec<serde_json::Value> = vroot
+                .variants
+                .iter()
+                .map(|v| {
+                    let mut o = serde_json::Map::new();
+                    o.insert("name".into(), serde_json::Value::String(v.name.clone()));
+                    if let Some(e) = &v.extras {
+                        o.insert("extras".into(), e.clone());
+                    }
+                    serde_json::Value::Object(o)
+                })
+                .collect();
+            let mut obj = serde_json::Map::new();
+            obj.insert("variants".into(), serde_json::Value::Array(arr));
+            scene.extras.insert(
+                "KHR_materials_variants".to_owned(),
+                serde_json::Value::Object(obj),
+            );
+        }
+    }
+
     Ok(scene)
 }
 
@@ -1397,6 +1432,47 @@ fn convert_primitive(
     }
     if let Some(extras) = &p.extras {
         extras_into(&mut prim.extras, extras.clone());
+    }
+
+    // KHR_materials_variants — per-primitive mapping table per
+    // `docs/3d/gltf/extensions/KHR_materials_variants.md`. Each
+    // mapping pairs a material index with the variant indices that
+    // select it. The typed `oxideav_mesh3d::Primitive` carries no
+    // variant slot, so we stash the full `mappings` array (preserving
+    // material index + variants list + optional name + extras) under
+    // `primitive.extras["KHR_materials_variants"]`. The encoder lifts
+    // this object back into the typed primitive `extensions` block on
+    // write.
+    if let Some(ext) = &p.extensions {
+        if let Some(vmap) = &ext.khr_materials_variants {
+            let arr: Vec<serde_json::Value> = vmap
+                .mappings
+                .iter()
+                .map(|m| {
+                    let mut o = serde_json::Map::new();
+                    o.insert("material".into(), serde_json::Value::from(m.material));
+                    let vlist: Vec<serde_json::Value> = m
+                        .variants
+                        .iter()
+                        .map(|&v| serde_json::Value::from(v))
+                        .collect();
+                    o.insert("variants".into(), serde_json::Value::Array(vlist));
+                    if let Some(name) = &m.name {
+                        o.insert("name".into(), serde_json::Value::String(name.clone()));
+                    }
+                    if let Some(e) = &m.extras {
+                        o.insert("extras".into(), e.clone());
+                    }
+                    serde_json::Value::Object(o)
+                })
+                .collect();
+            let mut obj = serde_json::Map::new();
+            obj.insert("mappings".into(), serde_json::Value::Array(arr));
+            prim.extras.insert(
+                "KHR_materials_variants".to_owned(),
+                serde_json::Value::Object(obj),
+            );
+        }
     }
 
     // Stash per-attribute quantisation metadata so the encoder can

@@ -39,7 +39,9 @@
 //!   `KHR_materials_iridescence`, `KHR_materials_anisotropy`,
 //!   `KHR_materials_dispersion`, `KHR_materials_diffuse_transmission`,
 //!   `KHR_texture_transform` (on any of the five core PBR textureInfo
-//!   slots), and `KHR_node_visibility` (on any node).
+//!   slots), `KHR_node_visibility` (on any node), and
+//!   `KHR_materials_variants` (root-level `variants` roster + per-primitive
+//!   `mappings`).
 //! * `KHR_materials_anisotropy.anisotropyStrength` MUST sit in `[0, 1]`
 //!   per the extension spec's "Anisotropy" section ("a dimensionless
 //!   number in the range [0, 1]"). The `anisotropyRotation` is
@@ -775,6 +777,93 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         ));
     }
 
+    // KHR_materials_variants — both a root-level `variants` roster and
+    // per-primitive `mappings` arrays surface this extension. Same
+    // §3.12 rule: presence of either data block requires the extension
+    // to be listed in `extensionsUsed`. See
+    // `docs/3d/gltf/extensions/KHR_materials_variants.md`.
+    let has_root_variants = root
+        .extensions
+        .as_ref()
+        .and_then(|e| e.khr_materials_variants.as_ref())
+        .is_some();
+    let has_primitive_variants = root.meshes.iter().any(|m| {
+        m.primitives.iter().any(|p| {
+            p.extensions
+                .as_ref()
+                .and_then(|e| e.khr_materials_variants.as_ref())
+                .is_some()
+        })
+    });
+    if (has_root_variants || has_primitive_variants) && !used("KHR_materials_variants") {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_materials_variants data is \
+             present but the extension is not listed in extensionsUsed \
+             (spec §3.12)",
+        ));
+    }
+    // Value-range checks for KHR_materials_variants per
+    // `docs/3d/gltf/extensions/KHR_materials_variants.md`:
+    //
+    // * Each variant index in a primitive mapping MUST resolve to a
+    //   slot in the root-level `variants[]` array
+    //   (`ExtensionStackVariantsIndex`).
+    // * Each material index in a primitive mapping MUST resolve to a
+    //   slot in the root-level `materials[]` array
+    //   (`ExtensionStackVariantsMaterialIndex`).
+    // * Across all mappings on a single primitive, each variant index
+    //   MUST appear no more than once
+    //   (`ExtensionStackVariantsDuplicate`) — quoting the spec, "Across
+    //   the entire mappings array, each variant index must be used no
+    //   more than one time."
+    let variant_count = root
+        .extensions
+        .as_ref()
+        .and_then(|e| e.khr_materials_variants.as_ref())
+        .map(|r| r.variants.len())
+        .unwrap_or(0);
+    let material_count = root.materials.len();
+    for (mi, mesh) in root.meshes.iter().enumerate() {
+        for (pi, prim) in mesh.primitives.iter().enumerate() {
+            let vmap = match prim
+                .extensions
+                .as_ref()
+                .and_then(|e| e.khr_materials_variants.as_ref())
+            {
+                Some(v) => v,
+                None => continue,
+            };
+            let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+            for (li, line) in vmap.mappings.iter().enumerate() {
+                if (line.material as usize) >= material_count {
+                    return Err(invalid(format!(
+                        "ExtensionStackVariantsMaterialIndex: meshes[{mi}].primitives[{pi}]\
+                         .extensions.KHR_materials_variants.mappings[{li}].material = {} out \
+                         of range (have {} materials)",
+                        line.material, material_count
+                    )));
+                }
+                for &v in &line.variants {
+                    if (v as usize) >= variant_count {
+                        return Err(invalid(format!(
+                            "ExtensionStackVariantsIndex: meshes[{mi}].primitives[{pi}]\
+                             .extensions.KHR_materials_variants.mappings[{li}].variants \
+                             contains {v} which is out of range (have {variant_count} variants)"
+                        )));
+                    }
+                    if !seen.insert(v) {
+                        return Err(invalid(format!(
+                            "ExtensionStackVariantsDuplicate: meshes[{mi}].primitives[{pi}]\
+                             .extensions.KHR_materials_variants.mappings reuses variant \
+                             index {v} across multiple entries (spec — \"each variant index \
+                             must be used no more than one time\")"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1451,6 +1540,7 @@ mod tests {
         let mut root = empty_root();
         root.extensions = Some(RootExtensions {
             khr_lights_punctual: Some(KhrLightsPunctualRoot { lights: vec![] }),
+            ..Default::default()
         });
         let err = validate_extension_stack(&root).unwrap_err();
         assert!(format!("{err}").contains("ExtensionStackUsedNotDeclared"));
@@ -1511,9 +1601,177 @@ mod tests {
         let mut root = empty_root();
         root.extensions = Some(RootExtensions {
             khr_lights_punctual: Some(KhrLightsPunctualRoot { lights: vec![] }),
+            ..Default::default()
         });
         root.extensions_used = vec!["KHR_lights_punctual".into()];
         validate_extension_stack(&root).unwrap();
+    }
+
+    // KHR_materials_variants — docs/3d/gltf/extensions/KHR_materials_variants.md.
+    fn variants_root() -> RootExtensions {
+        RootExtensions {
+            khr_materials_variants: Some(crate::json_model::KhrMaterialsVariantsRoot {
+                variants: vec![
+                    crate::json_model::MaterialVariant {
+                        name: "Red".into(),
+                        extras: None,
+                    },
+                    crate::json_model::MaterialVariant {
+                        name: "Blue".into(),
+                        extras: None,
+                    },
+                ],
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn mesh_with_mappings(mappings: Vec<crate::json_model::VariantMapping>) -> Mesh {
+        Mesh {
+            primitives: vec![Primitive {
+                attributes: HashMap::new(),
+                indices: None,
+                material: None,
+                mode: None,
+                targets: vec![],
+                extensions: Some(crate::json_model::PrimitiveExtensions {
+                    khr_materials_variants: Some(crate::json_model::PrimitiveVariantMappings {
+                        mappings,
+                    }),
+                }),
+                extras: None,
+            }],
+            name: None,
+            weights: None,
+            extras: None,
+        }
+    }
+
+    #[test]
+    fn extension_stack_rejects_root_variants_missing_used() {
+        let mut root = empty_root();
+        root.extensions = Some(variants_root());
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackUsedNotDeclared") && msg.contains("KHR_materials_variants"),
+            "expected ExtensionStackUsedNotDeclared for KHR_materials_variants, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn extension_stack_rejects_primitive_variants_missing_used() {
+        let mut root = empty_root();
+        root.extensions = Some(variants_root());
+        // Need at least one material so the mapping's material index resolves.
+        root.materials.push(Material::default());
+        root.extensions_used.push("KHR_materials_variants".into());
+        root.meshes.push(mesh_with_mappings(vec![
+            crate::json_model::VariantMapping {
+                material: 0,
+                variants: vec![0],
+                name: None,
+                extras: None,
+            },
+        ]));
+        // Sanity: when used is declared, the doc validates.
+        validate_extension_stack(&root).unwrap();
+        // Now drop the declaration — must reject.
+        root.extensions_used.clear();
+        let err = validate_extension_stack(&root).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ExtensionStackUsedNotDeclared") && msg.contains("KHR_materials_variants"),
+            "expected ExtensionStackUsedNotDeclared for KHR_materials_variants, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn extension_stack_rejects_variant_index_out_of_range() {
+        let mut root = empty_root();
+        root.extensions = Some(variants_root());
+        root.materials.push(Material::default());
+        root.extensions_used.push("KHR_materials_variants".into());
+        // variant index 2 is out of range (root has only 2 variants → 0..1)
+        root.meshes.push(mesh_with_mappings(vec![
+            crate::json_model::VariantMapping {
+                material: 0,
+                variants: vec![2],
+                name: None,
+                extras: None,
+            },
+        ]));
+        let err = validate_extension_stack(&root).unwrap_err();
+        assert!(format!("{err}").contains("ExtensionStackVariantsIndex"));
+    }
+
+    #[test]
+    fn extension_stack_rejects_material_index_out_of_range() {
+        let mut root = empty_root();
+        root.extensions = Some(variants_root());
+        // no materials at all, but mapping points at material 0
+        root.extensions_used.push("KHR_materials_variants".into());
+        root.meshes.push(mesh_with_mappings(vec![
+            crate::json_model::VariantMapping {
+                material: 0,
+                variants: vec![0],
+                name: None,
+                extras: None,
+            },
+        ]));
+        let err = validate_extension_stack(&root).unwrap_err();
+        assert!(format!("{err}").contains("ExtensionStackVariantsMaterialIndex"));
+    }
+
+    #[test]
+    fn extension_stack_rejects_duplicate_variant_in_primitive_mappings() {
+        // Per the spec: "Across the entire mappings array, each variant
+        // index must be used no more than one time."
+        let mut root = empty_root();
+        root.extensions = Some(variants_root());
+        root.materials.push(Material::default());
+        root.materials.push(Material::default());
+        root.extensions_used.push("KHR_materials_variants".into());
+        root.meshes.push(mesh_with_mappings(vec![
+            crate::json_model::VariantMapping {
+                material: 0,
+                variants: vec![0],
+                name: None,
+                extras: None,
+            },
+            crate::json_model::VariantMapping {
+                material: 1,
+                variants: vec![0], // duplicate
+                name: None,
+                extras: None,
+            },
+        ]));
+        let err = validate_extension_stack(&root).unwrap_err();
+        assert!(format!("{err}").contains("ExtensionStackVariantsDuplicate"));
+    }
+
+    #[test]
+    fn extension_stack_accepts_variants_declared_in_range() {
+        let mut root = empty_root();
+        root.extensions = Some(variants_root());
+        root.materials.push(Material::default());
+        root.materials.push(Material::default());
+        root.extensions_used.push("KHR_materials_variants".into());
+        root.meshes.push(mesh_with_mappings(vec![
+            crate::json_model::VariantMapping {
+                material: 0,
+                variants: vec![0],
+                name: None,
+                extras: None,
+            },
+            crate::json_model::VariantMapping {
+                material: 1,
+                variants: vec![1],
+                name: None,
+                extras: None,
+            },
+        ]));
+        validate_extension_stack(&root).expect("in-range mappings must pass");
     }
 
     // KHR_materials_unlit — docs/3d/gltf/extensions/KHR_materials_unlit.md.
@@ -2270,6 +2528,7 @@ mod tests {
                 material: None,
                 mode: None,
                 targets: vec![],
+                extensions: None,
                 extras: None,
             }],
             name: None,
@@ -2297,6 +2556,7 @@ mod tests {
                 material: None,
                 mode: None,
                 targets: vec![target_map],
+                extensions: None,
                 extras: None,
             }],
             name: None,
