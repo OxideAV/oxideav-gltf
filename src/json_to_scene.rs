@@ -134,6 +134,20 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
                 .extras
                 .insert("__mesh_weights".to_owned(), serde_json::Value::Array(arr));
         }
+        // KHR_xmp_json_ld — per-mesh packet reference per
+        // `docs/3d/gltf/extensions/KHR_xmp_json_ld.md` §"Instantiating
+        // XMP metadata". The spec's primary illustration of the
+        // indirection uses a Mesh. mesh3d's `Mesh` has no `extensions`
+        // field, so stash on primitive[0].extras["__mesh_xmp_packet"]
+        // as a bare JSON number.
+        if let (Some(ext), Some(prim0)) = (&m.extensions, mesh.primitives.first_mut()) {
+            if let Some(xmp) = &ext.khr_xmp_json_ld {
+                prim0.extras.insert(
+                    "__mesh_xmp_packet".to_owned(),
+                    serde_json::Value::Number(xmp.packet.into()),
+                );
+            }
+        }
         let id = scene.add_mesh(mesh);
         mesh_id_map.insert(i as u32, id);
     }
@@ -196,6 +210,16 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
                 let visible = nv.visible.unwrap_or(true);
                 node.extras
                     .insert("KHR_node_visibility".to_owned(), Value::Bool(visible));
+            }
+            // KHR_xmp_json_ld — per-node packet reference per
+            // `docs/3d/gltf/extensions/KHR_xmp_json_ld.md`
+            // §"Instantiating XMP metadata". Stash on `node.extras`
+            // as a bare JSON number; the encoder lifts it back.
+            if let Some(xmp) = &ext.khr_xmp_json_ld {
+                node.extras.insert(
+                    "KHR_xmp_json_ld".to_owned(),
+                    Value::Number(xmp.packet.into()),
+                );
             }
         }
         if let Some(extras) = &n.extras {
@@ -302,6 +326,54 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
                 "KHR_materials_variants".to_owned(),
                 serde_json::Value::Object(obj),
             );
+        }
+        // KHR_xmp_json_ld root-level `packets[]` roster per
+        // `docs/3d/gltf/extensions/KHR_xmp_json_ld.md` §"Defining XMP
+        // Metadata". Each packet is held verbatim as opaque JSON-LD
+        // because the spec specifies a restricted JSON-LD subset
+        // (§"JSON-LD Restrictions and Recommendations") without
+        // pinning the namespace vocabulary. Surfaced under
+        // `scene.extras["KHR_xmp_json_ld"] = { "packets": [...] }` so
+        // the encoder can lift the roster back into
+        // `root.extensions.KHR_xmp_json_ld`.
+        if let Some(xroot) = &ext.khr_xmp_json_ld {
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "packets".into(),
+                serde_json::Value::Array(xroot.packets.clone()),
+            );
+            scene
+                .extras
+                .insert("KHR_xmp_json_ld".to_owned(), serde_json::Value::Object(obj));
+        }
+    }
+    // Asset-level KHR_xmp_json_ld packet reference — points at one of
+    // the root-level packets per `docs/3d/gltf/extensions/
+    // KHR_xmp_json_ld.md` §"Instantiating XMP metadata". Asset-scoped
+    // metadata "applies to the entire glTF asset" (spec §Overview).
+    // Surfaced under `scene.extras["__asset_xmp_packet"]` because
+    // the typed `Scene3D` has no first-class asset field.
+    if let Some(aext) = &root.asset.extensions {
+        if let Some(xmp) = &aext.khr_xmp_json_ld {
+            scene.extras.insert(
+                "__asset_xmp_packet".to_owned(),
+                serde_json::Value::Number(xmp.packet.into()),
+            );
+        }
+    }
+    // Primary-scene KHR_xmp_json_ld packet reference. The active scene
+    // (`root.scene` index, defaulting to 0) carries through the same
+    // typed `extensions.KHR_xmp_json_ld` block per `docs/3d/gltf/
+    // extensions/KHR_xmp_json_ld.md` §"Instantiating XMP metadata".
+    // Surfaced under `scene.extras["__primary_scene_xmp_packet"]`.
+    if let Some(primary) = root.scenes.get(root.scene.unwrap_or(0) as usize) {
+        if let Some(sext) = &primary.extensions {
+            if let Some(xmp) = &sext.khr_xmp_json_ld {
+                scene.extras.insert(
+                    "__primary_scene_xmp_packet".to_owned(),
+                    serde_json::Value::Number(xmp.packet.into()),
+                );
+            }
         }
     }
 
@@ -1309,6 +1381,18 @@ fn convert_material(
             mat.extras.insert(
                 "KHR_materials_diffuse_transmission".to_owned(),
                 Value::Object(obj),
+            );
+        }
+        // KHR_xmp_json_ld — per-material packet reference per
+        // `docs/3d/gltf/extensions/KHR_xmp_json_ld.md` §"Instantiating
+        // XMP metadata". Surface as a bare JSON number under
+        // `Material::extras["KHR_xmp_json_ld"]` — the encoder lifts
+        // it back through `xmp_packet_from_value` into the typed
+        // `extensions.KHR_xmp_json_ld = { packet: N }` block.
+        if let Some(xmp) = &ext.khr_xmp_json_ld {
+            mat.extras.insert(
+                "KHR_xmp_json_ld".to_owned(),
+                Value::Number(xmp.packet.into()),
             );
         }
     }

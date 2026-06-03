@@ -81,8 +81,43 @@ pub struct Asset {
         skip_serializing_if = "Option::is_none"
     )]
     pub min_version: Option<String>,
+    /// Per-object `extensions` block. Today this carries the
+    /// `KHR_xmp_json_ld` packet-reference indirection per
+    /// `docs/3d/gltf/extensions/KHR_xmp_json_ld.md` §"Instantiating XMP
+    /// metadata" — the asset object MAY point at one of the root-level
+    /// `packets[]` entries to declare document-wide metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<AssetExtensions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extras: Option<Value>,
+}
+
+/// Per-asset `extensions` block. Today only carries
+/// `KHR_xmp_json_ld` per
+/// `docs/3d/gltf/extensions/KHR_xmp_json_ld.md` §"Instantiating XMP
+/// metadata"; the `{ "packet": N }` indirection points at a root-level
+/// `KHR_xmp_json_ld.packets[N]`.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct AssetExtensions {
+    #[serde(
+        rename = "KHR_xmp_json_ld",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_xmp_json_ld: Option<XmpPacketRef>,
+}
+
+/// Per-object indirection into the root `KHR_xmp_json_ld.packets[]`
+/// array. The spec defines a single property:
+///
+/// * `packet` — index into the root-level packets array.
+///
+/// Per `docs/3d/gltf/extensions/KHR_xmp_json_ld.md` §"Instantiating
+/// XMP metadata" the same shape is used on `asset`, `scene`, `node`,
+/// `mesh`, `material`, `image`, and `animation`.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct XmpPacketRef {
+    pub packet: u32,
 }
 
 impl Default for Asset {
@@ -92,6 +127,7 @@ impl Default for Asset {
             generator: Some(format!("oxideav-gltf {}", env!("CARGO_PKG_VERSION"))),
             copyright: None,
             min_version: None,
+            extensions: None,
             extras: None,
         }
     }
@@ -103,8 +139,29 @@ pub struct Scene {
     pub nodes: Vec<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Per-scene `extensions` block. Today carries the
+    /// `KHR_xmp_json_ld` packet-reference indirection per
+    /// `docs/3d/gltf/extensions/KHR_xmp_json_ld.md` §"Instantiating XMP
+    /// metadata" — when set, the per-scene packet ref takes precedence
+    /// over the asset-level packet ref per the spec's "Precedence"
+    /// note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<SceneExtensions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extras: Option<Value>,
+}
+
+/// Per-scene `extensions` block — today only carries
+/// `KHR_xmp_json_ld` (a `{ "packet": N }` indirection into the
+/// root-level packets array).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct SceneExtensions {
+    #[serde(
+        rename = "KHR_xmp_json_ld",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_xmp_json_ld: Option<XmpPacketRef>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -147,8 +204,28 @@ pub struct Mesh {
     /// match the number of `primitive.targets`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weights: Option<Vec<f32>>,
+    /// Per-mesh `extensions` block. Today this carries the
+    /// `KHR_xmp_json_ld` packet-reference indirection per
+    /// `docs/3d/gltf/extensions/KHR_xmp_json_ld.md` §"Instantiating XMP
+    /// metadata" — the spec's primary illustration of the indirection
+    /// uses a Mesh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<MeshExtensions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extras: Option<Value>,
+}
+
+/// Per-mesh `extensions` block — today only carries
+/// `KHR_xmp_json_ld` (a `{ "packet": N }` indirection into the
+/// root-level packets array).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MeshExtensions {
+    #[serde(
+        rename = "KHR_xmp_json_ld",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_xmp_json_ld: Option<XmpPacketRef>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -514,6 +591,17 @@ pub struct MaterialExtensions {
         skip_serializing_if = "Option::is_none"
     )]
     pub khr_materials_diffuse_transmission: Option<MaterialDiffuseTransmission>,
+    /// `KHR_xmp_json_ld` — `{ "packet": N }` indirection pointing the
+    /// material at one of the root-level XMP packets per
+    /// `docs/3d/gltf/extensions/KHR_xmp_json_ld.md` §"Instantiating
+    /// XMP metadata". Per the spec's "Precedence" note this overrides
+    /// the asset-level packet ref for the material's scope.
+    #[serde(
+        rename = "KHR_xmp_json_ld",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_xmp_json_ld: Option<XmpPacketRef>,
 }
 
 /// `KHR_materials_unlit` extension object. Per the spec the schema
@@ -1171,6 +1259,28 @@ pub struct RootExtensions {
         skip_serializing_if = "Option::is_none"
     )]
     pub khr_materials_variants: Option<KhrMaterialsVariantsRoot>,
+    /// `KHR_xmp_json_ld` root-level XMP metadata packet roster per
+    /// `docs/3d/gltf/extensions/KHR_xmp_json_ld.md` §"Defining XMP
+    /// Metadata". Each packet is an opaque JSON-LD object; consumers
+    /// of the typed model treat the contents as round-trip JSON.
+    #[serde(
+        rename = "KHR_xmp_json_ld",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_xmp_json_ld: Option<KhrXmpJsonLdRoot>,
+}
+
+/// `extensions.KHR_xmp_json_ld` root-level object per
+/// `docs/3d/gltf/extensions/KHR_xmp_json_ld.md` §"Defining XMP
+/// Metadata" — the array of metadata packets the document declares.
+/// Each packet is a JSON-LD object held verbatim because the spec
+/// describes a restricted JSON-LD subset (§"JSON-LD Restrictions and
+/// Recommendations") but does not constrain the namespace vocabulary.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct KhrXmpJsonLdRoot {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub packets: Vec<Value>,
 }
 
 /// `extensions.KHR_materials_variants` root-level object — the array
@@ -1247,6 +1357,16 @@ pub struct NodeExtensions {
         skip_serializing_if = "Option::is_none"
     )]
     pub khr_node_visibility: Option<NodeVisibility>,
+    /// `KHR_xmp_json_ld` — `{ "packet": N }` indirection that points
+    /// the node at one of the root-level XMP packets per
+    /// `docs/3d/gltf/extensions/KHR_xmp_json_ld.md` §"Instantiating
+    /// XMP metadata".
+    #[serde(
+        rename = "KHR_xmp_json_ld",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_xmp_json_ld: Option<XmpPacketRef>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

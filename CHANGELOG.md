@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 212)
+
+- `KHR_xmp_json_ld` extension (Khronos ratified — see
+  `docs/3d/gltf/extensions/KHR_xmp_json_ld.md`). XMP (ISO 16684-1)
+  metadata indirection: a root-level
+  `extensions.KHR_xmp_json_ld.packets[]` roster of opaque JSON-LD
+  packets (§"Defining XMP Metadata") plus a `{ "packet": N }`
+  indirection on the `asset`, `scene`, `node`, `mesh`, or `material`
+  object (§"Instantiating XMP metadata"). Decoder lifts the root
+  roster into `Scene3D::extras["KHR_xmp_json_ld"] = { "packets": [...] }`
+  with packets held verbatim (the spec restricts JSON-LD in
+  §"Restrictions and Recommendations" but does not pin the namespace
+  vocabulary), per-asset / per-primary-scene refs into
+  `Scene3D::extras["__asset_xmp_packet"]` /
+  `Scene3D::extras["__primary_scene_xmp_packet"]` as bare JSON
+  numbers, per-node / per-material refs into
+  `Node::extras["KHR_xmp_json_ld"]` /
+  `Material::extras["KHR_xmp_json_ld"]`, and per-mesh refs into
+  `primitive[0].extras["__mesh_xmp_packet"]` (mesh3d's `Mesh` has no
+  `extras` field, matching the existing `__mesh_extras` /
+  `__mesh_weights` side-channels). Encoder lifts each side channel
+  back into the typed extension block and appends `KHR_xmp_json_ld`
+  to `extensionsUsed` whenever any scope surfaces the data. New
+  `validate_extension_stack` arm rejects documents carrying the data
+  block without the declaration with
+  `ExtensionStackUsedNotDeclared`, and additionally enforces the
+  spec's indirection model by rejecting per-object `{ "packet": N }`
+  references whose index lies outside the root `packets[]` array
+  with `ExtensionStackXmpPacketIndex`. New `tests/khr_xmp_json_ld.rs`
+  covers `.glb` round-trips for asset / scene / node / mesh /
+  material packet refs, byte-for-byte packet content preservation,
+  bare-roster (declarations only) documents, the missing-declaration
+  rejection, and the out-of-range packet-index rejection.
+- New `json_model::AssetExtensions`, `SceneExtensions`,
+  `MeshExtensions`, `XmpPacketRef`, and `KhrXmpJsonLdRoot` shapes plus
+  matching `extensions: Option<...>` field on `Asset`, `Scene`, and
+  `Mesh`. The existing `MaterialExtensions` and `NodeExtensions`
+  gained a `khr_xmp_json_ld: Option<XmpPacketRef>` field.
+
 ### Added (round 205)
 
 - `KHR_materials_variants` extension (Khronos ratified — see

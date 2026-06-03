@@ -255,6 +255,32 @@ framework but usable standalone.
   declaration (`ExtensionStackUsedNotDeclared`). The two per-node
   extensions (`KHR_lights_punctual` + `KHR_node_visibility`) coexist
   on a single node so a hidden subtree can still own a light
+- KHR_xmp_json_ld extension (Khronos ratified) — XMP (ISO 16684-1)
+  metadata indirection from `docs/3d/gltf/extensions/KHR_xmp_json_ld.md`.
+  Defines a root-level `extensions.KHR_xmp_json_ld.packets[]` array of
+  opaque JSON-LD packets (§"Defining XMP Metadata") plus a
+  `{ "packet": N }` indirection emitted on the `asset`, `scene`, `node`,
+  `mesh`, or `material` object (§"Instantiating XMP metadata"). Decoder
+  surfaces the root roster through
+  `oxideav_mesh3d::Scene3D::extras["KHR_xmp_json_ld"]` as
+  `{ "packets": [...] }` with each packet held verbatim (the spec
+  defines a restricted JSON-LD subset in §"Restrictions and
+  Recommendations" but does not pin the namespace vocabulary); per-asset
+  and per-primary-scene packet refs surface as bare JSON numbers under
+  `Scene3D::extras["__asset_xmp_packet"]` /
+  `Scene3D::extras["__primary_scene_xmp_packet"]`; per-node and
+  per-material refs surface under the matching
+  `Node::extras["KHR_xmp_json_ld"]` /
+  `Material::extras["KHR_xmp_json_ld"]`; per-mesh refs ride
+  `primitive[0].extras["__mesh_xmp_packet"]` because
+  `oxideav_mesh3d::Mesh` has no `extras` field. Encoder lifts every side
+  channel back into the typed extension block and declares
+  `KHR_xmp_json_ld` in `extensionsUsed` whenever any scope surfaces the
+  data. The §3.12 stack validator rejects documents carrying the data
+  block without the declaration with `ExtensionStackUsedNotDeclared`,
+  and additionally enforces the spec's indirection model by rejecting
+  every per-object `{ "packet": N }` reference whose index lies outside
+  the root `packets[]` array (`ExtensionStackXmpPacketIndex`)
 - KHR_materials_variants extension (Khronos ratified) — named
   document-level variants paired with per-primitive material mappings
   from `docs/3d/gltf/extensions/KHR_materials_variants.md`. The decoder

@@ -66,6 +66,7 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
 
     // --- meshes + accessors + bufferViews ---
     let mut emitted_primitive_variants = false;
+    let mut emitted_mesh_xmp = false;
     for mesh in &scene.meshes {
         let primitives = mesh
             .primitives
@@ -102,10 +103,29 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
                         .collect::<Vec<f32>>()
                 })
             });
+        // KHR_xmp_json_ld — the decoder stashes a mesh-level packet
+        // reference under primitive[0].extras["__mesh_xmp_packet"] as a
+        // bare JSON number (no payload because the packets live at
+        // root scope). Lift it back into the typed mesh `extensions`
+        // block per docs/3d/gltf/extensions/KHR_xmp_json_ld.md
+        // §"Instantiating XMP metadata" — this is the spec's primary
+        // illustration of the indirection.
+        let mesh_xmp = mesh
+            .primitives
+            .first()
+            .and_then(|p| p.extras.get("__mesh_xmp_packet").cloned())
+            .and_then(|v| xmp_packet_from_value(Some(v)));
+        let mesh_extensions = mesh_xmp.map(|p| gj::MeshExtensions {
+            khr_xmp_json_ld: Some(gj::XmpPacketRef { packet: p }),
+        });
+        if mesh_extensions.is_some() {
+            emitted_mesh_xmp = true;
+        }
         root.meshes.push(gj::Mesh {
             primitives,
             name: mesh.name.clone(),
             weights: mesh_weights,
+            extensions: mesh_extensions,
             extras: mesh_extras,
         });
     }
@@ -334,6 +354,30 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     // stashes it under to keep Scene3D narrow). Strip it here so the
     // primary scene's `extras` field doesn't carry a stale copy.
     effective_extras.remove("KHR_materials_variants");
+    // KHR_xmp_json_ld — three side-channels: the root-level
+    // `{ "packets": [...] }` roster lives under
+    // `scene.extras["KHR_xmp_json_ld"]`; per-asset and per-primary-scene
+    // packet refs live under `scene.extras["__asset_xmp_packet"]` and
+    // `scene.extras["__primary_scene_xmp_packet"]`. All three are
+    // stripped before the rest of `effective_extras` is round-tripped
+    // to JSON so the spec object is emitted exactly once (under
+    // `root.extensions` / `asset.extensions` / `scenes[i].extensions`)
+    // rather than duplicated through `extras`. See
+    // `docs/3d/gltf/extensions/KHR_xmp_json_ld.md` §"Defining XMP
+    // Metadata" + §"Instantiating XMP metadata".
+    let xmp_root_packets = effective_extras
+        .remove("KHR_xmp_json_ld")
+        .and_then(|v| match v {
+            serde_json::Value::Object(o) => o
+                .get("packets")
+                .and_then(|p| p.as_array())
+                .cloned()
+                .map(serde_json::Value::Array),
+            _ => None,
+        });
+    let asset_xmp_packet = xmp_packet_from_value(effective_extras.remove("__asset_xmp_packet"));
+    let primary_scene_xmp_packet =
+        xmp_packet_from_value(effective_extras.remove("__primary_scene_xmp_packet"));
     let scene_extras = if effective_extras.is_empty() {
         None
     } else {
@@ -342,6 +386,9 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     let primary_scene = gj::Scene {
         nodes: scene.roots.iter().map(|r| r.0).collect(),
         name: None,
+        extensions: primary_scene_xmp_packet.map(|p| gj::SceneExtensions {
+            khr_xmp_json_ld: Some(gj::XmpPacketRef { packet: p }),
+        }),
         extras: scene_extras.clone(),
     };
     match additional_scenes {
@@ -371,6 +418,7 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
                     gj::Scene {
                         nodes,
                         name,
+                        extensions: None,
                         extras,
                     },
                 ));
@@ -407,6 +455,66 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
         }
     }
     root.extras = scene_extras;
+
+    // --- KHR_xmp_json_ld root-level packets + asset / scene / node /
+    //     material / mesh packet-reference declaration ---
+    // The root-level `packets[]` roster is the spec's "Defining XMP
+    // Metadata" indirection target. Per-object packet refs already
+    // sit on `asset.extensions`, `scenes[i].extensions`,
+    // `nodes[i].extensions`, `meshes[i].extensions`, and
+    // `materials[i].extensions` from the lift passes above. See
+    // `docs/3d/gltf/extensions/KHR_xmp_json_ld.md` §"Defining XMP
+    // Metadata" + §"Instantiating XMP metadata".
+    if let Some(serde_json::Value::Array(packets)) = xmp_root_packets {
+        let ext = root.extensions.get_or_insert(gj::RootExtensions::default());
+        ext.khr_xmp_json_ld = Some(gj::KhrXmpJsonLdRoot { packets });
+    }
+    if let Some(p) = asset_xmp_packet {
+        root.asset.extensions = Some(gj::AssetExtensions {
+            khr_xmp_json_ld: Some(gj::XmpPacketRef { packet: p }),
+        });
+    }
+    // Declare KHR_xmp_json_ld in extensionsUsed whenever any sub-scope
+    // surfaces the extension data. Spec §3.12 — every used extension
+    // MUST appear in `extensionsUsed`.
+    let any_node_xmp = root.nodes.iter().any(|n| {
+        n.extensions
+            .as_ref()
+            .and_then(|e| e.khr_xmp_json_ld.as_ref())
+            .is_some()
+    });
+    let any_material_xmp = root.materials.iter().any(|m| {
+        m.extensions
+            .as_ref()
+            .and_then(|e| e.khr_xmp_json_ld.as_ref())
+            .is_some()
+    });
+    let any_scene_xmp = root.scenes.iter().any(|s| {
+        s.extensions
+            .as_ref()
+            .and_then(|e| e.khr_xmp_json_ld.as_ref())
+            .is_some()
+    });
+    let any_asset_xmp = root
+        .asset
+        .extensions
+        .as_ref()
+        .and_then(|e| e.khr_xmp_json_ld.as_ref())
+        .is_some();
+    let any_root_xmp = root
+        .extensions
+        .as_ref()
+        .and_then(|e| e.khr_xmp_json_ld.as_ref())
+        .is_some();
+    if any_node_xmp
+        || any_material_xmp
+        || any_scene_xmp
+        || any_asset_xmp
+        || any_root_xmp
+        || emitted_mesh_xmp
+    {
+        root.extensions_used.push("KHR_xmp_json_ld".to_owned());
+    }
 
     // --- buffer ---
     if !bin.is_empty() {
@@ -1075,6 +1183,14 @@ fn encode_material(m: &Material) -> gj::Material {
     let diffuse_transmission = effective_extras
         .remove("KHR_materials_diffuse_transmission")
         .and_then(diffuse_transmission_from_value);
+    // KHR_xmp_json_ld — the decoder parks the per-material packet
+    // reference in extras as `Value::Number(packet_index)` (no payload
+    // because the packet array lives at root scope). Lift it back into
+    // the typed `extensions.KHR_xmp_json_ld = { packet: N }` block so
+    // the round-trip emits the spec object rather than a surplus
+    // `extras` key (docs/3d/gltf/extensions/KHR_xmp_json_ld.md
+    // §"Instantiating XMP metadata").
+    let xmp_packet = xmp_packet_from_value(effective_extras.remove("KHR_xmp_json_ld"));
     let extensions = if unlit_flag
         || emissive_strength.is_some()
         || ior.is_some()
@@ -1087,6 +1203,7 @@ fn encode_material(m: &Material) -> gj::Material {
         || anisotropy.is_some()
         || dispersion.is_some()
         || diffuse_transmission.is_some()
+        || xmp_packet.is_some()
     {
         Some(gj::MaterialExtensions {
             khr_materials_unlit: if unlit_flag {
@@ -1109,6 +1226,7 @@ fn encode_material(m: &Material) -> gj::Material {
             khr_materials_anisotropy: anisotropy,
             khr_materials_dispersion: dispersion,
             khr_materials_diffuse_transmission: diffuse_transmission,
+            khr_xmp_json_ld: xmp_packet.map(|p| gj::XmpPacketRef { packet: p }),
         })
     } else {
         None
@@ -1376,10 +1494,19 @@ fn encode_node(n: &Node, _scene: &Scene3D) -> gj::Node {
     let visibility = effective_extras
         .remove("KHR_node_visibility")
         .and_then(|v| v.as_bool());
-    let extensions = if n.light.is_some() || visibility.is_some() {
+    // KHR_xmp_json_ld — the decoder stashes the per-node packet index
+    // under `Node::extras["KHR_xmp_json_ld"]` as `Value::Number(N)`
+    // (no payload because the packets live at root scope). Lift it
+    // back into the typed `extensions.KHR_xmp_json_ld = { packet: N }`
+    // block so the round-trip emits the spec object rather than a
+    // surplus `extras` key (docs/3d/gltf/extensions/KHR_xmp_json_ld.md
+    // §"Instantiating XMP metadata").
+    let xmp_packet = xmp_packet_from_value(effective_extras.remove("KHR_xmp_json_ld"));
+    let extensions = if n.light.is_some() || visibility.is_some() || xmp_packet.is_some() {
         Some(gj::NodeExtensions {
             khr_lights_punctual: n.light.map(|lid| gj::NodeLightRef { light: lid.0 }),
             khr_node_visibility: visibility.map(|v| gj::NodeVisibility { visible: Some(v) }),
+            khr_xmp_json_ld: xmp_packet.map(|p| gj::XmpPacketRef { packet: p }),
         })
     } else {
         None
@@ -1852,6 +1979,27 @@ fn dispersion_from_value(v: serde_json::Value) -> Option<gj::MaterialDispersion>
         .map(|x| x as f32);
     dispersion.as_ref()?;
     Some(gj::MaterialDispersion { dispersion })
+}
+
+// Parse the decoder's per-object `KHR_xmp_json_ld` packet-reference
+// stash back into a `u32` packet index for re-emission. The decoder
+// parks the value either as a bare JSON number (`Value::Number(N)`)
+// or as the spec object `{ "packet": N }`; both shapes resolve here
+// so callers can also construct the stash directly. See
+// `docs/3d/gltf/extensions/KHR_xmp_json_ld.md` §"Instantiating XMP
+// metadata".
+fn xmp_packet_from_value(v: Option<serde_json::Value>) -> Option<u32> {
+    let v = v?;
+    if let Some(n) = v.as_u64() {
+        return u32::try_from(n).ok();
+    }
+    if let Some(obj) = v.as_object() {
+        return obj
+            .get("packet")
+            .and_then(|x| x.as_u64())
+            .and_then(|n| u32::try_from(n).ok());
+    }
+    None
 }
 
 // Parse the decoder's

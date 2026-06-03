@@ -41,7 +41,9 @@
 //!   `KHR_texture_transform` (on any of the five core PBR textureInfo
 //!   slots), `KHR_node_visibility` (on any node), and
 //!   `KHR_materials_variants` (root-level `variants` roster + per-primitive
-//!   `mappings`).
+//!   `mappings`), and `KHR_xmp_json_ld` (root-level `packets[]` roster +
+//!   per-asset / per-scene / per-node / per-mesh / per-material
+//!   `{ packet: N }` indirection).
 //! * `KHR_materials_anisotropy.anisotropyStrength` MUST sit in `[0, 1]`
 //!   per the extension spec's "Anisotropy" section ("a dimensionless
 //!   number in the range [0, 1]"). The `anisotropyRotation` is
@@ -802,6 +804,115 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
              (spec §3.12)",
         ));
     }
+
+    // KHR_xmp_json_ld — both a root-level `packets[]` roster and
+    // per-object packet refs surface this extension. Per spec §3.12
+    // any presence of the data block requires the extension to be
+    // listed in `extensionsUsed`. See
+    // `docs/3d/gltf/extensions/KHR_xmp_json_ld.md` §"Defining XMP
+    // Metadata" + §"Instantiating XMP metadata".
+    let has_root_xmp = root
+        .extensions
+        .as_ref()
+        .and_then(|e| e.khr_xmp_json_ld.as_ref())
+        .is_some();
+    let has_asset_xmp = root
+        .asset
+        .extensions
+        .as_ref()
+        .and_then(|e| e.khr_xmp_json_ld.as_ref())
+        .is_some();
+    let has_scene_xmp = root.scenes.iter().any(|s| {
+        s.extensions
+            .as_ref()
+            .and_then(|e| e.khr_xmp_json_ld.as_ref())
+            .is_some()
+    });
+    let has_node_xmp = root.nodes.iter().any(|n| {
+        n.extensions
+            .as_ref()
+            .and_then(|e| e.khr_xmp_json_ld.as_ref())
+            .is_some()
+    });
+    let has_mesh_xmp = root.meshes.iter().any(|m| {
+        m.extensions
+            .as_ref()
+            .and_then(|e| e.khr_xmp_json_ld.as_ref())
+            .is_some()
+    });
+    let has_material_xmp_data = root.materials.iter().any(|m| {
+        m.extensions
+            .as_ref()
+            .and_then(|e| e.khr_xmp_json_ld.as_ref())
+            .is_some()
+    });
+    if (has_root_xmp
+        || has_asset_xmp
+        || has_scene_xmp
+        || has_node_xmp
+        || has_mesh_xmp
+        || has_material_xmp_data)
+        && !used("KHR_xmp_json_ld")
+    {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_xmp_json_ld data is \
+             present but the extension is not listed in extensionsUsed \
+             (spec §3.12)",
+        ));
+    }
+    // Value-range check: every per-object `packet` reference MUST
+    // resolve to a slot in `root.extensions.KHR_xmp_json_ld.packets[]`
+    // per the spec's indirection model. See
+    // `docs/3d/gltf/extensions/KHR_xmp_json_ld.md` §"Instantiating
+    // XMP metadata".
+    let packet_count = root
+        .extensions
+        .as_ref()
+        .and_then(|e| e.khr_xmp_json_ld.as_ref())
+        .map(|r| r.packets.len())
+        .unwrap_or(0);
+    let mut refs: Vec<(String, u32)> = Vec::new();
+    if let Some(aext) = &root.asset.extensions {
+        if let Some(x) = &aext.khr_xmp_json_ld {
+            refs.push(("asset".to_owned(), x.packet));
+        }
+    }
+    for (i, s) in root.scenes.iter().enumerate() {
+        if let Some(sext) = &s.extensions {
+            if let Some(x) = &sext.khr_xmp_json_ld {
+                refs.push((format!("scenes[{i}]"), x.packet));
+            }
+        }
+    }
+    for (i, n) in root.nodes.iter().enumerate() {
+        if let Some(next) = &n.extensions {
+            if let Some(x) = &next.khr_xmp_json_ld {
+                refs.push((format!("nodes[{i}]"), x.packet));
+            }
+        }
+    }
+    for (i, mh) in root.meshes.iter().enumerate() {
+        if let Some(mext) = &mh.extensions {
+            if let Some(x) = &mext.khr_xmp_json_ld {
+                refs.push((format!("meshes[{i}]"), x.packet));
+            }
+        }
+    }
+    for (i, mt) in root.materials.iter().enumerate() {
+        if let Some(mext) = &mt.extensions {
+            if let Some(x) = &mext.khr_xmp_json_ld {
+                refs.push((format!("materials[{i}]"), x.packet));
+            }
+        }
+    }
+    for (scope, packet) in refs {
+        if (packet as usize) >= packet_count {
+            return Err(invalid(format!(
+                "ExtensionStackXmpPacketIndex: {scope}.extensions.KHR_xmp_json_ld.packet = \
+                 {packet} out of range (have {packet_count} packets)"
+            )));
+        }
+    }
     // Value-range checks for KHR_materials_variants per
     // `docs/3d/gltf/extensions/KHR_materials_variants.md`:
     //
@@ -1506,6 +1617,7 @@ mod tests {
                 generator: None,
                 copyright: None,
                 min_version: None,
+                extensions: None,
                 extras: None,
             },
             ..Default::default()
@@ -1553,6 +1665,7 @@ mod tests {
             extensions: Some(NodeExtensions {
                 khr_lights_punctual: Some(NodeLightRef { light: 0 }),
                 khr_node_visibility: None,
+                ..Default::default()
             }),
             ..Default::default()
         });
@@ -1569,6 +1682,7 @@ mod tests {
                 khr_node_visibility: Some(crate::json_model::NodeVisibility {
                     visible: Some(false),
                 }),
+                ..Default::default()
             }),
             ..Default::default()
         });
@@ -1590,6 +1704,7 @@ mod tests {
                 khr_node_visibility: Some(crate::json_model::NodeVisibility {
                     visible: Some(false),
                 }),
+                ..Default::default()
             }),
             ..Default::default()
         });
@@ -1643,6 +1758,7 @@ mod tests {
             }],
             name: None,
             weights: None,
+            extensions: None,
             extras: None,
         }
     }
@@ -2533,6 +2649,7 @@ mod tests {
             }],
             name: None,
             weights: None,
+            extensions: None,
             extras: None,
         }];
         let accessors = vec![float_scalar_accessor(2), float_scalar_accessor(2)];
@@ -2561,6 +2678,7 @@ mod tests {
             }],
             name: None,
             weights: None,
+            extensions: None,
             extras: None,
         }];
         let accessors = vec![float_scalar_accessor(2), float_scalar_accessor(2)];
@@ -2586,6 +2704,7 @@ mod tests {
             generator: None,
             copyright: None,
             min_version: min_version.map(str::to_owned),
+            extensions: None,
             extras: None,
         }
     }
