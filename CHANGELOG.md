@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 218)
+
+- `KHR_animation_pointer` extension (Khronos ratified — see
+  `docs/3d/gltf/extensions/KHR_animation_pointer.md`). Animation
+  channels that drive arbitrary mutable glTF properties via a JSON
+  Pointer (RFC 6901) per §"Extension Usage". Pointer-targeted channels
+  carry `target.path = "pointer"` and store the pointer string at
+  `target.extensions.KHR_animation_pointer.pointer`; because they
+  don't bind to a node, the base spec would silently discard them, so
+  the decoder siphons them into
+  `Scene3D::extras["KHR_animation_pointer"]` as
+  `{ "animations": [ { "animation": ai, "name": "...", "channels": [
+  { "channel": ci, "pointer": "...", "interpolation": "...", "input":
+  [...f32...], "output_kind": "SCALAR"|"VEC2"|…|"MAT4", "output":
+  [...f32...] } ] } ] }`. The encoder lifts each entry back into the
+  typed channel target (emitting fresh FLOAT-typed input + output
+  accessors and a sampler) and appends `KHR_animation_pointer` to
+  `extensionsUsed`. Round 218 carries the FLOAT output lane only —
+  the spec's normalized-int / non-normalized-int / `bool` output
+  conversion modes (§"Output Accessor Component Types") follow in a
+  later round. The §3.12 stack validator rejects documents carrying
+  the data block without the declaration
+  (`ExtensionStackUsedNotDeclared`); rejects pointer channels with
+  `target.node` set (`ExtensionStackAnimationPointerNode`); rejects
+  the path/extension consistency violations
+  (`ExtensionStackAnimationPointerPath` /
+  `ExtensionStackAnimationPointerData`); rejects duplicate pointers
+  within one animation (`ExtensionStackAnimationPointerDuplicate` —
+  spec §Operation); and rejects malformed RFC 6901 prefixes
+  (`ExtensionStackAnimationPointerSyntax`). Existing animation-channel
+  path validation widens to accept `"pointer"`.
+
 ### Added (round 212)
 
 - `KHR_xmp_json_ld` extension (Khronos ratified — see

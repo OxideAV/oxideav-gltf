@@ -1408,10 +1408,50 @@ pub struct AnimationChannel {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct AnimationChannelTarget {
     /// `None` → channel SHOULD be ignored per spec §3.11.
+    ///
+    /// Also `None` for channels carrying the `KHR_animation_pointer`
+    /// extension — the spec explicitly forbids setting both `node` and
+    /// the pointer extension on the same target (see
+    /// `docs/3d/gltf/extensions/KHR_animation_pointer.md` §"Extension
+    /// Usage").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<u32>,
-    /// `"translation"`, `"rotation"`, `"scale"`, or `"weights"`.
+    /// `"translation"`, `"rotation"`, `"scale"`, or `"weights"` for
+    /// base-spec channels. `"pointer"` flags a channel that targets an
+    /// arbitrary mutable property via `KHR_animation_pointer` —
+    /// see `docs/3d/gltf/extensions/KHR_animation_pointer.md`.
     pub path: String,
+    /// Per-channel-target extensions block. Currently
+    /// `KHR_animation_pointer` is the only extension that lives here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<AnimationChannelTargetExtensions>,
+}
+
+/// `animations[i].channels[j].target.extensions` — the per-channel-target
+/// extensions block. `KHR_animation_pointer` lives here per
+/// `docs/3d/gltf/extensions/KHR_animation_pointer.md` §"Extension Usage".
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct AnimationChannelTargetExtensions {
+    /// `KHR_animation_pointer` — JSON Pointer (RFC 6901) string
+    /// indirection into any mutable glTF property per the spec's
+    /// §Operation. The channel `target.path` MUST be `"pointer"` when
+    /// this is present, and `target.node` MUST NOT be set.
+    #[serde(
+        rename = "KHR_animation_pointer",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_animation_pointer: Option<AnimationPointer>,
+}
+
+/// `KHR_animation_pointer` extension object — a single required `pointer`
+/// string per `docs/3d/gltf/extensions/KHR_animation_pointer.md`
+/// §"Extension Usage". The pointer is a JSON Pointer (RFC 6901) into
+/// any mutable glTF asset property as defined by the glTF 2.0 Asset
+/// Object Model.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct AnimationPointer {
+    pub pointer: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

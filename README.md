@@ -305,6 +305,38 @@ framework but usable standalone.
   must be used no more than one time" rule). Documents carrying either
   data block without the declaration are rejected with
   `ExtensionStackUsedNotDeclared`
+- KHR_animation_pointer extension (Khronos ratified) — animation
+  channels that drive arbitrary mutable glTF properties via a JSON
+  Pointer (RFC 6901) per
+  `docs/3d/gltf/extensions/KHR_animation_pointer.md`. Pointer-targeted
+  channels carry `target.path = "pointer"` and store the pointer string
+  at `target.extensions.KHR_animation_pointer.pointer`; the base spec
+  would silently discard them because they don't bind to a node, so the
+  decoder siphons them into
+  `oxideav_mesh3d::Scene3D::extras["KHR_animation_pointer"]` as
+  `{ "animations": [ { "animation": idx, "name": "...", "channels": [
+  { "channel": ci, "pointer": "/...", "interpolation": "LINEAR" |
+  "STEP" | "CUBICSPLINE", "input": [...f32...], "output_kind":
+  "SCALAR" | "VEC2" | "VEC3" | "VEC4" | "MAT2" | "MAT3" | "MAT4",
+  "output": [...f32...] } ] } ] }`. The encoder lifts each channel
+  back into the typed `target.extensions` block (emitting fresh
+  FLOAT-typed input + output accessors and a sampler) and appends
+  `KHR_animation_pointer` to `extensionsUsed`. r218 carries the FLOAT
+  output lane only — the spec's normalized-int and non-normalized-int
+  conversion modes (per §"Output Accessor Component Types") are
+  deferred to a follow-up round. The §3.12 stack validator rejects
+  documents carrying the data block without the declaration
+  (`ExtensionStackUsedNotDeclared`); rejects pointer channels with
+  `target.node` set (`ExtensionStackAnimationPointerNode` — the spec
+  forbids combining the two); rejects channels with
+  `target.path = "pointer"` but no extension data
+  (`ExtensionStackAnimationPointerData`) and the inverse
+  (`ExtensionStackAnimationPointerPath`); rejects duplicate pointer
+  strings within one animation
+  (`ExtensionStackAnimationPointerDuplicate` — spec §Operation:
+  "different channels of the same animation MUST NOT have identical
+  pointers"); and rejects malformed RFC 6901 prefixes
+  (`ExtensionStackAnimationPointerSyntax`)
 - KHR_mesh_quantization decode (Khronos ratified) — quantized vertex
   attributes from `docs/3d/gltf/extensions/KHR_mesh_quantization.md`.
   `POSITION` / `NORMAL` / `TANGENT` / `TEXCOORD_n` accessors may store
@@ -426,6 +458,15 @@ is implementation, not docs:
   the extension to `extensionsUsed` + `extensionsRequired`), plus
   decode of quantized morph-target attributes (§Extending Morph Target
   Attributes)
+- KHR_animation_pointer non-FLOAT output paths — the spec table in
+  §"Output Accessor Component Types" allows normalized-int (BYTE /
+  UBYTE / SHORT / USHORT) outputs for `float*` data types and
+  non-normalized-int outputs for `int` data types plus UBYTE for
+  `bool`; r218 only carries the FLOAT lane, so the other modes are
+  the next iteration. Also pending: spec-aware Object-Model
+  validation of the pointer string (resolving it to a mutable
+  property and checking accessor-type vs data-type compatibility per
+  the spec table)
 - KHR_audio_emitter wiring against `oxideav_mesh3d::AudioSource` /
   `AudioEmitter`
 

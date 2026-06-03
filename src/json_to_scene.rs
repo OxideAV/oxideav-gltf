@@ -229,8 +229,30 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
     }
 
     // Animations — channels target NodeIds, so resolve after nodes are loaded.
-    for a in &root.animations {
-        scene.add_animation(convert_animation(a, root, &buffers)?);
+    // `KHR_animation_pointer`-flagged channels do NOT bind to a node (per
+    // `docs/3d/gltf/extensions/KHR_animation_pointer.md` §"Extension
+    // Usage"); they accumulate into a Scene3D::extras side-channel for
+    // round-trip preservation rather than into the typed Animation.
+    let mut pointer_animations: Vec<Value> = Vec::new();
+    for (ai, a) in root.animations.iter().enumerate() {
+        let (anim, ptr_channels) = convert_animation(a, root, &buffers)?;
+        scene.add_animation(anim);
+        if !ptr_channels.is_empty() {
+            let mut obj = serde_json::Map::new();
+            obj.insert("animation".into(), Value::from(ai as u32));
+            if let Some(name) = &a.name {
+                obj.insert("name".into(), Value::String(name.clone()));
+            }
+            obj.insert("channels".into(), Value::Array(ptr_channels));
+            pointer_animations.push(Value::Object(obj));
+        }
+    }
+    if !pointer_animations.is_empty() {
+        let mut top = serde_json::Map::new();
+        top.insert("animations".into(), Value::Array(pointer_animations));
+        scene
+            .extras
+            .insert("KHR_animation_pointer".into(), Value::Object(top));
     }
 
     // Roots — explicit `scenes[scene].nodes` if any, otherwise treat
@@ -419,10 +441,119 @@ fn convert_animation(
     a: &gj::Animation,
     root: &GltfRoot,
     buffers: &[Arc<Vec<u8>>],
-) -> Result<Animation> {
+) -> Result<(Animation, Vec<Value>)> {
     let mut anim = Animation::new(a.name.clone());
     anim.channels.reserve(a.channels.len());
-    for ch in &a.channels {
+    // Pointer channels (KHR_animation_pointer-flagged) are siphoned off
+    // into a side roster the caller stashes on `Scene3D::extras`. Per
+    // `docs/3d/gltf/extensions/KHR_animation_pointer.md` §"Extension
+    // Usage": when present, `target.path == "pointer"`, `target.node`
+    // MUST NOT be set, and the pointer string lives at
+    // `target.extensions.KHR_animation_pointer.pointer`.
+    let mut pointer_channels: Vec<Value> = Vec::new();
+    for (ci, ch) in a.channels.iter().enumerate() {
+        // KHR_animation_pointer detection: a `"pointer"` path or an
+        // extension data block. The extension MUST be the only path
+        // value (no `node` field allowed). Spec §3.12 enforcement
+        // (declared-in-extensionsUsed and node/path consistency) runs
+        // in validation.rs; here we just round-trip the data.
+        let is_pointer_path = ch.target.path == "pointer";
+        let pointer_str = ch
+            .target
+            .extensions
+            .as_ref()
+            .and_then(|e| e.khr_animation_pointer.as_ref())
+            .map(|p| p.pointer.clone());
+        if is_pointer_path || pointer_str.is_some() {
+            // Materialise the channel sampler + push onto the side
+            // roster as JSON. Restrict r218 to FLOAT outputs (the
+            // primary spec case — "float accessor values are used as-is"
+            // per §"Output Accessor Component Types"); normalized-int
+            // + non-normalized-int + bool follow in a later round.
+            let pointer = pointer_str.ok_or_else(|| {
+                invalid(format!(
+                    "animation channel {ci}: target.path = \"pointer\" but \
+                     KHR_animation_pointer.pointer is missing (spec)"
+                ))
+            })?;
+            if ch.target.node.is_some() {
+                return Err(invalid(format!(
+                    "animation channel {ci}: KHR_animation_pointer channels \
+                     MUST NOT set target.node (spec §\"Extension Usage\")"
+                )));
+            }
+            if ch.target.path != "pointer" {
+                return Err(invalid(format!(
+                    "animation channel {ci}: KHR_animation_pointer requires \
+                     target.path == \"pointer\", got {:?} (spec §\"Extension Usage\")",
+                    ch.target.path
+                )));
+            }
+            let s_idx = ch.sampler as usize;
+            let s = a
+                .samplers
+                .get(s_idx)
+                .ok_or_else(|| invalid(format!("animation: sampler {s_idx} out of range")))?;
+            let interpolation = match s.interpolation.as_deref() {
+                None | Some("LINEAR") => "LINEAR",
+                Some("STEP") => "STEP",
+                Some("CUBICSPLINE") => "CUBICSPLINE",
+                Some(other) => {
+                    return Err(unsupported(format!(
+                        "animation sampler interpolation {other:?} unknown"
+                    )));
+                }
+            };
+            let input_acc = root
+                .accessors
+                .get(s.input as usize)
+                .ok_or_else(|| invalid(format!("animation sampler input {} oob", s.input)))?;
+            if input_acc.kind != "SCALAR" || input_acc.component_type != gj::COMPONENT_TYPE_FLOAT {
+                return Err(unsupported(format!(
+                    "animation input accessor must be SCALAR FLOAT, got {:?} {}",
+                    input_acc.kind, input_acc.component_type
+                )));
+            }
+            let in_bytes = materialise_accessor(input_acc, &root.buffer_views, buffers)?;
+            let in_view = view_from_materialised(input_acc, &in_bytes)?;
+            let input_values = read_scalar_f32(&in_view)?;
+            let output_acc = root
+                .accessors
+                .get(s.output as usize)
+                .ok_or_else(|| invalid(format!("animation sampler output {} oob", s.output)))?;
+            if output_acc.component_type != gj::COMPONENT_TYPE_FLOAT {
+                // r218 carries only the FLOAT path; normalized-int /
+                // non-normalized-int / bool outputs are deferred per the
+                // spec table in §"Output Accessor Component Types".
+                return Err(unsupported(format!(
+                    "KHR_animation_pointer: r218 only supports FLOAT output \
+                     accessors; got componentType {} on channel {ci}",
+                    output_acc.component_type
+                )));
+            }
+            let out_bytes = materialise_accessor(output_acc, &root.buffer_views, buffers)?;
+            let out_view = view_from_materialised(output_acc, &out_bytes)?;
+            let output_kind = output_acc.kind.clone();
+            // Read raw floats per spec §3.6.2.1 element layout. The
+            // accessor `count` is the number of elements, each of width
+            // {SCALAR:1, VEC2:2, VEC3:3, VEC4:4, MAT2:4, MAT3:9, MAT4:16}.
+            let output_values = read_pointer_output_floats(output_acc, &out_view)?;
+            let mut obj = serde_json::Map::new();
+            obj.insert("channel".into(), Value::from(ci as u32));
+            obj.insert("pointer".into(), Value::String(pointer));
+            obj.insert("interpolation".into(), Value::String(interpolation.into()));
+            obj.insert(
+                "input".into(),
+                Value::Array(input_values.into_iter().map(json_f32).collect()),
+            );
+            obj.insert("output_kind".into(), Value::String(output_kind));
+            obj.insert(
+                "output".into(),
+                Value::Array(output_values.into_iter().map(json_f32).collect()),
+            );
+            pointer_channels.push(Value::Object(obj));
+            continue;
+        }
         let target_node = match ch.target.node {
             Some(n) => NodeId(n),
             // Spec §3.11: "When node isn't defined, channel SHOULD be ignored."
@@ -494,7 +625,52 @@ fn convert_animation(
             },
         });
     }
-    Ok(anim)
+    Ok((anim, pointer_channels))
+}
+
+/// Per spec §3.6.2.1 element count: SCALAR=1, VEC2=2, VEC3=3, VEC4=4,
+/// MAT2=4, MAT3=9, MAT4=16 (all stored as f32 for the FLOAT path).
+fn read_pointer_output_floats(acc: &gj::Accessor, view: &AccessorView<'_>) -> Result<Vec<f32>> {
+    let arity = match acc.kind.as_str() {
+        "SCALAR" => 1,
+        "VEC2" => 2,
+        "VEC3" => 3,
+        "VEC4" => 4,
+        "MAT2" => 4,
+        "MAT3" => 9,
+        "MAT4" => 16,
+        other => {
+            return Err(unsupported(format!(
+                "KHR_animation_pointer: output accessor type {other:?} not in spec table"
+            )))
+        }
+    };
+    let expected = arity * 4;
+    if view.element_size != expected {
+        return Err(invalid(format!(
+            "KHR_animation_pointer output accessor: element_size {} != {expected} \
+             (kind={:?}, FLOAT)",
+            view.element_size, acc.kind
+        )));
+    }
+    let mut out = Vec::with_capacity(view.count * arity);
+    for elem in view.elements() {
+        for i in 0..arity {
+            let off = i * 4;
+            let bytes: [u8; 4] = elem[off..off + 4]
+                .try_into()
+                .map_err(|_| invalid("KHR_animation_pointer: short f32 read"))?;
+            out.push(f32::from_le_bytes(bytes));
+        }
+    }
+    Ok(out)
+}
+
+/// Lossless `f32 → JSON Number` (uses f64 widening, finite-only).
+fn json_f32(v: f32) -> Value {
+    serde_json::Number::from_f64(v as f64)
+        .map(Value::Number)
+        .unwrap_or(Value::Null)
 }
 
 /// Decode an animation sampler's output accessor into the typed

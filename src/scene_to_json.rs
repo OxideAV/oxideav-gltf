@@ -337,9 +337,90 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     }
 
     // --- animations ---
-    for a in &scene.animations {
-        let a_json = encode_animation(a, &mut root, &mut bin, opts)?;
+    // KHR_animation_pointer — extract the per-animation pointer-channel
+    // roster from `scene.extras["KHR_animation_pointer"]` before any
+    // animation is emitted, so each `encode_animation` call can append
+    // its associated pointer channels after the typed channels. Per
+    // `docs/3d/gltf/extensions/KHR_animation_pointer.md` the channels
+    // carry `target.path = "pointer"`, `target.node` MUST be absent,
+    // and `target.extensions.KHR_animation_pointer.pointer` carries
+    // the JSON Pointer string.
+    let mut pointer_channels_by_anim: HashMap<u32, Vec<PointerChannelData>> = HashMap::new();
+    if let Some(serde_json::Value::Object(top)) = scene.extras.get("KHR_animation_pointer") {
+        if let Some(serde_json::Value::Array(anims)) = top.get("animations") {
+            for entry in anims {
+                let obj = match entry {
+                    serde_json::Value::Object(o) => o,
+                    _ => continue,
+                };
+                let ai = obj.get("animation").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let channels = obj
+                    .get("channels")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let parsed: Vec<PointerChannelData> =
+                    channels.iter().filter_map(parse_pointer_channel).collect();
+                if !parsed.is_empty() {
+                    pointer_channels_by_anim.insert(ai, parsed);
+                }
+            }
+        }
+    }
+    let mut has_pointer = false;
+    for (ai, a) in scene.animations.iter().enumerate() {
+        let extras_ptrs = pointer_channels_by_anim.remove(&(ai as u32));
+        let mut a_json = encode_animation(a, &mut root, &mut bin, opts)?;
+        if let Some(ptrs) = extras_ptrs {
+            for pc in ptrs {
+                has_pointer = true;
+                // Push the sampler input (SCALAR FLOAT times) + output
+                // (kind-typed FLOAT values) accessors per spec §3.11
+                // accessor-format table. The input MUST carry min/max
+                // (§3.6.2.1.5 + §3.11), the output kind carries the
+                // arity per spec §3.6.2.1.
+                let input_acc =
+                    push_scalar_f32_accessor_with_minmax(&mut root, &mut bin, &pc.input, "input")?;
+                let output_acc =
+                    push_pointer_output_accessor(&mut root, &mut bin, &pc.output_kind, &pc.output)?;
+                let interpolation = match pc.interpolation.as_str() {
+                    // LINEAR is the spec default; omit for tighter JSON.
+                    "LINEAR" => None,
+                    other => Some(other.to_owned()),
+                };
+                let sampler_idx = a_json.samplers.len() as u32;
+                a_json.samplers.push(gj::AnimationSampler {
+                    input: input_acc,
+                    output: output_acc,
+                    interpolation,
+                });
+                a_json.channels.push(gj::AnimationChannel {
+                    sampler: sampler_idx,
+                    target: gj::AnimationChannelTarget {
+                        node: None,
+                        path: "pointer".to_owned(),
+                        extensions: Some(gj::AnimationChannelTargetExtensions {
+                            khr_animation_pointer: Some(gj::AnimationPointer {
+                                pointer: pc.pointer,
+                            }),
+                        }),
+                    },
+                });
+            }
+        }
         root.animations.push(a_json);
+    }
+    if has_pointer
+        && !root
+            .extensions_used
+            .iter()
+            .any(|e| e == "KHR_animation_pointer")
+    {
+        // Per spec §3.12 (and `docs/3d/gltf/extensions/KHR_animation_pointer.md`)
+        // any document carrying KHR_animation_pointer data MUST declare
+        // the extension in `extensionsUsed`.
+        root.extensions_used
+            .push("KHR_animation_pointer".to_owned());
     }
 
     // --- scene root + multi-scene side-channel ---
@@ -348,6 +429,13 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     // pulls them back out and recreates the original `scenes[]` order.
     let mut effective_extras = scene.extras.clone();
     let additional_scenes = effective_extras.remove("__additional_scenes");
+    // KHR_animation_pointer — the per-animation pointer-channel roster
+    // lives under `scene.extras["KHR_animation_pointer"]` to round-trip
+    // pointer-targeted channels (which don't bind to a node). The
+    // animation-encode loop above consumed it; strip it here so the
+    // primary scene's `extras` field doesn't carry a stale copy. See
+    // `docs/3d/gltf/extensions/KHR_animation_pointer.md`.
+    effective_extras.remove("KHR_animation_pointer");
     // KHR_materials_variants — root-level roster lives on the typed
     // `root.extensions.khr_materials_variants` block emitted above, NOT
     // duplicated into the scene `extras` (which is what the decoder
@@ -2237,6 +2325,7 @@ fn encode_animation(
             target: gj::AnimationChannelTarget {
                 node: Some(ch.target.node.0),
                 path: path.to_owned(),
+                extensions: None,
             },
         });
     }
@@ -2247,6 +2336,114 @@ fn encode_animation(
         name: a.name.clone(),
         extras: None,
     })
+}
+
+/// Parsed `KHR_animation_pointer` channel data from the
+/// `scene.extras["KHR_animation_pointer"].animations[i].channels[j]`
+/// side-channel — the encode-loop counterpart of the decoder's
+/// `pointer_channels` accumulator.
+struct PointerChannelData {
+    pointer: String,
+    interpolation: String,
+    input: Vec<f32>,
+    output_kind: String,
+    output: Vec<f32>,
+}
+
+fn parse_pointer_channel(v: &serde_json::Value) -> Option<PointerChannelData> {
+    let obj = v.as_object()?;
+    let pointer = obj.get("pointer")?.as_str()?.to_owned();
+    let interpolation = obj
+        .get("interpolation")
+        .and_then(|x| x.as_str())
+        .unwrap_or("LINEAR")
+        .to_owned();
+    let input: Vec<f32> = obj
+        .get("input")?
+        .as_array()?
+        .iter()
+        .filter_map(|n| n.as_f64().map(|x| x as f32))
+        .collect();
+    let output_kind = obj
+        .get("output_kind")
+        .and_then(|x| x.as_str())
+        .unwrap_or("SCALAR")
+        .to_owned();
+    let output: Vec<f32> = obj
+        .get("output")?
+        .as_array()?
+        .iter()
+        .filter_map(|n| n.as_f64().map(|x| x as f32))
+        .collect();
+    Some(PointerChannelData {
+        pointer,
+        interpolation,
+        input,
+        output_kind,
+        output,
+    })
+}
+
+/// Push a FLOAT-typed accessor with arity per `output_kind` (per spec
+/// §3.6.2.1 element counts) — the dense-FLOAT lane of the
+/// KHR_animation_pointer output table from
+/// `docs/3d/gltf/extensions/KHR_animation_pointer.md`. The flat `data`
+/// stream MUST have `count * arity` elements.
+fn push_pointer_output_accessor(
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+    output_kind: &str,
+    data: &[f32],
+) -> Result<u32> {
+    let arity = match output_kind {
+        "SCALAR" => 1usize,
+        "VEC2" => 2,
+        "VEC3" => 3,
+        "VEC4" => 4,
+        "MAT2" => 4,
+        "MAT3" => 9,
+        "MAT4" => 16,
+        other => {
+            return Err(invalid(format!(
+                "KHR_animation_pointer output_kind {other:?} not in spec table"
+            )))
+        }
+    };
+    if data.len() % arity != 0 {
+        return Err(invalid(format!(
+            "KHR_animation_pointer output: data length {} not a multiple of arity {arity} (kind {output_kind:?})",
+            data.len()
+        )));
+    }
+    pad_to_4(bin);
+    let byte_offset = bin.len();
+    for v in data {
+        bin.extend_from_slice(&v.to_le_bytes());
+    }
+    let byte_length = bin.len() - byte_offset;
+    let bv_idx = root.buffer_views.len() as u32;
+    root.buffer_views.push(gj::BufferView {
+        buffer: 0,
+        byte_offset: Some(byte_offset as u32),
+        byte_length: byte_length as u32,
+        byte_stride: None,
+        target: None,
+        name: Some("pointer_output_view".to_owned()),
+    });
+    let acc_idx = root.accessors.len() as u32;
+    root.accessors.push(gj::Accessor {
+        buffer_view: Some(bv_idx),
+        byte_offset: None,
+        component_type: gj::COMPONENT_TYPE_FLOAT,
+        count: (data.len() / arity) as u32,
+        kind: output_kind.to_owned(),
+        normalized: false,
+        min: None,
+        max: None,
+        name: Some("pointer_output".to_owned()),
+        sparse: None,
+    });
+    Ok(acc_idx)
 }
 
 fn push_scalar_f32_accessor(

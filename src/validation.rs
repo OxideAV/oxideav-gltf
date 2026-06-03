@@ -779,6 +779,103 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         ));
     }
 
+    // KHR_animation_pointer — per-channel-target extension. Per
+    // `docs/3d/gltf/extensions/KHR_animation_pointer.md` §"Extension
+    // Usage": when used the channel's `target.path` MUST be
+    // `"pointer"`, `target.node` MUST NOT be set, and the JSON Pointer
+    // string lives at `target.extensions.KHR_animation_pointer.pointer`.
+    // §3.12 rule: any document carrying the data block MUST declare the
+    // extension in `extensionsUsed`.
+    let mut has_animation_pointer = false;
+    for (ai, anim) in root.animations.iter().enumerate() {
+        for (ci, ch) in anim.channels.iter().enumerate() {
+            let ptr = ch
+                .target
+                .extensions
+                .as_ref()
+                .and_then(|e| e.khr_animation_pointer.as_ref());
+            let path_is_pointer = ch.target.path == "pointer";
+            if ptr.is_some() || path_is_pointer {
+                has_animation_pointer = true;
+            }
+            // Consistency: data block iff `path == "pointer"`. These
+            // are spec §"Extension Usage" rules — surfaced as
+            // ExtensionStackAnimationPointer<…> for grep-ability with
+            // the existing extension-stack error vocabulary.
+            if ptr.is_some() && !path_is_pointer {
+                return Err(invalid(format!(
+                    "ExtensionStackAnimationPointerPath: animations[{ai}].channels[{ci}] \
+                     carries KHR_animation_pointer data but target.path = {:?} \
+                     (must be \"pointer\")",
+                    ch.target.path
+                )));
+            }
+            if path_is_pointer && ptr.is_none() {
+                return Err(invalid(format!(
+                    "ExtensionStackAnimationPointerData: animations[{ai}].channels[{ci}] \
+                     has target.path = \"pointer\" but no KHR_animation_pointer \
+                     extension data is attached"
+                )));
+            }
+            if ptr.is_some() && ch.target.node.is_some() {
+                return Err(invalid(format!(
+                    "ExtensionStackAnimationPointerNode: animations[{ai}].channels[{ci}] \
+                     carries KHR_animation_pointer data but target.node is set \
+                     (the spec forbids combining the two — \"animation channel `node` \
+                     property MUST NOT be set\")"
+                )));
+            }
+            // Pointer-string sanity per RFC 6901: an empty string is
+            // valid (it references the whole document), but a non-empty
+            // pointer MUST start with `/`. The spec §Operation says the
+            // pointer MUST point to a property defined in the asset; we
+            // can't validate the resolution itself without the full
+            // Object Model, but the syntactic prefix check rejects the
+            // clearly-malformed values that no glTF asset can satisfy.
+            if let Some(p) = ptr {
+                if !p.pointer.is_empty() && !p.pointer.starts_with('/') {
+                    return Err(invalid(format!(
+                        "ExtensionStackAnimationPointerSyntax: animations[{ai}].channels[{ci}] \
+                         .target.extensions.KHR_animation_pointer.pointer = {:?} — \
+                         non-empty JSON Pointers MUST start with '/' (RFC 6901 §3)",
+                        p.pointer
+                    )));
+                }
+            }
+        }
+        // Per spec §"Extension Usage" (re-stating the §3.11 rule for
+        // pointer-targeted channels): "The same property MUST NOT be
+        // targeted more than once in one animation". Enforce uniqueness
+        // of pointer strings within a single animation.
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for (ci, ch) in anim.channels.iter().enumerate() {
+            if let Some(p) = ch
+                .target
+                .extensions
+                .as_ref()
+                .and_then(|e| e.khr_animation_pointer.as_ref())
+            {
+                if !seen.insert(p.pointer.as_str()) {
+                    return Err(invalid(format!(
+                        "ExtensionStackAnimationPointerDuplicate: animations[{ai}].channels[{ci}] \
+                         .target.extensions.KHR_animation_pointer.pointer = {:?} — \
+                         the same pointer appears on more than one channel in this animation \
+                         (spec §\"Operation\": \"different channels of the same animation MUST NOT \
+                         have identical pointers\")",
+                        p.pointer
+                    )));
+                }
+            }
+        }
+    }
+    if has_animation_pointer && !used("KHR_animation_pointer") {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_animation_pointer data \
+             is present on an animation channel but the extension is not \
+             listed in extensionsUsed (spec §3.12)",
+        ));
+    }
+
     // KHR_materials_variants — both a root-level `variants` roster and
     // per-primitive `mappings` arrays surface this extension. Same
     // §3.12 rule: presence of either data block requires the extension
@@ -1027,14 +1124,18 @@ pub fn validate_animation_channels(
             )));
         }
 
-        // path is one of the four spec strings
+        // path is one of the four base-spec strings (§3.11) or the
+        // `"pointer"` sentinel introduced by KHR_animation_pointer
+        // (see `docs/3d/gltf/extensions/KHR_animation_pointer.md`
+        // §"Extension Usage"). The pointer case is checked in detail
+        // by `validate_extension_stack`.
         match ch.target.path.as_str() {
-            "translation" | "rotation" | "scale" | "weights" => {}
+            "translation" | "rotation" | "scale" | "weights" | "pointer" => {}
             other => {
                 return Err(invalid(format!(
                     "AnimationChannelPath: animations[{anim_idx}].channels[{ci}].target.path \
                      = {other:?} — must be one of \"translation\" / \"rotation\" / \
-                     \"scale\" / \"weights\" (spec §3.11)"
+                     \"scale\" / \"weights\" / \"pointer\" (spec §3.11 + KHR_animation_pointer)"
                 )));
             }
         }
@@ -2566,6 +2667,7 @@ mod tests {
                 target: AnimationChannelTarget {
                     node: target_node,
                     path: path.into(),
+                    extensions: None,
                 },
             }],
             samplers: vec![AnimationSampler {
