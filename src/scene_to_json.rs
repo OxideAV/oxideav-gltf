@@ -67,6 +67,26 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     // --- meshes + accessors + bufferViews ---
     let mut emitted_primitive_variants = false;
     let mut emitted_mesh_xmp = false;
+    // `KHR_mesh_quantization` is declared in both `extensionsUsed`
+    // AND `extensionsRequired` whenever any primitive carries the
+    // `__attr_quant` sentinel pointing at a non-FLOAT spec-allowed
+    // (componentType, normalized) combo — per
+    // `docs/3d/gltf/extensions/KHR_mesh_quantization.md` §Overview
+    // ("the extension is not optional"). The sentinel is emptied by
+    // `encode_primitive` before this check, so we scan the source
+    // primitives directly.
+    let mut emitted_mesh_quantization = false;
+    for mesh in &scene.meshes {
+        for prim in &mesh.primitives {
+            if primitive_emits_quantization(prim) {
+                emitted_mesh_quantization = true;
+                break;
+            }
+        }
+        if emitted_mesh_quantization {
+            break;
+        }
+    }
     for mesh in &scene.meshes {
         let primitives = mesh
             .primitives
@@ -255,6 +275,17 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     if emitted_texture_transform {
         root.extensions_used
             .push("KHR_texture_transform".to_owned());
+    }
+    if emitted_mesh_quantization {
+        // Per `docs/3d/gltf/extensions/KHR_mesh_quantization.md`
+        // §Overview the extension MUST be declared in both
+        // `extensionsUsed` AND `extensionsRequired` ("files that use
+        // the extension must specify it in extensionsRequired array
+        // - the extension is not optional").
+        root.extensions_used
+            .push(crate::quantization::EXTENSION_NAME.to_owned());
+        root.extensions_required
+            .push(crate::quantization::EXTENSION_NAME.to_owned());
     }
 
     // --- textures + images + samplers ---
@@ -626,35 +657,62 @@ fn encode_primitive(
 ) -> Result<gj::Primitive> {
     let mut attributes: HashMap<String, u32> = HashMap::new();
 
-    // POSITION — spec §3.6.2.1.5 mandates min/max; the sparse path
-    // recomputes them from `data` so they remain correct.
-    let pos_acc =
-        push_vec3_accessor_maybe_sparse(root, bin, &p.positions, "POSITION", true, opts, true)?;
+    // `KHR_mesh_quantization` round-trip path: the decoder stashes
+    // each attribute's original (componentType, normalized) pair under
+    // `primitive.extras[__attr_quant]` so we can re-emit attributes in
+    // their quantised form. When the sentinel is absent or an entry
+    // is FLOAT we fall through to the FLOAT-emit path. See
+    // `docs/3d/gltf/extensions/KHR_mesh_quantization.md` §Encoding
+    // Quantized Data.
+
+    // POSITION — spec §3.6.2.1.5 mandates min/max; the spec note in
+    // `KHR_mesh_quantization.md` §Extending Mesh Attributes adds that
+    // the min/max carry the *quantised* integer values when the
+    // attribute is stored quantised.
+    let pos_acc = if let Some((ct, norm)) = lookup_attr_quant(&p.extras, "POSITION", "VEC3") {
+        push_quantized_vec3_accessor(root, bin, &p.positions, ct, norm, "POSITION", true)?
+    } else {
+        push_vec3_accessor_maybe_sparse(root, bin, &p.positions, "POSITION", true, opts, true)?
+    };
     attributes.insert("POSITION".into(), pos_acc);
 
     if let Some(normals) = &p.normals {
         if normals.len() != p.positions.len() {
             return Err(invalid("primitive: NORMAL count != POSITION count"));
         }
-        let acc = push_vec3_accessor_maybe_sparse(root, bin, normals, "NORMAL", false, opts, true)?;
+        let acc = if let Some((ct, norm)) = lookup_attr_quant(&p.extras, "NORMAL", "VEC3") {
+            push_quantized_vec3_accessor(root, bin, normals, ct, norm, "NORMAL", false)?
+        } else {
+            push_vec3_accessor_maybe_sparse(root, bin, normals, "NORMAL", false, opts, true)?
+        };
         attributes.insert("NORMAL".into(), acc);
     }
     if let Some(tangents) = &p.tangents {
         if tangents.len() != p.positions.len() {
             return Err(invalid("primitive: TANGENT count != POSITION count"));
         }
-        // Spec §3.7.2.1: TANGENT.w MUST be ±1.0 — the sparse path
-        // initialises non-overridden slots to the zero vector, which
-        // would yield a w=0 element and fail validation. Stay dense.
-        let acc = push_vec4_accessor_maybe_sparse(root, bin, tangents, "TANGENT", opts, false)?;
+        let acc = if let Some((ct, norm)) = lookup_attr_quant(&p.extras, "TANGENT", "VEC4") {
+            push_quantized_vec4_accessor(root, bin, tangents, ct, norm, "TANGENT")?
+        } else {
+            // Spec §3.7.2.1: TANGENT.w MUST be ±1.0 — the sparse path
+            // initialises non-overridden slots to the zero vector,
+            // which would yield a w=0 element and fail validation.
+            // Stay dense.
+            push_vec4_accessor_maybe_sparse(root, bin, tangents, "TANGENT", opts, false)?
+        };
         attributes.insert("TANGENT".into(), acc);
     }
     for (i, set) in p.uvs.iter().enumerate() {
         if set.len() != p.positions.len() {
             return Err(invalid("primitive: TEXCOORD count != POSITION count"));
         }
-        let acc = push_vec2_accessor(root, bin, set)?;
-        attributes.insert(format!("TEXCOORD_{i}"), acc);
+        let attr_name = format!("TEXCOORD_{i}");
+        let acc = if let Some((ct, norm)) = lookup_attr_quant(&p.extras, &attr_name, "VEC2") {
+            push_quantized_vec2_accessor(root, bin, set, ct, norm, &attr_name)?
+        } else {
+            push_vec2_accessor(root, bin, set)?
+        };
+        attributes.insert(attr_name, acc);
     }
     for (i, set) in p.colors.iter().enumerate() {
         if set.len() != p.positions.len() {
@@ -696,15 +754,16 @@ fn encode_primitive(
     };
 
     // Drop the synthetic sentinels (`__mesh_extras`, `__mesh_weights`,
-    // `__morph_targets`) when emitting per-primitive extras — they're
-    // re-materialised through their dedicated JSON paths. Also strip
-    // `KHR_materials_variants` — the mapping table is lifted into the
-    // typed primitive `extensions` block (below) rather than emitted
-    // as raw extras.
+    // `__morph_targets`, `__attr_quant`) when emitting per-primitive
+    // extras — they're re-materialised through their dedicated JSON
+    // paths. Also strip `KHR_materials_variants` — the mapping table
+    // is lifted into the typed primitive `extensions` block (below)
+    // rather than emitted as raw extras.
     let mut prim_extras = p.extras.clone();
     let morph_targets_extra = prim_extras.remove("__morph_targets");
     prim_extras.remove("__mesh_extras");
     prim_extras.remove("__mesh_weights");
+    prim_extras.remove(crate::quantization::ATTR_QUANT_KEY);
     let variants_extra = prim_extras.remove("KHR_materials_variants");
     let extras = if prim_extras.is_empty() {
         None
@@ -1006,6 +1065,231 @@ fn push_vec2_accessor(root: &mut GltfRoot, bin: &mut Vec<u8>, data: &[[f32; 2]])
         sparse: None,
     });
     Ok(acc_idx)
+}
+
+/// Push a quantized VEC2 attribute (TEXCOORD_n under
+/// `KHR_mesh_quantization`) into the bin and emit an accessor +
+/// bufferView. `component_type` MUST be one of
+/// BYTE / UBYTE / SHORT / USHORT per
+/// `docs/3d/gltf/extensions/KHR_mesh_quantization.md` §Extending Mesh
+/// Attributes; `normalized` selects the spec dequantisation equation
+/// table. Elements are written with the spec-mandated 4-byte alignment
+/// pad ("a BYTE normal is expected to have a stride of 4, not 3").
+fn push_quantized_vec2_accessor(
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+    data: &[[f32; 2]],
+    component_type: u32,
+    normalized: bool,
+    name: &str,
+) -> Result<u32> {
+    pad_to_4(bin);
+    let byte_offset = bin.len();
+    crate::quantization::write_quantized_vec2(bin, data, component_type, normalized)?;
+    let byte_length = bin.len() - byte_offset;
+    let stride = crate::quantization::quantized_element_stride(component_type, 2) as u32;
+    let bv_idx = root.buffer_views.len() as u32;
+    root.buffer_views.push(gj::BufferView {
+        buffer: 0,
+        byte_offset: Some(byte_offset as u32),
+        byte_length: byte_length as u32,
+        byte_stride: Some(stride),
+        target: Some(gj::TARGET_ARRAY_BUFFER),
+        name: Some(format!("{name}_view")),
+    });
+    let acc_idx = root.accessors.len() as u32;
+    root.accessors.push(gj::Accessor {
+        buffer_view: Some(bv_idx),
+        byte_offset: None,
+        component_type,
+        count: data.len() as u32,
+        kind: "VEC2".into(),
+        normalized,
+        min: None,
+        max: None,
+        name: Some(name.to_owned()),
+        sparse: None,
+    });
+    Ok(acc_idx)
+}
+
+/// Push a quantized VEC3 attribute (POSITION / NORMAL under
+/// `KHR_mesh_quantization`). When `with_minmax` is true, the per-axis
+/// min/max bounds are computed in the *quantised* integer space per
+/// `docs/3d/gltf/extensions/KHR_mesh_quantization.md` §Extending Mesh
+/// Attributes Implementation Note ("For quantized data, `accessor.min`
+/// and `accessor.max` properties also contain quantized values").
+/// Casting the quantised i32 result back through `f32` preserves the
+/// integer value exactly inside the documented range.
+fn push_quantized_vec3_accessor(
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+    data: &[[f32; 3]],
+    component_type: u32,
+    normalized: bool,
+    name: &str,
+    with_minmax: bool,
+) -> Result<u32> {
+    pad_to_4(bin);
+    let byte_offset = bin.len();
+    crate::quantization::write_quantized_vec3(bin, data, component_type, normalized)?;
+    let byte_length = bin.len() - byte_offset;
+    let stride = crate::quantization::quantized_element_stride(component_type, 3) as u32;
+    let bv_idx = root.buffer_views.len() as u32;
+    root.buffer_views.push(gj::BufferView {
+        buffer: 0,
+        byte_offset: Some(byte_offset as u32),
+        byte_length: byte_length as u32,
+        byte_stride: Some(stride),
+        target: Some(gj::TARGET_ARRAY_BUFFER),
+        name: Some(format!("{name}_view")),
+    });
+
+    let (min, max) = if with_minmax && !data.is_empty() {
+        // Quantise every element back to the integer wire form, then
+        // cast to f32 for the JSON `min` / `max` arrays. The spec note
+        // (§Extending Mesh Attributes Implementation Note) says the
+        // bounds carry the quantised integer values; readers
+        // dequantise them with the same transform applied to the
+        // attribute data.
+        let quant = |f: f32| -> Result<f32> {
+            if normalized {
+                crate::quantization::quantize_normalized(component_type, f).map(|c| c as f32)
+            } else {
+                Ok(f.round())
+            }
+        };
+        let first = data[0];
+        let mut mn = [quant(first[0])?, quant(first[1])?, quant(first[2])?];
+        let mut mx = mn;
+        for v in &data[1..] {
+            for c in 0..3 {
+                let q = quant(v[c])?;
+                if q < mn[c] {
+                    mn[c] = q;
+                }
+                if q > mx[c] {
+                    mx[c] = q;
+                }
+            }
+        }
+        (Some(mn.to_vec()), Some(mx.to_vec()))
+    } else {
+        (None, None)
+    };
+
+    let acc_idx = root.accessors.len() as u32;
+    root.accessors.push(gj::Accessor {
+        buffer_view: Some(bv_idx),
+        byte_offset: None,
+        component_type,
+        count: data.len() as u32,
+        kind: "VEC3".into(),
+        normalized,
+        min,
+        max,
+        name: Some(name.to_owned()),
+        sparse: None,
+    });
+    Ok(acc_idx)
+}
+
+/// Push a quantized VEC4 attribute (TANGENT under
+/// `KHR_mesh_quantization`). Per `KHR_mesh_quantization.md`
+/// §Extending Mesh Attributes the TANGENT extension row only allows
+/// the BYTE / SHORT `normalized` rows — the caller is responsible for
+/// providing a compatible (componentType, normalized) pair (the
+/// `is_base_attr_combo_allowed` table gates incoming combinations).
+fn push_quantized_vec4_accessor(
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+    data: &[[f32; 4]],
+    component_type: u32,
+    normalized: bool,
+    name: &str,
+) -> Result<u32> {
+    pad_to_4(bin);
+    let byte_offset = bin.len();
+    crate::quantization::write_quantized_vec4(bin, data, component_type, normalized)?;
+    let byte_length = bin.len() - byte_offset;
+    let stride = crate::quantization::quantized_element_stride(component_type, 4) as u32;
+    let bv_idx = root.buffer_views.len() as u32;
+    root.buffer_views.push(gj::BufferView {
+        buffer: 0,
+        byte_offset: Some(byte_offset as u32),
+        byte_length: byte_length as u32,
+        byte_stride: Some(stride),
+        target: Some(gj::TARGET_ARRAY_BUFFER),
+        name: Some(format!("{name}_view")),
+    });
+    let acc_idx = root.accessors.len() as u32;
+    root.accessors.push(gj::Accessor {
+        buffer_view: Some(bv_idx),
+        byte_offset: None,
+        component_type,
+        count: data.len() as u32,
+        kind: "VEC4".into(),
+        normalized,
+        min: None,
+        max: None,
+        name: Some(name.to_owned()),
+        sparse: None,
+    });
+    Ok(acc_idx)
+}
+
+/// Look up a `(componentType, normalized)` pair for `attr_name` inside
+/// a primitive's `__attr_quant` extras sentinel (when present).
+/// Returns `None` when the sentinel is missing, the entry is absent,
+/// the recorded componentType is FLOAT (i.e. no quantization), or the
+/// (attribute, kind, componentType, normalized) combination falls
+/// outside the spec's allowed set per
+/// `KHR_mesh_quantization.md` §Extending Mesh Attributes — in which
+/// case the caller falls back to the FLOAT encode path.
+fn lookup_attr_quant(
+    extras: &std::collections::HashMap<String, serde_json::Value>,
+    attr_name: &str,
+    kind: &str,
+) -> Option<(u32, bool)> {
+    let sentinel = extras.get(crate::quantization::ATTR_QUANT_KEY)?;
+    let entry = sentinel.as_object()?.get(attr_name)?;
+    let obj = entry.as_object()?;
+    let ct = obj.get("componentType").and_then(|v| v.as_u64())? as u32;
+    let normalized = obj
+        .get("normalized")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if ct == gj::COMPONENT_TYPE_FLOAT {
+        return None;
+    }
+    if !crate::quantization::is_base_attr_combo_allowed(attr_name, kind, ct, normalized) {
+        return None;
+    }
+    Some((ct, normalized))
+}
+
+/// True when at least one of this primitive's `__attr_quant` entries
+/// would resolve to a non-FLOAT spec-allowed quantised storage form
+/// (POSITION VEC3 / NORMAL VEC3 / TANGENT VEC4 / TEXCOORD_n VEC2).
+/// Used by `convert_with_options` to decide whether to append
+/// `KHR_mesh_quantization` to `extensionsUsed` + `extensionsRequired`.
+fn primitive_emits_quantization(p: &Primitive) -> bool {
+    if lookup_attr_quant(&p.extras, "POSITION", "VEC3").is_some() {
+        return true;
+    }
+    if p.normals.is_some() && lookup_attr_quant(&p.extras, "NORMAL", "VEC3").is_some() {
+        return true;
+    }
+    if p.tangents.is_some() && lookup_attr_quant(&p.extras, "TANGENT", "VEC4").is_some() {
+        return true;
+    }
+    for i in 0..p.uvs.len() {
+        let attr_name = format!("TEXCOORD_{i}");
+        if lookup_attr_quant(&p.extras, &attr_name, "VEC2").is_some() {
+            return true;
+        }
+    }
+    false
 }
 
 fn push_joints_accessor(root: &mut GltfRoot, bin: &mut Vec<u8>, data: &[[u16; 4]]) -> Result<u32> {

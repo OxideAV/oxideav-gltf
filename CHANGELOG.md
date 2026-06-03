@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 223)
+
+- `KHR_mesh_quantization` encoder path — float→int re-emission of
+  base mesh attributes recorded under the per-primitive
+  `extras["__attr_quant"]` sentinel per
+  `docs/3d/gltf/extensions/KHR_mesh_quantization.md` §Encoding
+  Quantized Data. `POSITION` / `NORMAL` / `TANGENT` / `TEXCOORD_n`
+  whose decoded form carried a non-FLOAT (componentType, normalized)
+  pair are re-quantised through the spec's float→int table
+  (BYTE `c = round(f * 127.0)`, UBYTE `c = round(f * 255.0)`, SHORT
+  `c = round(f * 32767.0)`, USHORT `c = round(f * 65535.0)`), then
+  written into the binary buffer with the spec-mandated 4-byte
+  element stride (§Extending Mesh Attributes "a BYTE normal is
+  expected to have a stride of 4, not 3"). POSITION `accessor.min`
+  / `accessor.max` carry the quantised integer values per the
+  Implementation Note in §Extending Mesh Attributes ("For quantized
+  data, `accessor.min` and `accessor.max` properties also contain
+  quantized values"). The (attribute, kind, componentType,
+  normalized) tuple is gated against the `is_base_attr_combo_allowed`
+  table — out-of-table combos fall back to the FLOAT encode path so
+  the encoder never emits a non-spec form. The `__attr_quant`
+  sentinel is stripped from per-primitive `extras` on write so it
+  doesn't surface in the JSON output. The encoder declares
+  `KHR_mesh_quantization` in BOTH `extensionsUsed` AND
+  `extensionsRequired` per §Overview ("files that use the extension
+  must specify it in extensionsRequired array - the extension is
+  not optional"). Five new tests in
+  `tests/quantized_attribute_encode.rs` exercise SHORT-normalized
+  POSITION (extension declared + accessor stays SHORT/normalized +
+  min/max integer-valued + decode-encode-decode within
+  `2 / 32767` precision), BYTE-normalized NORMAL + UBYTE-normalized
+  TEXCOORD_0 round-trip, BYTE-normalized TANGENT VEC4 round-trip,
+  and FLOAT-only-scene-stays-FLOAT (no extensionsRequired surfacing).
+
 ### Added (round 218)
 
 - `KHR_animation_pointer` extension (Khronos ratified — see

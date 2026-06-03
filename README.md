@@ -337,8 +337,9 @@ framework but usable standalone.
   "different channels of the same animation MUST NOT have identical
   pointers"); and rejects malformed RFC 6901 prefixes
   (`ExtensionStackAnimationPointerSyntax`)
-- KHR_mesh_quantization decode (Khronos ratified) — quantized vertex
-  attributes from `docs/3d/gltf/extensions/KHR_mesh_quantization.md`.
+- KHR_mesh_quantization (Khronos ratified) decode + base-attribute
+  encode — quantized vertex attributes from
+  `docs/3d/gltf/extensions/KHR_mesh_quantization.md`.
   `POSITION` / `NORMAL` / `TANGENT` / `TEXCOORD_n` accessors may store
   8-/16-bit signed/unsigned integers (normalized or unnormalized) in
   place of `FLOAT`. The decoder dequantizes per the spec int→float
@@ -350,9 +351,21 @@ framework but usable standalone.
   for that attribute; the base-spec UNSIGNED_BYTE / UNSIGNED_SHORT
   *normalized* `TEXCOORD` types stay accepted without the extension.
   Each quantized attribute's storage form (componentType + normalized)
-  is recorded under the primitive `extras["__attr_quant"]` sentinel for
-  a future encoder round-trip. Encoder emission of quantized attributes
-  is not yet wired (see roadmap)
+  is recorded under the primitive `extras["__attr_quant"]` sentinel.
+  The encoder picks the sentinel back up on write and re-quantises
+  each attribute via the spec float→int table — BYTE
+  `c = round(f * 127)`, UBYTE `c = round(f * 255)`, SHORT
+  `c = round(f * 32767)`, USHORT `c = round(f * 65535)` — padding to
+  the spec-mandated 4-byte element stride. POSITION `accessor.min` /
+  `accessor.max` carry the quantised integer values per the
+  Implementation Note in §Extending Mesh Attributes. The encoder
+  declares `KHR_mesh_quantization` in BOTH `extensionsUsed` AND
+  `extensionsRequired` per §Overview ("files that use the extension
+  must specify it in extensionsRequired array - the extension is not
+  optional"). (componentType, normalized) tuples that fall outside the
+  spec's allowed combo table revert to the FLOAT-emit path so the
+  encoder never produces a non-spec form. Quantized morph-target
+  attribute *decode* is still pending (see roadmap)
 - Skins + skeletons (joint roster, inverseBindMatrices accessor,
   optional skeleton root) per spec §3.7.3 — `node.skin` round-trips
 - Animations (channels + samplers) per spec §3.11 — translation /
@@ -451,13 +464,13 @@ The KHR extension registry is now staged under
 `docs/3d/gltf/extensions/` (25 specs + index), so the remaining work
 is implementation, not docs:
 
-- KHR_mesh_quantization encoder — the decode path (dequantisation of
-  int8/int16 POSITION / NORMAL / TANGENT / TEXCOORD) landed in round
-  188; the remaining work is the float→int emit path (re-quantising
-  attributes recorded under the `__attr_quant` sentinel and appending
-  the extension to `extensionsUsed` + `extensionsRequired`), plus
-  decode of quantized morph-target attributes (§Extending Morph Target
-  Attributes)
+- KHR_mesh_quantization morph-target attribute decode — the base
+  mesh-attribute decode + encode paths both landed (rounds 188 + 223
+  respectively); the remaining work is decoding the quantized morph
+  delta tables (§Extending Morph Target Attributes — `POSITION` VEC3
+  signed integer + `NORMAL` / `TANGENT` VEC3 byte/short normalized +
+  `TEXCOORD_n` VEC2 byte/short) into the
+  `prim.extras["__morph_targets"]` sentinel as f32 deltas
 - KHR_animation_pointer non-FLOAT output paths — the spec table in
   §"Output Accessor Component Types" allows normalized-int (BYTE /
   UBYTE / SHORT / USHORT) outputs for `float*` data types and
