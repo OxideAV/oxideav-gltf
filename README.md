@@ -374,6 +374,36 @@ framework but usable standalone.
   extension is not optional"). (componentType, normalized) tuples that
   fall outside the spec's allowed combo tables revert to the
   FLOAT-emit path so the encoder never produces a non-spec form
+- KHR_texture_basisu extension (Khronos ratified) — per-texture
+  alternate KTX v2 image with Basis Universal supercompression from
+  `docs/3d/gltf/extensions/KHR_texture_basisu.md`. The extension adds
+  a typed `texture.extensions.KHR_texture_basisu = { source: K }`
+  block where `K` indexes an entry in `images[]` whose `mimeType` is
+  `image/ktx2`. Two spec-defined shapes round-trip through
+  `oxideav_mesh3d::Scene3D::extras["KHR_texture_basisu"]` keyed by
+  texture index:
+    - Fallback shape (§glTF Schema Updates) — `texture.source` carries
+      the PNG/JPEG fallback as the primary `Texture::image`, and the
+      alternate KTX2 image rides on
+      `scene.extras["KHR_texture_basisu"].alternates[i] = { "texture":
+      idx, "primary_is_ktx2": false, "ktx2_image": { … } }` (URI-backed
+      images survive verbatim; bufferView-backed images inline their
+      bytes as RFC 4648 base64). The encoder lifts each alternate into
+      a new `images[]` slot and writes the typed extension reference;
+      declares `KHR_texture_basisu` in `extensionsUsed` only because
+      the fallback is consumable by clients that ignore the extension.
+    - Required-only shape (§"Using Without a Fallback") —
+      `texture.source` is absent and the texture's primary
+      `Texture::image` IS the KTX2 one. The side-channel carries
+      `"primary_is_ktx2": true` so the encoder reproduces the
+      `texture.source = null` shape and declares the extension in BOTH
+      `extensionsUsed` AND `extensionsRequired`.
+  The §3.12 stack validator rejects documents whose texture carries
+  the data block without the declaration
+  (`ExtensionStackUsedNotDeclared`) and resolves each
+  `KHR_texture_basisu.source` against `images[]`
+  (`ExtensionStackTextureBasisuSource` — out-of-range alternate index
+  is refused)
 - Skins + skeletons (joint roster, inverseBindMatrices accessor,
   optional skeleton root) per spec §3.7.3 — `node.skin` round-trips
 - Animations (channels + samplers) per spec §3.11 — translation /

@@ -1173,6 +1173,41 @@ pub struct Texture {
     pub sampler: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Per-texture `extensions` block — today carries
+    /// `KHR_texture_basisu` (an alternate KTX v2 image source with
+    /// Basis Universal supercompression) per
+    /// `docs/3d/gltf/extensions/KHR_texture_basisu.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<TextureExtensions>,
+}
+
+/// Per-texture `extensions` block. Models the per-texture KHR
+/// extensions the crate understands: today just `KHR_texture_basisu`
+/// (alternate KTX v2 image with Basis Universal supercompression per
+/// `docs/3d/gltf/extensions/KHR_texture_basisu.md` §glTF Schema
+/// Updates). Future per-texture KHR extensions land here too.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct TextureExtensions {
+    #[serde(
+        rename = "KHR_texture_basisu",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_texture_basisu: Option<KhrTextureBasisu>,
+}
+
+/// `KHR_texture_basisu` extension object — points at the index of an
+/// `image` whose content is a KTX v2 file with Basis Universal
+/// supercompression. The base `texture.source` (when present) gives
+/// the PNG/JPEG fallback consumers without basisu support fall back
+/// to; when omitted the extension is required and the only image
+/// source is the KTX v2 one.
+///
+/// See `docs/3d/gltf/extensions/KHR_texture_basisu.md` §glTF Schema
+/// Updates.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct KhrTextureBasisu {
+    pub source: u32,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

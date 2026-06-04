@@ -1819,17 +1819,79 @@ fn encode_textures(scene: &Scene3D, root: &mut GltfRoot, bin: &mut Vec<u8>) -> R
         (samplers.len() - 1) as u32
     };
 
-    for tex in &scene.textures {
-        // Image first.
-        let image_idx = root.images.len() as u32;
+    // KHR_texture_basisu — round-trip channel surfaced by the decoder
+    // (`scene.extras["KHR_texture_basisu"].alternates`). Two shapes:
+    //
+    // * fallback case (`primary_is_ktx2 == false`): the primary
+    //   `Texture::image` is the PNG/JPEG fallback, and the alternate
+    //   KTX2 image rides on `ktx2_image` — the encoder emits the KTX2
+    //   image into `images[]` and points the extension at it.
+    // * required-only case (`primary_is_ktx2 == true`): the texture has
+    //   no fallback `source`; the primary `Texture::image` IS the KTX2
+    //   image and the extension just points at the same image.
+    //
+    // See `docs/3d/gltf/extensions/KHR_texture_basisu.md` §glTF Schema
+    // Updates + §"Using Without a Fallback".
+    let basisu_by_texture: HashMap<u32, BasisuAlternate> = collect_basisu_alternates(scene)?;
+    let mut emitted_basisu = false;
+    let mut basisu_required_only = false;
+
+    for (tex_idx, tex) in scene.textures.iter().enumerate() {
+        // Primary image — always present even in the required-only case.
+        let primary_image_idx = root.images.len() as u32;
         let image = encode_image(tex, root, bin)?;
         root.images.push(image);
 
+        let alt = basisu_by_texture.get(&(tex_idx as u32));
+        let (texture_source, ktx2_image_idx) = match alt {
+            None => (Some(primary_image_idx), None),
+            Some(BasisuAlternate {
+                primary_is_ktx2: true,
+                ..
+            }) => {
+                // Primary image IS the KTX2 — the extension points at it
+                // and `texture.source` is omitted per §"Using Without a
+                // Fallback".
+                (None, Some(primary_image_idx))
+            }
+            Some(BasisuAlternate {
+                primary_is_ktx2: false,
+                ktx2_image: Some(img),
+                ..
+            }) => {
+                // Fallback case — emit the KTX2 image as a separate
+                // `images[]` entry and point the extension at it.
+                let idx = root.images.len() as u32;
+                let emitted = encode_round_trip_image(img, root, bin)?;
+                root.images.push(emitted);
+                (Some(primary_image_idx), Some(idx))
+            }
+            Some(BasisuAlternate {
+                primary_is_ktx2: false,
+                ktx2_image: None,
+                ..
+            }) => {
+                return Err(invalid(
+                    "KHR_texture_basisu: fallback record missing ktx2_image payload",
+                ));
+            }
+        };
+        let extensions = ktx2_image_idx.map(|src| {
+            emitted_basisu = true;
+            if alt.map(|a| a.primary_is_ktx2).unwrap_or(false) {
+                basisu_required_only = true;
+            }
+            gj::TextureExtensions {
+                khr_texture_basisu: Some(gj::KhrTextureBasisu { source: src }),
+            }
+        });
+
         let s_idx = resolve_sampler(&mut sampler_index, tex.sampler);
         root.textures.push(gj::Texture {
-            source: Some(image_idx),
+            source: texture_source,
             sampler: Some(s_idx),
             name: tex.name.clone(),
+            extensions,
         });
     }
 
@@ -1837,7 +1899,217 @@ fn encode_textures(scene: &Scene3D, root: &mut GltfRoot, bin: &mut Vec<u8>) -> R
     for s in sampler_index {
         root.samplers.push(encode_sampler(s));
     }
+
+    if emitted_basisu {
+        root.extensions_used.push("KHR_texture_basisu".to_owned());
+        if basisu_required_only {
+            // §"Using Without a Fallback" — when any texture has no
+            // fallback `source` the extension MUST also be listed in
+            // `extensionsRequired`.
+            root.extensions_required
+                .push("KHR_texture_basisu".to_owned());
+        }
+    }
     Ok(())
+}
+
+/// Parsed `KHR_texture_basisu` side-channel record (see decoder
+/// counterpart in `json_to_scene.rs`).
+#[derive(Debug, Default)]
+struct BasisuAlternate {
+    primary_is_ktx2: bool,
+    ktx2_image: Option<RoundTripImage>,
+}
+
+/// JSON snapshot of an alternate image emitted by
+/// `image_to_json` in `json_to_scene.rs`.
+#[derive(Debug)]
+enum RoundTripImage {
+    Uri {
+        uri: String,
+        mime: Option<String>,
+        name: Option<String>,
+    },
+    Embedded {
+        bytes: Vec<u8>,
+        mime: Option<String>,
+        name: Option<String>,
+    },
+}
+
+fn collect_basisu_alternates(scene: &Scene3D) -> Result<HashMap<u32, BasisuAlternate>> {
+    let mut map: HashMap<u32, BasisuAlternate> = HashMap::new();
+    let Some(serde_json::Value::Object(obj)) = scene.extras.get("KHR_texture_basisu") else {
+        return Ok(map);
+    };
+    let Some(serde_json::Value::Array(items)) = obj.get("alternates") else {
+        return Ok(map);
+    };
+    for item in items {
+        let entry = match item {
+            serde_json::Value::Object(o) => o,
+            _ => continue,
+        };
+        let tex_idx = entry
+            .get("texture")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| invalid("KHR_texture_basisu: alternate missing `texture` index"))?
+            as u32;
+        let primary_is_ktx2 = entry
+            .get("primary_is_ktx2")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let ktx2_image = if primary_is_ktx2 {
+            None
+        } else {
+            let img = entry.get("ktx2_image").ok_or_else(|| {
+                invalid("KHR_texture_basisu: fallback alternate missing `ktx2_image` payload")
+            })?;
+            Some(parse_round_trip_image(img)?)
+        };
+        map.insert(
+            tex_idx,
+            BasisuAlternate {
+                primary_is_ktx2,
+                ktx2_image,
+            },
+        );
+    }
+    Ok(map)
+}
+
+fn parse_round_trip_image(v: &serde_json::Value) -> Result<RoundTripImage> {
+    let obj = v
+        .as_object()
+        .ok_or_else(|| invalid("KHR_texture_basisu: ktx2_image must be a JSON object"))?;
+    let kind = obj
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| invalid("KHR_texture_basisu: ktx2_image.kind missing"))?;
+    let mime = obj
+        .get("mimeType")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    let name = obj.get("name").and_then(|v| v.as_str()).map(str::to_owned);
+    match kind {
+        "uri" => {
+            let uri = obj
+                .get("uri")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| invalid("KHR_texture_basisu: ktx2_image.uri missing"))?
+                .to_owned();
+            Ok(RoundTripImage::Uri { uri, mime, name })
+        }
+        "embedded" => {
+            let b64 = obj
+                .get("bytes_base64")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| invalid("KHR_texture_basisu: ktx2_image.bytes_base64 missing"))?;
+            let bytes = base64_decode(b64)
+                .map_err(|e| invalid(format!("KHR_texture_basisu: ktx2_image base64: {e}")))?;
+            Ok(RoundTripImage::Embedded { bytes, mime, name })
+        }
+        other => Err(invalid(format!(
+            "KHR_texture_basisu: ktx2_image.kind {other:?} not recognised"
+        ))),
+    }
+}
+
+fn encode_round_trip_image(
+    img: &RoundTripImage,
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+) -> Result<gj::Image> {
+    match img {
+        RoundTripImage::Uri { uri, mime, name } => Ok(gj::Image {
+            uri: Some(uri.clone()),
+            mime_type: mime.clone(),
+            buffer_view: None,
+            name: name.clone(),
+        }),
+        RoundTripImage::Embedded { bytes, mime, name } => {
+            pad_to_4(bin);
+            let byte_offset = bin.len();
+            bin.extend_from_slice(bytes);
+            let byte_length = bytes.len();
+            let bv_idx = root.buffer_views.len() as u32;
+            root.buffer_views.push(gj::BufferView {
+                buffer: 0,
+                byte_offset: Some(byte_offset as u32),
+                byte_length: byte_length as u32,
+                byte_stride: None,
+                target: None,
+                name: Some("ktx2_image_view".into()),
+            });
+            Ok(gj::Image {
+                uri: None,
+                mime_type: mime.clone(),
+                buffer_view: Some(bv_idx),
+                name: name.clone(),
+            })
+        }
+    }
+}
+
+/// Minimal RFC 4648 §4 base64 decoder (padded). Pairs with the encoder
+/// in `json_to_scene.rs` so the KHR_texture_basisu round-trip channel
+/// is self-contained.
+fn base64_decode(input: &str) -> std::result::Result<Vec<u8>, &'static str> {
+    let mut bytes: Vec<u8> = Vec::with_capacity(input.len() / 4 * 3);
+    let lookup = |c: u8| -> std::result::Result<u8, &'static str> {
+        match c {
+            b'A'..=b'Z' => Ok(c - b'A'),
+            b'a'..=b'z' => Ok(c - b'a' + 26),
+            b'0'..=b'9' => Ok(c - b'0' + 52),
+            b'+' => Ok(62),
+            b'/' => Ok(63),
+            _ => Err("invalid base64 character"),
+        }
+    };
+    let raw = input.as_bytes();
+    let mut i = 0;
+    while i < raw.len() {
+        // Skip whitespace per liberal decoding.
+        if raw[i].is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        let mut chunk = [0u8; 4];
+        let mut pads = 0;
+        let mut taken = 0;
+        while taken < 4 {
+            if i >= raw.len() {
+                return Err("base64 input length not a multiple of 4");
+            }
+            let c = raw[i];
+            i += 1;
+            if c.is_ascii_whitespace() {
+                continue;
+            }
+            if c == b'=' {
+                pads += 1;
+                chunk[taken] = 0;
+            } else {
+                if pads > 0 {
+                    return Err("base64 padding mid-block");
+                }
+                chunk[taken] = lookup(c)?;
+            }
+            taken += 1;
+        }
+        let n = (u32::from(chunk[0]) << 18)
+            | (u32::from(chunk[1]) << 12)
+            | (u32::from(chunk[2]) << 6)
+            | u32::from(chunk[3]);
+        bytes.push(((n >> 16) & 0xFF) as u8);
+        if pads <= 1 {
+            bytes.push(((n >> 8) & 0xFF) as u8);
+        }
+        if pads == 0 {
+            bytes.push((n & 0xFF) as u8);
+        }
+    }
+    Ok(bytes)
 }
 
 fn encode_image(tex: &Texture, root: &mut GltfRoot, bin: &mut Vec<u8>) -> Result<gj::Image> {

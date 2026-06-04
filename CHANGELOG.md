@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 233)
+
+- `KHR_texture_basisu` (Khronos ratified) decode + encode per
+  `docs/3d/gltf/extensions/KHR_texture_basisu.md`. Adds an alternate
+  KTX v2 image (Basis Universal supercompression) on a per-texture
+  basis. Both spec-defined shapes round-trip:
+  - Fallback shape (§glTF Schema Updates) — `texture.source` carries
+    the PNG/JPEG fallback; the alternate KTX2 image is siphoned into
+    `Scene3D::extras["KHR_texture_basisu"]` as
+    `{ "alternates": [ { "texture": idx, "primary_is_ktx2": false,
+    "ktx2_image": { "kind": "uri" | "embedded", … } } ] }` —
+    URI-backed images survive verbatim, bufferView-backed images
+    inline their bytes as RFC 4648 base64. The encoder lifts each
+    entry into a fresh `images[]` slot and wires the typed
+    `texture.extensions.KHR_texture_basisu.source` reference. The
+    extension is declared in `extensionsUsed` only (the fallback is
+    consumable by clients that ignore the extension).
+  - Required-only shape (§"Using Without a Fallback") — `texture.source`
+    is absent; the texture's primary `Texture::image` IS the KTX2 one
+    and the side-channel carries `"primary_is_ktx2": true`. The encoder
+    omits `texture.source`, points the extension at the same image
+    index, and declares the extension in BOTH `extensionsUsed` AND
+    `extensionsRequired` per the spec section.
+- §3.12 stack validator rejects documents whose texture carries the
+  data block without declaring the extension
+  (`ExtensionStackUsedNotDeclared`) and resolves each
+  `KHR_texture_basisu.source` against `images[]`
+  (`ExtensionStackTextureBasisuSource` — out-of-range alternate index
+  is refused).
+- 8 new tests in `tests/khr_texture_basisu.rs` covering both shapes
+  (round-trip + decode-only + encode-only assertions on
+  `extensionsUsed` / `extensionsRequired` set composition + the
+  texture's `source` presence/absence), bufferView-backed alternate
+  bytes (inline-base64 path), and both validation refusals.
+
 ### Added (round 230)
 
 - `KHR_mesh_quantization` morph-target attribute decode + encode per

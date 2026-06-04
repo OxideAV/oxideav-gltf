@@ -1072,6 +1072,46 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         }
     }
 
+    // KHR_texture_basisu — per-texture extension. Two §3.12-style rules:
+    //
+    // * The extension MUST be declared in `extensionsUsed` whenever any
+    //   texture carries the data block.
+    // * Each `KHR_texture_basisu.source` MUST resolve to an entry in
+    //   `images[]` — surfaced as
+    //   `ExtensionStackTextureBasisuSource` for grep-ability with the
+    //   other extension-stack errors.
+    //
+    // Per `docs/3d/gltf/extensions/KHR_texture_basisu.md` §"Using
+    // Without a Fallback" the extension may be additionally listed in
+    // `extensionsRequired` (the texture then omits its own `source`),
+    // but the spec doesn't force the inverse — a fallback-equipped
+    // texture can still be required if the author chooses.
+    let mut has_texture_basisu = false;
+    let image_count = root.images.len();
+    for (ti, t) in root.textures.iter().enumerate() {
+        if let Some(b) = t
+            .extensions
+            .as_ref()
+            .and_then(|e| e.khr_texture_basisu.as_ref())
+        {
+            has_texture_basisu = true;
+            if (b.source as usize) >= image_count {
+                return Err(invalid(format!(
+                    "ExtensionStackTextureBasisuSource: textures[{ti}].extensions\
+                     .KHR_texture_basisu.source = {} is out of range (have {} images)",
+                    b.source, image_count
+                )));
+            }
+        }
+    }
+    if has_texture_basisu && !used("KHR_texture_basisu") {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_texture_basisu data is \
+             present on a texture but the extension is not listed in \
+             extensionsUsed (spec §3.12)",
+        ));
+    }
+
     Ok(())
 }
 

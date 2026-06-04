@@ -87,11 +87,34 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
 
     // Materials first — meshes need the IDs.
     let mut material_id_map: HashMap<u32, MaterialId> = HashMap::new();
-    // Textures first — materials reference them by index.
+    // Textures first — materials reference them by index. Each texture
+    // may carry a `KHR_texture_basisu` extension pointing at an alternate
+    // KTX v2 image; the alternates are siphoned into a scene-level
+    // side-channel so the encoder can replay them on round-trip (see
+    // §"KHR_texture_basisu round-trip channel" in this module).
     let mut texture_id_map: HashMap<u32, TextureId> = HashMap::new();
+    let mut basisu_alternates: Vec<Value> = Vec::new();
     for (i, t) in root.textures.iter().enumerate() {
-        let id = scene.add_texture(convert_texture(root, t, &buffers)?);
+        let (texture, basisu) = convert_texture(root, t, &buffers, i as u32)?;
+        let id = scene.add_texture(texture);
         texture_id_map.insert(i as u32, id);
+        if let Some(record) = basisu {
+            basisu_alternates.push(record);
+        }
+    }
+    if !basisu_alternates.is_empty() {
+        // Surface every KHR_texture_basisu record under a single
+        // scene-level extras key; the encoder lifts them back into the
+        // typed `texture.extensions.KHR_texture_basisu` block on write
+        // and declares the extension in `extensionsUsed`. Per
+        // `docs/3d/gltf/extensions/KHR_texture_basisu.md` §"Using
+        // Without a Fallback" `texture.source` may be absent when the
+        // extension is the only image source — `primary_is_ktx2 = true`
+        // captures that case so the encoder reproduces it byte-for-byte.
+        scene.extras.insert(
+            "KHR_texture_basisu".to_owned(),
+            serde_json::json!({ "alternates": basisu_alternates }),
+        );
     }
 
     for (i, m) in root.materials.iter().enumerate() {
@@ -1027,17 +1050,84 @@ fn wrap_mode(w: Option<u32>) -> WrapMode {
     }
 }
 
-fn convert_texture(root: &GltfRoot, t: &gj::Texture, buffers: &[Arc<Vec<u8>>]) -> Result<Texture> {
+fn convert_texture(
+    root: &GltfRoot,
+    t: &gj::Texture,
+    buffers: &[Arc<Vec<u8>>],
+    texture_index: u32,
+) -> Result<(Texture, Option<Value>)> {
     let sampler = convert_sampler_index(root, t.sampler);
-    let image_idx = t
-        .source
-        .ok_or_else(|| invalid("texture: missing source (image index)"))?;
+
+    // KHR_texture_basisu (per `docs/3d/gltf/extensions/KHR_texture_basisu.md`
+    // §glTF Schema Updates) — when set, the extension's `source` points at
+    // an `image` whose `mimeType` is `image/ktx2`. The fallback case keeps
+    // the base `texture.source` (a PNG/JPEG) as the primary image and the
+    // KTX2 ride along on the scene-level side-channel. The required-only
+    // case (§"Using Without a Fallback") omits `texture.source` entirely —
+    // there the KTX2 image becomes the texture's primary image.
+    let basisu_source = t
+        .extensions
+        .as_ref()
+        .and_then(|e| e.khr_texture_basisu.as_ref())
+        .map(|b| b.source);
+    let primary_is_ktx2 = basisu_source.is_some() && t.source.is_none();
+
+    let primary_image_idx = match (t.source, primary_is_ktx2) {
+        (Some(idx), _) => idx,
+        (None, true) => basisu_source.expect("checked above"),
+        (None, false) => {
+            return Err(invalid(
+                "texture: missing source (image index) and no KHR_texture_basisu fallback",
+            ))
+        }
+    };
+
+    let image = decode_image_at(root, primary_image_idx, buffers)?;
+
+    // For the fallback-plus-ktx2 case the alternate KTX2 image content
+    // rides on the scene extras so the encoder can re-emit it; the
+    // required-only case carries everything on the primary image so only
+    // the `primary_is_ktx2` flag survives.
+    let basisu_record = match basisu_source {
+        Some(alt_idx) if !primary_is_ktx2 => {
+            let alt = root.images.get(alt_idx as usize).ok_or_else(|| {
+                invalid(format!(
+                    "KHR_texture_basisu.source: image {alt_idx} out of range"
+                ))
+            })?;
+            Some(serde_json::json!({
+                "texture": texture_index,
+                "primary_is_ktx2": false,
+                "ktx2_image": image_to_json(root, alt, buffers)?,
+            }))
+        }
+        Some(_) if primary_is_ktx2 => Some(serde_json::json!({
+            "texture": texture_index,
+            "primary_is_ktx2": true,
+        })),
+        _ => None,
+    };
+
+    Ok((
+        Texture {
+            name: t.name.clone(),
+            image,
+            sampler,
+        },
+        basisu_record,
+    ))
+}
+
+/// Materialise a glTF `image` into an [`ImageData`], reproducing the
+/// decode path used by `convert_texture` for the texture's primary
+/// source. Shared so KHR_texture_basisu's alternate image traverses
+/// the same conversion.
+fn decode_image_at(root: &GltfRoot, image_idx: u32, buffers: &[Arc<Vec<u8>>]) -> Result<ImageData> {
     let img = root
         .images
         .get(image_idx as usize)
         .ok_or_else(|| invalid(format!("texture: image {image_idx} out of range")))?;
-
-    let image = if let Some(bv_idx) = img.buffer_view {
+    if let Some(bv_idx) = img.buffer_view {
         let bv = root
             .buffer_views
             .get(bv_idx as usize)
@@ -1051,30 +1141,93 @@ fn convert_texture(root: &GltfRoot, t: &gj::Texture, buffers: &[Arc<Vec<u8>>]) -
             bv.byte_length as usize,
             img.mime_type.clone(),
         );
-        ImageData::Source(Arc::new(asset))
+        Ok(ImageData::Source(Arc::new(asset)))
     } else if let Some(uri) = &img.uri {
         if uri.starts_with("data:") {
             let mime = img.mime_type.clone().or_else(|| data_uri_mime(uri));
             let bytes = decode_data_uri(uri)?;
             let asset = oxideav_mesh3d::asset::InMemoryAsset { mime, bytes };
-            ImageData::Source(Arc::new(asset))
+            Ok(ImageData::Source(Arc::new(asset)))
         } else {
-            ImageData::External {
+            Ok(ImageData::External {
                 uri: uri.clone(),
                 mime: img.mime_type.clone(),
-            }
+            })
         }
     } else {
-        return Err(invalid(
+        Err(invalid(
             "image: must have either bufferView or uri (sparse accessors not supported)",
-        ));
-    };
+        ))
+    }
+}
 
-    Ok(Texture {
-        name: t.name.clone(),
-        image,
-        sampler,
-    })
+/// Serialise a glTF `image` to a JSON snapshot — preserves enough state
+/// for the encoder to reproduce the image on round-trip. URI-backed
+/// images survive verbatim; bufferView-backed images get their bytes
+/// inlined as base64 (KHR_texture_basisu round-trip channel).
+fn image_to_json(root: &GltfRoot, img: &gj::Image, buffers: &[Arc<Vec<u8>>]) -> Result<Value> {
+    if let Some(uri) = &img.uri {
+        return Ok(serde_json::json!({
+            "kind": "uri",
+            "uri": uri,
+            "mimeType": img.mime_type.clone(),
+            "name": img.name.clone(),
+        }));
+    }
+    if let Some(bv_idx) = img.buffer_view {
+        let bv = root
+            .buffer_views
+            .get(bv_idx as usize)
+            .ok_or_else(|| invalid(format!("image: bufferView {bv_idx} out of range")))?;
+        let buf = buffers
+            .get(bv.buffer as usize)
+            .ok_or_else(|| invalid(format!("image: buffer {} out of range", bv.buffer)))?;
+        let start = bv.byte_offset.unwrap_or(0) as usize;
+        let end = start
+            .checked_add(bv.byte_length as usize)
+            .ok_or_else(|| invalid("image: bufferView overflow"))?;
+        let bytes = buf
+            .get(start..end)
+            .ok_or_else(|| invalid("image: bufferView out of range"))?;
+        let encoded = base64_encode(bytes);
+        return Ok(serde_json::json!({
+            "kind": "embedded",
+            "bytes_base64": encoded,
+            "mimeType": img.mime_type.clone(),
+            "name": img.name.clone(),
+        }));
+    }
+    Err(invalid(
+        "KHR_texture_basisu alternate image: must have either bufferView or uri",
+    ))
+}
+
+/// Minimal RFC 4648 §4 base64 encoder (no line wrapping, padded).
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let (b0, b1, b2) = match chunk.len() {
+            3 => (chunk[0], chunk[1], chunk[2]),
+            2 => (chunk[0], chunk[1], 0),
+            1 => (chunk[0], 0, 0),
+            _ => unreachable!(),
+        };
+        let n = (u32::from(b0) << 16) | (u32::from(b1) << 8) | u32::from(b2);
+        out.push(TABLE[((n >> 18) & 0x3F) as usize] as char);
+        out.push(TABLE[((n >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[((n >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(n & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
 }
 
 fn convert_material(
