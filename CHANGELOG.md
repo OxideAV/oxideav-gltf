@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3](https://github.com/OxideAV/oxideav-gltf/compare/v0.0.2...v0.0.3) - 2026-06-04
+
+### Added
+
+- KHR_node_visibility extension (round 199)
+
+### Other
+
+- KHR_texture_basisu (Khronos ratified) decode + encode
+- KHR_mesh_quantization morph-target decode + encode
+- KHR_mesh_quantization encoder (re-quantise base attrs + declare required)
+- KHR_animation_pointer (decode + encode + §3.12 + 10 tests)
+- KHR_xmp_json_ld extension (decode + encode + §3.12 validation)
+- KHR_materials_variants extension (decode + encode + §3.12 validation)
+
 ### Added (round 233)
 
 - `KHR_texture_basisu` (Khronos ratified) decode + encode per
