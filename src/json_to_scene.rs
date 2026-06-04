@@ -1758,52 +1758,144 @@ fn convert_primitive(
     // `prim.extras["__morph_targets"]` — encoder pulls them back out
     // and re-emits as accessors. Format: an array of objects, one per
     // target, mapping attribute name → array of [f32; N] values.
+    //
+    // POSITION / NORMAL / TANGENT use VEC3 (TANGENT handedness W is
+    // dropped per spec §3.7.2.2) and TEXCOORD_n uses VEC2. When
+    // `KHR_mesh_quantization` is declared, accessors may also store
+    // the BYTE / SHORT (signed) variants per
+    // `docs/3d/gltf/extensions/KHR_mesh_quantization.md` §Extending
+    // Morph Target Attributes; the (componentType, normalized) tuple
+    // is recorded under the per-primitive `__morph_attr_quant`
+    // sentinel keyed by `<target-index>.<attribute>` so the encoder
+    // can round-trip the original storage form.
     if !p.targets.is_empty() {
         let mut targets_json = Vec::with_capacity(p.targets.len());
-        for tgt in &p.targets {
+        let mut morph_quant = serde_json::Map::new();
+        for (ti, tgt) in p.targets.iter().enumerate() {
             let mut obj = serde_json::Map::new();
+            let mut per_target_quant = serde_json::Map::new();
             for (name, &acc_idx) in tgt {
-                // POSITION/NORMAL/TANGENT all read as VEC3 FLOAT per
-                // the §3.7.2.2 morph-target table (handedness W is
-                // dropped on TANGENT since it can't be displaced).
                 let acc = root.accessors.get(acc_idx as usize).ok_or_else(|| {
                     invalid(format!(
                         "morph target attribute {name:?}: accessor {acc_idx} oob"
                     ))
                 })?;
-                if acc.kind != "VEC3" || acc.component_type != gj::COMPONENT_TYPE_FLOAT {
+                let kind = acc.kind.as_str();
+                // Spec §3.7.2.2: POSITION / NORMAL / TANGENT morph
+                // targets are VEC3; TEXCOORD_n morph targets are VEC2.
+                // Anything else is non-conformant regardless of
+                // extension state.
+                if quantization::base_attr_key_public(name) == "TEXCOORD" {
+                    if kind != "VEC2" {
+                        return Err(unsupported(format!(
+                            "morph target {name:?}: expected VEC2 (got {kind:?})"
+                        )));
+                    }
+                } else if kind != "VEC3" {
                     return Err(unsupported(format!(
-                        "morph target {name:?}: only VEC3 FLOAT supported in r4 (got {:?} {})",
-                        acc.kind, acc.component_type
+                        "morph target {name:?}: expected VEC3 (got {kind:?})"
                     )));
                 }
+
                 let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
                 let view = view_from_materialised(acc, &bytes)?;
-                let deltas = read_vec_f32::<3>(&view)?;
-                let arr: Vec<serde_json::Value> = deltas
-                    .into_iter()
-                    .map(|v| {
-                        serde_json::Value::Array(
-                            v.iter()
-                                .map(|&c| {
-                                    serde_json::Number::from_f64(c as f64)
-                                        .map(serde_json::Value::Number)
-                                        .unwrap_or(serde_json::Value::Null)
-                                })
-                                .collect(),
-                        )
-                    })
-                    .collect();
-                obj.insert(name.clone(), serde_json::Value::Array(arr));
+
+                if acc.component_type == gj::COMPONENT_TYPE_FLOAT {
+                    // FLOAT — base-spec path. The sentinel still
+                    // round-trips the (componentType=FLOAT,
+                    // normalized=false) marker only when at least one
+                    // sibling morph attribute is quantised; the
+                    // per-target map filtering below skips emitting
+                    // pure-FLOAT entries.
+                } else {
+                    // Quantised integer — must be gated on the
+                    // extension being declared AND fall within the
+                    // morph-target combo table from
+                    // §Extending Morph Target Attributes.
+                    if !ext_used {
+                        return Err(unsupported(format!(
+                            "morph target {name:?} accessor uses componentType {} but {} is not in extensionsUsed",
+                            acc.component_type, EXTENSION_NAME
+                        )));
+                    }
+                    if !quantization::is_morph_attr_combo_allowed(
+                        name,
+                        kind,
+                        acc.component_type,
+                        acc.normalized,
+                    ) {
+                        return Err(unsupported(format!(
+                            "{} morph target {name:?}: componentType {} (normalized={}, type={kind}) not in the extension's morph-attribute combo table",
+                            EXTENSION_NAME, acc.component_type, acc.normalized
+                        )));
+                    }
+                }
+
+                // Dequantise into f32 deltas. FLOAT passes through
+                // unchanged via the same helper.
+                let arr_value = if kind == "VEC2" {
+                    let deltas = quantization::dequantize_vec2(acc, &view)?;
+                    deltas_to_json(&deltas)
+                } else {
+                    let deltas = quantization::dequantize_vec3(acc, &view)?;
+                    deltas_to_json(&deltas)
+                };
+                obj.insert(name.clone(), arr_value);
+
+                // Record the storage form so the encoder can re-emit
+                // in the same quantised type. Only record non-FLOAT —
+                // the encoder defaults to FLOAT when no entry exists.
+                if acc.component_type != gj::COMPONENT_TYPE_FLOAT {
+                    let mut entry = serde_json::Map::new();
+                    entry.insert(
+                        "componentType".to_owned(),
+                        serde_json::Value::Number(acc.component_type.into()),
+                    );
+                    entry.insert(
+                        "normalized".to_owned(),
+                        serde_json::Value::Bool(acc.normalized),
+                    );
+                    per_target_quant.insert(name.clone(), serde_json::Value::Object(entry));
+                }
             }
             targets_json.push(serde_json::Value::Object(obj));
+            if !per_target_quant.is_empty() {
+                morph_quant.insert(ti.to_string(), serde_json::Value::Object(per_target_quant));
+            }
         }
         prim.extras.insert(
             "__morph_targets".to_owned(),
             serde_json::Value::Array(targets_json),
         );
+        if !morph_quant.is_empty() {
+            prim.extras.insert(
+                quantization::MORPH_ATTR_QUANT_KEY.to_owned(),
+                serde_json::Value::Object(morph_quant),
+            );
+        }
     }
     Ok(prim)
+}
+
+/// Pack a f32 VEC3 / VEC2 delta array into a JSON array-of-arrays. Used
+/// by morph-target decode to lift the dequantised float deltas into the
+/// `__morph_targets` extras sentinel.
+fn deltas_to_json<const N: usize>(deltas: &[[f32; N]]) -> serde_json::Value {
+    let arr: Vec<serde_json::Value> = deltas
+        .iter()
+        .map(|v| {
+            serde_json::Value::Array(
+                v.iter()
+                    .map(|&c| {
+                        serde_json::Number::from_f64(c as f64)
+                            .map(serde_json::Value::Number)
+                            .unwrap_or(serde_json::Value::Null)
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    serde_json::Value::Array(arr)
 }
 
 fn read_attr_vec3(

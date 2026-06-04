@@ -754,13 +754,14 @@ fn encode_primitive(
     };
 
     // Drop the synthetic sentinels (`__mesh_extras`, `__mesh_weights`,
-    // `__morph_targets`, `__attr_quant`) when emitting per-primitive
-    // extras — they're re-materialised through their dedicated JSON
-    // paths. Also strip `KHR_materials_variants` — the mapping table
-    // is lifted into the typed primitive `extensions` block (below)
-    // rather than emitted as raw extras.
+    // `__morph_targets`, `__attr_quant`, `__morph_attr_quant`) when
+    // emitting per-primitive extras — they're re-materialised through
+    // their dedicated JSON paths. Also strip `KHR_materials_variants`
+    // — the mapping table is lifted into the typed primitive
+    // `extensions` block (below) rather than emitted as raw extras.
     let mut prim_extras = p.extras.clone();
     let morph_targets_extra = prim_extras.remove("__morph_targets");
+    let morph_quant_extra = prim_extras.remove(crate::quantization::MORPH_ATTR_QUANT_KEY);
     prim_extras.remove("__mesh_extras");
     prim_extras.remove("__mesh_weights");
     prim_extras.remove(crate::quantization::ATTR_QUANT_KEY);
@@ -828,9 +829,14 @@ fn encode_primitive(
     // the JSON expects; we write the deltas into the binary buffer the
     // same way standard attributes are written.
     let targets = if !p.targets.is_empty() {
-        encode_typed_morph_targets(&p.targets, root, bin)?
+        encode_typed_morph_targets(&p.targets, morph_quant_extra.as_ref(), root, bin)?
     } else {
-        decode_morph_targets_extra(morph_targets_extra.as_ref(), root, bin)?
+        decode_morph_targets_extra(
+            morph_targets_extra.as_ref(),
+            morph_quant_extra.as_ref(),
+            root,
+            bin,
+        )?
     };
 
     Ok(gj::Primitive {
@@ -853,24 +859,52 @@ fn encode_primitive(
 /// displaced). POSITION targets get min/max bounds since some
 /// validators flag their absence even though the spec only mandates
 /// min/max for the base POSITION accessor.
+///
+/// When the per-primitive `__morph_attr_quant` sentinel carries a
+/// quantised entry for `<target-index>.<attribute>`, the encoder
+/// re-emits that attribute through the spec float→int table per
+/// `docs/3d/gltf/extensions/KHR_mesh_quantization.md` §Extending Morph
+/// Target Attributes, padding to the 4-byte stride.
 fn encode_typed_morph_targets(
     targets: &[oxideav_mesh3d::MorphTarget],
+    morph_quant_extra: Option<&serde_json::Value>,
     root: &mut GltfRoot,
     bin: &mut Vec<u8>,
 ) -> Result<Vec<HashMap<String, u32>>> {
     let mut out = Vec::with_capacity(targets.len());
-    for t in targets {
+    for (ti, t) in targets.iter().enumerate() {
         let mut tgt: HashMap<String, u32> = HashMap::new();
         if let Some(pos) = &t.position {
-            let acc = push_vec3_accessor(root, bin, pos, "MORPH_POSITION", true)?;
+            let acc = push_morph_vec3_accessor(
+                root,
+                bin,
+                pos,
+                "MORPH_POSITION",
+                true,
+                lookup_morph_attr_quant(morph_quant_extra, ti, "POSITION"),
+            )?;
             tgt.insert("POSITION".into(), acc);
         }
         if let Some(nrm) = &t.normal {
-            let acc = push_vec3_accessor(root, bin, nrm, "MORPH_NORMAL", false)?;
+            let acc = push_morph_vec3_accessor(
+                root,
+                bin,
+                nrm,
+                "MORPH_NORMAL",
+                false,
+                lookup_morph_attr_quant(morph_quant_extra, ti, "NORMAL"),
+            )?;
             tgt.insert("NORMAL".into(), acc);
         }
         if let Some(tan) = &t.tangent {
-            let acc = push_vec3_accessor(root, bin, tan, "MORPH_TANGENT", false)?;
+            let acc = push_morph_vec3_accessor(
+                root,
+                bin,
+                tan,
+                "MORPH_TANGENT",
+                false,
+                lookup_morph_attr_quant(morph_quant_extra, ti, "TANGENT"),
+            )?;
             tgt.insert("TANGENT".into(), acc);
         }
         out.push(tgt);
@@ -882,8 +916,15 @@ fn encode_typed_morph_targets(
 /// emit them back into the JSON document as accessors. Returns the
 /// per-target attribute → accessor-index roster ready for inclusion in
 /// `gj::Primitive::targets`.
+///
+/// When the per-primitive `__morph_attr_quant` sentinel carries a
+/// quantised entry for `<target-index>.<attribute>`, the accessor is
+/// re-emitted through the spec float→int table per
+/// `docs/3d/gltf/extensions/KHR_mesh_quantization.md` §Extending Morph
+/// Target Attributes; otherwise the FLOAT path is used.
 fn decode_morph_targets_extra(
     sentinel: Option<&serde_json::Value>,
+    morph_quant_extra: Option<&serde_json::Value>,
     root: &mut GltfRoot,
     bin: &mut Vec<u8>,
 ) -> Result<Vec<HashMap<String, u32>>> {
@@ -907,39 +948,140 @@ fn decode_morph_targets_extra(
         for (name, vals) in obj {
             let arr = vals.as_array().ok_or_else(|| {
                 invalid(format!(
-                    "morph target {name:?}: expected array of [f32; 3] elements"
+                    "morph target {name:?}: expected array of [f32; N] elements"
                 ))
             })?;
-            let mut deltas: Vec<[f32; 3]> = Vec::with_capacity(arr.len());
-            for elem in arr {
-                let comps = elem.as_array().ok_or_else(|| {
-                    invalid(format!("morph target {name:?}: element must be array"))
-                })?;
-                if comps.len() != 3 {
-                    return Err(invalid(format!(
-                        "morph target {name:?}: VEC3 element expected (got len {})",
-                        comps.len()
-                    )));
-                }
-                let mut a = [0.0f32; 3];
-                for (i, c) in comps.iter().enumerate() {
-                    a[i] = c.as_f64().ok_or_else(|| {
-                        invalid(format!("morph target {name:?}: non-numeric component"))
-                    })? as f32;
-                }
-                deltas.push(a);
-            }
-            // Spec §3.7.2.2: POSITION accessors must have min/max.
-            // The morph delta for POSITION_0 / POSITION still benefits
-            // from the bounds (some validators check it), so emit them
-            // when the attribute starts with POSITION.
+            // VEC2 morph attribute is only legal for TEXCOORD_n under
+            // the §Extending Morph Target Attributes table; everything
+            // else (POSITION / NORMAL / TANGENT) is VEC3.
+            let key = crate::quantization::base_attr_key_public(name);
+            let quant_spec = lookup_morph_attr_quant(morph_quant_extra, ti, name);
             let with_minmax = name == "POSITION";
-            let acc_idx = push_vec3_accessor(root, bin, &deltas, "MORPH_TARGET", with_minmax)?;
+            let acc_idx = if key == "TEXCOORD" {
+                let mut deltas: Vec<[f32; 2]> = Vec::with_capacity(arr.len());
+                for elem in arr {
+                    let comps = elem.as_array().ok_or_else(|| {
+                        invalid(format!("morph target {name:?}: element must be array"))
+                    })?;
+                    if comps.len() != 2 {
+                        return Err(invalid(format!(
+                            "morph target {name:?}: VEC2 element expected (got len {})",
+                            comps.len()
+                        )));
+                    }
+                    let mut a = [0.0f32; 2];
+                    for (i, c) in comps.iter().enumerate() {
+                        a[i] = c.as_f64().ok_or_else(|| {
+                            invalid(format!("morph target {name:?}: non-numeric component"))
+                        })? as f32;
+                    }
+                    deltas.push(a);
+                }
+                push_morph_vec2_accessor(root, bin, &deltas, "MORPH_TARGET", quant_spec)?
+            } else {
+                let mut deltas: Vec<[f32; 3]> = Vec::with_capacity(arr.len());
+                for elem in arr {
+                    let comps = elem.as_array().ok_or_else(|| {
+                        invalid(format!("morph target {name:?}: element must be array"))
+                    })?;
+                    if comps.len() != 3 {
+                        return Err(invalid(format!(
+                            "morph target {name:?}: VEC3 element expected (got len {})",
+                            comps.len()
+                        )));
+                    }
+                    let mut a = [0.0f32; 3];
+                    for (i, c) in comps.iter().enumerate() {
+                        a[i] = c.as_f64().ok_or_else(|| {
+                            invalid(format!("morph target {name:?}: non-numeric component"))
+                        })? as f32;
+                    }
+                    deltas.push(a);
+                }
+                push_morph_vec3_accessor(
+                    root,
+                    bin,
+                    &deltas,
+                    "MORPH_TARGET",
+                    with_minmax,
+                    quant_spec,
+                )?
+            };
             tgt.insert(name.clone(), acc_idx);
         }
         out.push(tgt);
     }
     Ok(out)
+}
+
+/// Resolve the per-morph-target attribute storage form from the
+/// `__morph_attr_quant` sentinel. Returns `Some((componentType,
+/// normalized))` only when the entry exists AND falls within the
+/// spec's morph-attribute combo table; otherwise the caller emits as
+/// FLOAT.
+fn lookup_morph_attr_quant(
+    morph_quant_extra: Option<&serde_json::Value>,
+    target_index: usize,
+    attr_name: &str,
+) -> Option<(u32, bool)> {
+    let obj = morph_quant_extra?.as_object()?;
+    let per_target = obj.get(&target_index.to_string())?.as_object()?;
+    let entry = per_target.get(attr_name)?.as_object()?;
+    let ct = entry.get("componentType").and_then(|v| v.as_u64())? as u32;
+    let normalized = entry
+        .get("normalized")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if ct == gj::COMPONENT_TYPE_FLOAT {
+        return None;
+    }
+    let kind = if crate::quantization::base_attr_key_public(attr_name) == "TEXCOORD" {
+        "VEC2"
+    } else {
+        "VEC3"
+    };
+    if !crate::quantization::is_morph_attr_combo_allowed(attr_name, kind, ct, normalized) {
+        return None;
+    }
+    Some((ct, normalized))
+}
+
+/// Emit a morph-target VEC3 accessor. When `quant` is `Some((ct,
+/// normalized))` the deltas are re-quantised through the spec
+/// float→int table; otherwise the FLOAT path is used. POSITION
+/// targets get min/max bounds (in the quantised integer space when
+/// quantised — per §Extending Mesh Attributes Implementation Note).
+fn push_morph_vec3_accessor(
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+    data: &[[f32; 3]],
+    name: &'static str,
+    with_minmax: bool,
+    quant: Option<(u32, bool)>,
+) -> Result<u32> {
+    match quant {
+        None => push_vec3_accessor(root, bin, data, name, with_minmax),
+        Some((ct, normalized)) => {
+            push_quantized_vec3_accessor(root, bin, data, ct, normalized, name, with_minmax)
+        }
+    }
+}
+
+/// Emit a morph-target VEC2 accessor. Used only for `TEXCOORD_n`
+/// morph deltas per §Extending Morph Target Attributes.
+fn push_morph_vec2_accessor(
+    root: &mut GltfRoot,
+    bin: &mut Vec<u8>,
+    data: &[[f32; 2]],
+    name: &str,
+    quant: Option<(u32, bool)>,
+) -> Result<u32> {
+    match quant {
+        None => push_vec2_accessor(root, bin, data),
+        Some((ct, normalized)) => {
+            push_quantized_vec2_accessor(root, bin, data, ct, normalized, name)
+        }
+    }
 }
 
 /// Push positions / normals into the bin and emit an accessor +
@@ -1270,9 +1412,13 @@ fn lookup_attr_quant(
 
 /// True when at least one of this primitive's `__attr_quant` entries
 /// would resolve to a non-FLOAT spec-allowed quantised storage form
-/// (POSITION VEC3 / NORMAL VEC3 / TANGENT VEC4 / TEXCOORD_n VEC2).
-/// Used by `convert_with_options` to decide whether to append
-/// `KHR_mesh_quantization` to `extensionsUsed` + `extensionsRequired`.
+/// (POSITION VEC3 / NORMAL VEC3 / TANGENT VEC4 / TEXCOORD_n VEC2), OR
+/// the primitive carries a `__morph_attr_quant` sentinel with at
+/// least one non-FLOAT morph-target attribute entry per
+/// `docs/3d/gltf/extensions/KHR_mesh_quantization.md` §Extending
+/// Morph Target Attributes. Used by `convert_with_options` to decide
+/// whether to append `KHR_mesh_quantization` to `extensionsUsed` +
+/// `extensionsRequired`.
 fn primitive_emits_quantization(p: &Primitive) -> bool {
     if lookup_attr_quant(&p.extras, "POSITION", "VEC3").is_some() {
         return true;
@@ -1287,6 +1433,35 @@ fn primitive_emits_quantization(p: &Primitive) -> bool {
         let attr_name = format!("TEXCOORD_{i}");
         if lookup_attr_quant(&p.extras, &attr_name, "VEC2").is_some() {
             return true;
+        }
+    }
+    if let Some(sentinel) = p.extras.get(crate::quantization::MORPH_ATTR_QUANT_KEY) {
+        if morph_quant_has_non_float_entry(sentinel) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Walk a `__morph_attr_quant` sentinel and return true when at least
+/// one `<target>.<attribute>` entry resolves to a non-FLOAT
+/// (componentType, normalized) pair that falls within the morph
+/// combo table.
+fn morph_quant_has_non_float_entry(sentinel: &serde_json::Value) -> bool {
+    let Some(obj) = sentinel.as_object() else {
+        return false;
+    };
+    for (ti_str, per_target_val) in obj {
+        let Ok(ti) = ti_str.parse::<usize>() else {
+            continue;
+        };
+        let Some(per_target) = per_target_val.as_object() else {
+            continue;
+        };
+        for attr_name in per_target.keys() {
+            if lookup_morph_attr_quant(Some(sentinel), ti, attr_name).is_some() {
+                return true;
+            }
         }
     }
     false

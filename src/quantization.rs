@@ -53,6 +53,28 @@ pub const EXTENSION_NAME: &str = "KHR_mesh_quantization";
 /// `{ "componentType": u32, "normalized": bool }`.
 pub const ATTR_QUANT_KEY: &str = "__attr_quant";
 
+/// `extras` sentinel key under which the decoder stashes per-primitive
+/// **morph-target** quantisation metadata so the encoder can re-emit
+/// each morph-target attribute with the original integer width +
+/// normalisation flag per
+/// `docs/3d/gltf/extensions/KHR_mesh_quantization.md` §Extending Morph
+/// Target Attributes. The value is a JSON object keyed by the
+/// stringified target index (`"0"`, `"1"`, …) whose value is in turn an
+/// object keyed by morph-attribute name (`POSITION` / `NORMAL` /
+/// `TANGENT` / `TEXCOORD_n`) mapping to
+/// `{ "componentType": u32, "normalized": bool }`. Entries are only
+/// emitted for non-FLOAT storage; FLOAT defaults are implied when an
+/// attribute has no entry.
+pub const MORPH_ATTR_QUANT_KEY: &str = "__morph_attr_quant";
+
+/// Public re-export of [`base_attr_key`] for callers outside the
+/// quantization module that need the un-indexed key
+/// (`TEXCOORD_0` / `TEXCOORD_1` → `TEXCOORD`, etc.). The base lookup
+/// is otherwise private.
+pub fn base_attr_key_public(name: &str) -> &str {
+    base_attr_key(name)
+}
+
 /// Spec-defined int → float conversion for a normalised integer
 /// component. `c` carries the raw integer cast to `i32`.
 pub fn dequantize_normalized(component_type: u32, c: i32) -> Result<f32> {

@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 230)
+
+- `KHR_mesh_quantization` morph-target attribute decode + encode per
+  `docs/3d/gltf/extensions/KHR_mesh_quantization.md` §Extending Morph
+  Target Attributes. Morph deltas may now be stored as 8-bit / 16-bit
+  signed integers (`POSITION` VEC3 BYTE / BYTE-normalized / SHORT /
+  SHORT-normalized; `NORMAL` and `TANGENT` VEC3 BYTE-normalized /
+  SHORT-normalized; `TEXCOORD_n` VEC2 BYTE / SHORT). Morph TANGENT
+  stays VEC3 — the §Extending Morph Target Attributes table strips
+  the handedness `W` from the delta since handedness can't be morphed
+  (spec §3.7.2.2). Each non-FLOAT morph accessor is dequantised
+  through the existing spec int→float equations and surfaces as f32
+  deltas under the per-primitive `__morph_targets` sentinel; the
+  original `(componentType, normalized)` tuple is stashed under a new
+  per-primitive `__morph_attr_quant` sentinel keyed by
+  `<target-index>.<attribute>` so the encoder can re-quantise on
+  write without promoting to FLOAT. The encoder honours the sentinel
+  on both the typed `Primitive.targets` path (POSITION / NORMAL /
+  TANGENT VEC3) and the `__morph_targets` extras path
+  (which additionally carries TEXCOORD_n VEC2), padding to the
+  spec-mandated 4-byte element stride per §Extending Morph Target
+  Attributes ("`VEC3` accessors need to be aligned to 4-byte
+  boundaries; e.g. a `BYTE` normal is expected to have a stride of
+  4"). `__morph_attr_quant` participates in the same
+  `extensionsUsed` + `extensionsRequired` declaration gate as
+  `__attr_quant` per §Overview ("the extension is not optional").
+  Quantised morph accessors whose `(componentType, normalized)` pair
+  falls outside the morph combo table are refused at decode time
+  (`is_morph_attr_combo_allowed`), and the decode path itself is
+  gated on the extension being declared in `extensionsUsed`. Six new
+  tests in `tests/quantized_morph_targets.rs` exercise: SHORT-
+  normalized POSITION dequantise via the spec equation
+  (`f = max(c/32767, -1)` with the -32768 clamp), JSON round-trip
+  preserving `extensionsUsed` + `extensionsRequired` and the
+  SHORT/normalized accessor form, BYTE-normalized POSITION GLB
+  round-trip within `1/127` precision, SHORT-normalized NORMAL +
+  TANGENT VEC3 round-trip with morph TANGENT staying VEC3 in the
+  re-encoded JSON, refusal when the extension isn't declared, and
+  unnormalized-BYTE TEXCOORD_0 morph round-trip.
+
 ### Added (round 223)
 
 - `KHR_mesh_quantization` encoder path — float→int re-emission of
