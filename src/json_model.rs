@@ -1173,6 +1173,41 @@ pub struct Texture {
     pub sampler: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Per-texture extensions. Per
+    /// `docs/3d/gltf/extensions/KHR_texture_basisu.md` §glTF Schema
+    /// Updates the extension adds an alternative `source` indirection
+    /// to a KTX v2 image; future per-texture KHR extensions land here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<TextureExtensions>,
+}
+
+/// `extensions` block on a `texture` object. Currently surfaces
+/// `KHR_texture_basisu` (an alternative `source` indirection to a KTX
+/// v2 image per `docs/3d/gltf/extensions/KHR_texture_basisu.md`
+/// §glTF Schema Updates).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct TextureExtensions {
+    #[serde(
+        rename = "KHR_texture_basisu",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_texture_basisu: Option<TextureBasisu>,
+}
+
+/// `KHR_texture_basisu` extension object — replaces or augments the
+/// base `texture.source` with an indirection to a KTX v2 image source
+/// per `docs/3d/gltf/extensions/KHR_texture_basisu.md` §glTF Schema
+/// Updates. When the base `texture.source` is also present the spec
+/// designates it as the PNG / JPEG fallback for engines without
+/// KTX v2 support. When the base `source` is omitted the extension
+/// MUST be listed in `extensionsRequired` per the spec
+/// §"Using Without a Fallback".
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct TextureBasisu {
+    /// Index into `images[]` of the KTX v2 image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

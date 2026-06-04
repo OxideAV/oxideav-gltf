@@ -779,6 +779,65 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         ));
     }
 
+    // KHR_texture_basisu — per-texture extension carrying an
+    // alternative `source` indirection to a KTX v2 image per
+    // `docs/3d/gltf/extensions/KHR_texture_basisu.md` §glTF Schema
+    // Updates. Three §3.12 + spec-explicit rules:
+    //
+    //   1. §3.12 — any document carrying the data block on any
+    //      texture MUST declare the extension in `extensionsUsed`.
+    //   2. §"Using Without a Fallback" — if any texture omits the
+    //      base `texture.source` and relies on the extension's
+    //      `source` only, `KHR_texture_basisu` MUST appear in
+    //      `extensionsRequired` (the spec's "Without a Fallback"
+    //      example shows it in both arrays).
+    //   3. The image index in `KHR_texture_basisu.source` MUST
+    //      resolve into the document's `images[]` array.
+    let mut has_texture_basisu = false;
+    let mut basisu_without_fallback = false;
+    for (ti, t) in root.textures.iter().enumerate() {
+        if let Some(b) = t
+            .extensions
+            .as_ref()
+            .and_then(|e| e.khr_texture_basisu.as_ref())
+        {
+            has_texture_basisu = true;
+            if t.source.is_none() {
+                basisu_without_fallback = true;
+            }
+            if let Some(src) = b.source {
+                if (src as usize) >= root.images.len() {
+                    return Err(invalid(format!(
+                        "ExtensionStackTextureBasisuSource: texture {ti} \
+                         KHR_texture_basisu.source = {src} is out of range \
+                         (images[].len = {})",
+                        root.images.len()
+                    )));
+                }
+            }
+        }
+    }
+    if has_texture_basisu && !used("KHR_texture_basisu") {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_texture_basisu data is \
+             present on a texture but the extension is not listed in \
+             extensionsUsed (spec §3.12)",
+        ));
+    }
+    if basisu_without_fallback
+        && !root
+            .extensions_required
+            .iter()
+            .any(|r| r == "KHR_texture_basisu")
+    {
+        return Err(invalid(
+            "ExtensionStackTextureBasisuRequired: a texture omits the \
+             base `source` and relies on KHR_texture_basisu.source, so \
+             the extension MUST appear in extensionsRequired (spec \
+             §\"Using Without a Fallback\")",
+        ));
+    }
+
     // KHR_animation_pointer — per-channel-target extension. Per
     // `docs/3d/gltf/extensions/KHR_animation_pointer.md` §"Extension
     // Usage": when used the channel's `target.path` MUST be

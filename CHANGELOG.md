@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 233)
+
+- `KHR_texture_basisu` extension per
+  `docs/3d/gltf/extensions/KHR_texture_basisu.md` §glTF Schema
+  Updates — per-texture indirection to a KTX v2 image with Basis
+  Universal supercompression. The crate is a pass-through engine
+  (no KTX2 / Basis transcode lane yet), so the decoder routes the
+  texture's image load through one of the two spec-defined shapes:
+  "with fallback" picks the base `texture.source` PNG/JPEG as the
+  live image (the extension's KTX2 source is acknowledged but the
+  PNG/JPEG path is the one we materialise), and "without
+  fallback" loads the extension's KTX2 image as opaque bytes via
+  the usual `BufferViewAsset` / `InMemoryAsset` route carrying the
+  spec's `image/ktx2` MIME. Scene-texture indices loaded via the
+  "without fallback" path are recorded under
+  `Scene3D::extras["KHR_texture_basisu"].textures` so the encoder
+  re-emits the same shape on write: `texture.source` omitted,
+  `extensions.KHR_texture_basisu.source` pointing at the re-emitted
+  image, and the extension declared in BOTH `extensionsUsed` AND
+  `extensionsRequired` per the spec §"Using Without a Fallback".
+  Added new typed model nodes `TextureExtensions` and
+  `TextureBasisu` in `json_model.rs`, threaded a tuple return
+  through `convert_texture` for the sidecar accumulation, and
+  added the extension declaration emit gate to the encoder.
+  Twelve new tests in `tests/khr_texture_basisu.rs` cover the
+  with-fallback / without-fallback decode shapes, the
+  sidecar-driven encode round-trip back to "without fallback", a
+  regression guard that plain PNG textures don't grow phantom
+  extensions, the externally-staged `image.ktx2` URI and a
+  `data:image/ktx2;base64,...` URI shape, and three §3.12 stack
+  rejection rules: `ExtensionStackUsedNotDeclared` (data block on
+  any texture without the declaration),
+  `ExtensionStackTextureBasisuSource` (out-of-range source image
+  index), and `ExtensionStackTextureBasisuRequired` (no base
+  fallback `source` requires `KHR_texture_basisu` in
+  `extensionsRequired` per the spec example). All twelve pass.
+
 ### Added (round 230)
 
 - `KHR_mesh_quantization` morph-target attribute decode + encode per

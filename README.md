@@ -374,6 +374,36 @@ framework but usable standalone.
   extension is not optional"). (componentType, normalized) tuples that
   fall outside the spec's allowed combo tables revert to the
   FLOAT-emit path so the encoder never produces a non-spec form
+- KHR_texture_basisu extension (Khronos ratified) — per-texture
+  alternative `source` indirection to a KTX v2 image with Basis
+  Universal supercompression from
+  `docs/3d/gltf/extensions/KHR_texture_basisu.md`. The crate is a
+  pass-through engine (no KTX2 transcoding), so the decoder routes
+  the texture's image load through either the spec's "with
+  fallback" path (base `texture.source` PNG/JPEG present →
+  pick the fallback, extension's KTX2 source is acknowledged but
+  the live image is the PNG/JPEG) or the "without fallback" path
+  (base `source` omitted → load the KTX2 image as opaque
+  `BufferViewAsset` / `InMemoryAsset` bytes carrying the spec's
+  `image/ktx2` MIME). Scene-texture indices loaded via the
+  "without fallback" path are recorded under
+  `Scene3D::extras["KHR_texture_basisu"].textures` so the encoder
+  re-emits the same shape: `texture.source` omitted,
+  `extensions.KHR_texture_basisu.source` pointing at the
+  re-emitted image, and the extension declared in BOTH
+  `extensionsUsed` AND `extensionsRequired` per the spec
+  §"Using Without a Fallback". The §3.12 stack validator rejects
+  textures carrying the data block without the declaration
+  (`ExtensionStackUsedNotDeclared`), out-of-range
+  `KHR_texture_basisu.source` image indices
+  (`ExtensionStackTextureBasisuSource`), and the "without
+  fallback" shape without `KHR_texture_basisu` in
+  `extensionsRequired` (`ExtensionStackTextureBasisuRequired` —
+  the spec §"Using Without a Fallback" example places the
+  extension name in both arrays). The §3.6.2.4-style "texture
+  must have a source" rule expands to cover the new spec-allowed
+  shape: a texture is invalid only when it carries neither base
+  `source` nor the extension indirection
 - Skins + skeletons (joint roster, inverseBindMatrices accessor,
   optional skeleton root) per spec §3.7.3 — `node.skin` round-trips
 - Animations (channels + samplers) per spec §3.11 — translation /
@@ -481,8 +511,18 @@ is implementation, not docs:
   validation of the pointer string (resolving it to a mutable
   property and checking accessor-type vs data-type compatibility per
   the spec table)
+- KHR_texture_basisu transcode lane — round 233 lands the per-
+  texture indirection round-trip (sidecar + §3.12 validation) as
+  a pass-through; an actual KTX2 / Basis Universal transcode lane
+  that turns the opaque bytes into a sampled `ImageData::Embedded`
+  is the next iteration, conditional on a `docs/image/ktx2/`
+  spec landing
 - KHR_audio_emitter wiring against `oxideav_mesh3d::AudioSource` /
-  `AudioEmitter`
+  `AudioEmitter` — **blocked on DOCS-GAP**: the
+  `docs/3d/gltf/extensions/` mirror is missing
+  `KHR_audio_emitter.md`; the per-crate README's "lacks" tail is
+  reserved for it, but implementation can't proceed without the
+  spec landing under `docs/3d/gltf/extensions/`
 
 ## Installation
 

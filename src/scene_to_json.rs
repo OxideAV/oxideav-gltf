@@ -289,7 +289,21 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     }
 
     // --- textures + images + samplers ---
-    encode_textures(scene, &mut root, &mut bin)?;
+    let emitted_texture_basisu = encode_textures(scene, &mut root, &mut bin)?;
+    if emitted_texture_basisu {
+        // Per `docs/3d/gltf/extensions/KHR_texture_basisu.md`
+        // §"Using Without a Fallback", a texture that omits the
+        // base `source` and carries only the extension MUST list
+        // `KHR_texture_basisu` in BOTH `extensionsUsed` AND
+        // `extensionsRequired`. The decoder records a sidecar
+        // entry exactly for that shape (textures whose loaded
+        // image came from the extension path because no base
+        // fallback was present), so on encode we always emit the
+        // pair.
+        root.extensions_used.push("KHR_texture_basisu".to_owned());
+        root.extensions_required
+            .push("KHR_texture_basisu".to_owned());
+    }
 
     // --- cameras ---
     for c in &scene.cameras {
@@ -1806,7 +1820,7 @@ fn encode_material(m: &Material) -> gj::Material {
     }
 }
 
-fn encode_textures(scene: &Scene3D, root: &mut GltfRoot, bin: &mut Vec<u8>) -> Result<()> {
+fn encode_textures(scene: &Scene3D, root: &mut GltfRoot, bin: &mut Vec<u8>) -> Result<bool> {
     // De-duplicate samplers so the JSON stays compact.
     let mut sampler_index: Vec<Sampler> = Vec::new();
     let resolve_sampler = |samplers: &mut Vec<Sampler>, s: Sampler| -> u32 {
@@ -1819,17 +1833,59 @@ fn encode_textures(scene: &Scene3D, root: &mut GltfRoot, bin: &mut Vec<u8>) -> R
         (samplers.len() - 1) as u32
     };
 
-    for tex in &scene.textures {
+    // Per `docs/3d/gltf/extensions/KHR_texture_basisu.md` the
+    // decoder records the scene-texture indices whose loaded image
+    // came from the extension (the spec's "without fallback"
+    // shape) under `scene.extras["KHR_texture_basisu"].textures`.
+    // Lift the set back so the encoder emits each marked texture
+    // with the `KHR_texture_basisu.source` indirection in place of
+    // the base `texture.source`.
+    let basisu_set: std::collections::HashSet<u32> = scene
+        .extras
+        .get("KHR_texture_basisu")
+        .and_then(|v| v.as_object())
+        .and_then(|o| o.get("textures"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_u64().map(|x| x as u32))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut any_basisu = false;
+
+    for (i, tex) in scene.textures.iter().enumerate() {
         // Image first.
         let image_idx = root.images.len() as u32;
         let image = encode_image(tex, root, bin)?;
         root.images.push(image);
 
         let s_idx = resolve_sampler(&mut sampler_index, tex.sampler);
+        let from_basisu = basisu_set.contains(&(i as u32));
+        let (source, extensions) = if from_basisu {
+            // Per `docs/3d/gltf/extensions/KHR_texture_basisu.md`
+            // §"Using Without a Fallback", a texture using only
+            // the extension's `source` MUST omit the base
+            // `texture.source`. The extension declaration on
+            // `extensionsUsed` + `extensionsRequired` is added by
+            // the caller once it sees we emitted at least one.
+            any_basisu = true;
+            (
+                None,
+                Some(gj::TextureExtensions {
+                    khr_texture_basisu: Some(gj::TextureBasisu {
+                        source: Some(image_idx),
+                    }),
+                }),
+            )
+        } else {
+            (Some(image_idx), None)
+        };
         root.textures.push(gj::Texture {
-            source: Some(image_idx),
+            source,
             sampler: Some(s_idx),
             name: tex.name.clone(),
+            extensions,
         });
     }
 
@@ -1837,7 +1893,7 @@ fn encode_textures(scene: &Scene3D, root: &mut GltfRoot, bin: &mut Vec<u8>) -> R
     for s in sampler_index {
         root.samplers.push(encode_sampler(s));
     }
-    Ok(())
+    Ok(any_basisu)
 }
 
 fn encode_image(tex: &Texture, root: &mut GltfRoot, bin: &mut Vec<u8>) -> Result<gj::Image> {

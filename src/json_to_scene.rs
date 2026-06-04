@@ -89,9 +89,42 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
     let mut material_id_map: HashMap<u32, MaterialId> = HashMap::new();
     // Textures first — materials reference them by index.
     let mut texture_id_map: HashMap<u32, TextureId> = HashMap::new();
+    // `KHR_texture_basisu` sidecar — per
+    // `docs/3d/gltf/extensions/KHR_texture_basisu.md` the extension
+    // adds a per-texture `source` indirection to a KTX v2 image. Two
+    // shapes are spec-allowed: (1) "with fallback" where the base
+    // `texture.source` also points to a PNG / JPEG image and capable
+    // clients pick the KTX2; (2) "without fallback" where only the
+    // extension's image is present and `KHR_texture_basisu` MUST
+    // appear in `extensionsRequired`. We're a pass-through engine
+    // (we don't transcode KTX2), so we pick the base `source` when
+    // present (PNG / JPEG path), otherwise we load the extension's
+    // KTX2 image as opaque bytes via the usual `BufferViewAsset` /
+    // `InMemoryAsset` route — downstream consumers see the
+    // `image/ktx2` MIME and decide whether to transcode. The
+    // sidecar records the scene-texture indices that came from the
+    // extension path so the encoder re-emits them in the spec's
+    // "without fallback" shape (extension declared in BOTH
+    // `extensionsUsed` AND `extensionsRequired`).
+    let mut basisu_textures: Vec<serde_json::Value> = Vec::new();
     for (i, t) in root.textures.iter().enumerate() {
-        let id = scene.add_texture(convert_texture(root, t, &buffers)?);
+        let (tex, used_basisu) = convert_texture(root, t, &buffers)?;
+        let id = scene.add_texture(tex);
         texture_id_map.insert(i as u32, id);
+        if used_basisu {
+            basisu_textures.push(serde_json::Value::from(i as u32));
+        }
+    }
+    if !basisu_textures.is_empty() {
+        let mut top = serde_json::Map::new();
+        top.insert(
+            "textures".to_owned(),
+            serde_json::Value::Array(basisu_textures),
+        );
+        scene.extras.insert(
+            "KHR_texture_basisu".to_owned(),
+            serde_json::Value::Object(top),
+        );
     }
 
     for (i, m) in root.materials.iter().enumerate() {
@@ -1027,11 +1060,38 @@ fn wrap_mode(w: Option<u32>) -> WrapMode {
     }
 }
 
-fn convert_texture(root: &GltfRoot, t: &gj::Texture, buffers: &[Arc<Vec<u8>>]) -> Result<Texture> {
+fn convert_texture(
+    root: &GltfRoot,
+    t: &gj::Texture,
+    buffers: &[Arc<Vec<u8>>],
+) -> Result<(Texture, bool)> {
     let sampler = convert_sampler_index(root, t.sampler);
-    let image_idx = t
-        .source
-        .ok_or_else(|| invalid("texture: missing source (image index)"))?;
+    // Per `docs/3d/gltf/extensions/KHR_texture_basisu.md` §glTF
+    // Schema Updates the extension provides an alternative `source`
+    // pointing at a KTX v2 image. Two valid shapes: (a) base
+    // `texture.source` present (PNG/JPEG fallback) + extension
+    // `source` (KTX2 alternate) — capable engines pick the KTX2,
+    // we pick the fallback; (b) base `source` absent, only the
+    // extension's `source` — we load that KTX2 image as opaque
+    // bytes (the asset MIME `image/ktx2` round-trips through
+    // `BufferViewAsset` / `InMemoryAsset`). The boolean half of the
+    // return value records whether the loaded image came from the
+    // extension so the caller can stash the sidecar.
+    let basisu_source = t
+        .extensions
+        .as_ref()
+        .and_then(|e| e.khr_texture_basisu.as_ref())
+        .and_then(|b| b.source);
+    let (image_idx, used_basisu) = match (t.source, basisu_source) {
+        (Some(idx), _) => (idx, false),
+        (None, Some(idx)) => (idx, true),
+        (None, None) => {
+            return Err(invalid(
+                "texture: missing source (no base `source` and no \
+                 `KHR_texture_basisu.source` indirection)",
+            ));
+        }
+    };
     let img = root
         .images
         .get(image_idx as usize)
@@ -1070,11 +1130,14 @@ fn convert_texture(root: &GltfRoot, t: &gj::Texture, buffers: &[Arc<Vec<u8>>]) -
         ));
     };
 
-    Ok(Texture {
-        name: t.name.clone(),
-        image,
-        sampler,
-    })
+    Ok((
+        Texture {
+            name: t.name.clone(),
+            image,
+            sampler,
+        },
+        used_basisu,
+    ))
 }
 
 fn convert_material(
