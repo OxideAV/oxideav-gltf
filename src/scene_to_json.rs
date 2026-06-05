@@ -487,6 +487,18 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     // stashes it under to keep Scene3D narrow). Strip it here so the
     // primary scene's `extras` field doesn't carry a stale copy.
     effective_extras.remove("KHR_materials_variants");
+    // KHR_meshopt_compression — the decoder records the per-bufferView
+    // compression descriptors + fallback-buffer indices under
+    // `scene.extras["KHR_meshopt_compression"]` so consumers can
+    // inspect the original document layout. The encoder is a
+    // pass-through (no meshopt bitstream encoder lane), so on
+    // round-trip we drop the sidecar from `extras` to keep
+    // `scene.extras` clean and DO NOT re-emit the descriptors onto
+    // freshly-built bufferViews; documents written by this crate are
+    // always uncompressed. See
+    // `docs/3d/gltf/extensions/KHR_meshopt_compression.md`
+    // §"Specifying compressed views".
+    effective_extras.remove("KHR_meshopt_compression");
     // KHR_xmp_json_ld — three side-channels: the root-level
     // `{ "packets": [...] }` roster lives under
     // `scene.extras["KHR_xmp_json_ld"]`; per-asset and per-primary-scene
@@ -655,6 +667,7 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
             byte_length: bin.len() as u32,
             uri: None,
             name: None,
+            extensions: None,
         });
     }
 
@@ -1119,6 +1132,7 @@ fn push_vec3_accessor(
         byte_stride: None,
         target: Some(gj::TARGET_ARRAY_BUFFER),
         name: Some(format!("{name}_view")),
+        extensions: None,
     };
     let bv_idx = root.buffer_views.len() as u32;
     root.buffer_views.push(bv);
@@ -1176,6 +1190,7 @@ fn push_vec4_accessor(
         byte_stride: None,
         target: Some(gj::TARGET_ARRAY_BUFFER),
         name: Some(format!("{name}_view")),
+        extensions: None,
     });
     let acc_idx = root.accessors.len() as u32;
     root.accessors.push(gj::Accessor {
@@ -1206,6 +1221,7 @@ fn push_vec2_accessor(root: &mut GltfRoot, bin: &mut Vec<u8>, data: &[[f32; 2]])
         byte_stride: None,
         target: Some(gj::TARGET_ARRAY_BUFFER),
         name: Some("TEXCOORD_view".into()),
+        extensions: None,
     });
     let acc_idx = root.accessors.len() as u32;
     root.accessors.push(gj::Accessor {
@@ -1252,6 +1268,7 @@ fn push_quantized_vec2_accessor(
         byte_stride: Some(stride),
         target: Some(gj::TARGET_ARRAY_BUFFER),
         name: Some(format!("{name}_view")),
+        extensions: None,
     });
     let acc_idx = root.accessors.len() as u32;
     root.accessors.push(gj::Accessor {
@@ -1299,6 +1316,7 @@ fn push_quantized_vec3_accessor(
         byte_stride: Some(stride),
         target: Some(gj::TARGET_ARRAY_BUFFER),
         name: Some(format!("{name}_view")),
+        extensions: None,
     });
 
     let (min, max) = if with_minmax && !data.is_empty() {
@@ -1377,6 +1395,7 @@ fn push_quantized_vec4_accessor(
         byte_stride: Some(stride),
         target: Some(gj::TARGET_ARRAY_BUFFER),
         name: Some(format!("{name}_view")),
+        extensions: None,
     });
     let acc_idx = root.accessors.len() as u32;
     root.accessors.push(gj::Accessor {
@@ -1494,6 +1513,7 @@ fn push_joints_accessor(root: &mut GltfRoot, bin: &mut Vec<u8>, data: &[[u16; 4]
         byte_stride: None,
         target: Some(gj::TARGET_ARRAY_BUFFER),
         name: Some("JOINTS_0_view".into()),
+        extensions: None,
     });
     let acc_idx = root.accessors.len() as u32;
     root.accessors.push(gj::Accessor {
@@ -1526,6 +1546,7 @@ fn push_indices_accessor(root: &mut GltfRoot, bin: &mut Vec<u8>, indices: &[u32]
         byte_stride: None,
         target: Some(gj::TARGET_ELEMENT_ARRAY_BUFFER),
         name: Some("indices_view".into()),
+        extensions: None,
     });
     let acc_idx = root.accessors.len() as u32;
     root.accessors.push(gj::Accessor {
@@ -1923,6 +1944,7 @@ fn encode_image(tex: &Texture, root: &mut GltfRoot, bin: &mut Vec<u8>) -> Result
                 byte_stride: None,
                 target: None,
                 name: Some("image_view".into()),
+            extensions: None,
             });
             Ok(gj::Image {
                 uri: None,
@@ -2944,6 +2966,7 @@ fn push_pointer_output_accessor(
         byte_stride: None,
         target: None,
         name: Some("pointer_output_view".to_owned()),
+        extensions: None,
     });
     let acc_idx = root.accessors.len() as u32;
     root.accessors.push(gj::Accessor {
@@ -2981,6 +3004,7 @@ fn push_scalar_f32_accessor(
         byte_stride: None,
         target: None,
         name: Some(format!("{name}_view")),
+        extensions: None,
     });
     let acc_idx = root.accessors.len() as u32;
     root.accessors.push(gj::Accessor {
@@ -3078,6 +3102,7 @@ fn push_scalar_f32_accessor_quantized(
         byte_stride: None,
         target: None,
         name: Some(format!("{name}_view")),
+        extensions: None,
     });
     let acc_idx = root.accessors.len() as u32;
     root.accessors.push(gj::Accessor {
@@ -3153,6 +3178,7 @@ fn push_vec4_accessor_quantized(
         byte_stride: None,
         target: None,
         name: Some(format!("{name}_view")),
+        extensions: None,
     });
     let acc_idx = root.accessors.len() as u32;
     root.accessors.push(gj::Accessor {
@@ -3228,6 +3254,7 @@ fn push_mat4_accessor(
         byte_stride: None,
         target: None,
         name: Some(format!("{name}_view")),
+        extensions: None,
     });
     let acc_idx = root.accessors.len() as u32;
     root.accessors.push(gj::Accessor {
@@ -3334,6 +3361,7 @@ fn build_sparse_block_mat4(
         byte_stride: None,
         target: None,
         name: Some("sparse_indices_view".into()),
+        extensions: None,
     });
     pad_to_4(bin);
     let val_offset = bin.len();
@@ -3355,6 +3383,7 @@ fn build_sparse_block_mat4(
         byte_stride: None,
         target: None,
         name: Some("sparse_values_view".into()),
+        extensions: None,
     });
     gj::AccessorSparse {
         count: indices.len() as u32,
@@ -3518,6 +3547,7 @@ fn build_sparse_block_scalar(
         byte_stride: None,
         target: None,
         name: Some("sparse_indices_view".into()),
+        extensions: None,
     });
     pad_to_4(bin);
     let val_offset = bin.len();
@@ -3533,6 +3563,7 @@ fn build_sparse_block_scalar(
         byte_stride: None,
         target: None,
         name: Some("sparse_values_view".into()),
+        extensions: None,
     });
     gj::AccessorSparse {
         count: indices.len() as u32,
@@ -3569,6 +3600,7 @@ fn build_sparse_block_vec3(
         byte_stride: None,
         target: None,
         name: Some("sparse_indices_view".into()),
+        extensions: None,
     });
     pad_to_4(bin);
     let val_offset = bin.len();
@@ -3587,6 +3619,7 @@ fn build_sparse_block_vec3(
         byte_stride: None,
         target: None,
         name: Some("sparse_values_view".into()),
+        extensions: None,
     });
     gj::AccessorSparse {
         count: indices.len() as u32,
@@ -3623,6 +3656,7 @@ fn build_sparse_block_vec4(
         byte_stride: None,
         target: None,
         name: Some("sparse_indices_view".into()),
+        extensions: None,
     });
     pad_to_4(bin);
     let val_offset = bin.len();
@@ -3641,6 +3675,7 @@ fn build_sparse_block_vec4(
         byte_stride: None,
         target: None,
         name: Some("sparse_values_view".into()),
+        extensions: None,
     });
     gj::AccessorSparse {
         count: indices.len() as u32,

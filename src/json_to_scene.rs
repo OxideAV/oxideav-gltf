@@ -85,6 +85,74 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
     let buffers = resolve_buffers(root, glb_bin)?;
     let mut scene = Scene3D::new();
 
+    // `KHR_meshopt_compression` sidecar — per
+    // `docs/3d/gltf/extensions/KHR_meshopt_compression.md`
+    // §"Specifying compressed views" the extension hangs off a
+    // bufferView and redirects the source bytes to a different
+    // buffer/range with a compression mode + filter + count +
+    // byteStride. Per §"Fallback buffers" a buffer object may also
+    // be tagged as a placeholder (`{ "fallback": true }`). The crate
+    // is a pass-through engine — the meshopt bitstream decoder is
+    // not implemented yet — so we record both layers under a single
+    // sidecar so the encoder can re-emit the document with the
+    // descriptors intact:
+    //
+    //   scene.extras["KHR_meshopt_compression"] = {
+    //       "bufferViews": { "<bv_index>": <ext_obj> },
+    //       "fallbackBuffers": [<buf_index>, ...]
+    //   }
+    //
+    // §3.12 + the spec say the extension MUST be declared in
+    // `extensionsUsed`, and when any fallback buffer is uri-less
+    // it MUST be in `extensionsRequired`; both gates are surfaced
+    // on encode and policed by `validate_root`.
+    {
+        let mut bv_map = serde_json::Map::new();
+        for (bvi, bv) in root.buffer_views.iter().enumerate() {
+            if let Some(mc) = bv
+                .extensions
+                .as_ref()
+                .and_then(|e| e.khr_meshopt_compression.as_ref())
+            {
+                bv_map.insert(
+                    bvi.to_string(),
+                    serde_json::to_value(mc).map_err(|e| {
+                        invalid(format!(
+                            "KHR_meshopt_compression: failed to capture bufferView[{bvi}] descriptor: {e}"
+                        ))
+                    })?,
+                );
+            }
+        }
+        let mut fb_buffers: Vec<serde_json::Value> = Vec::new();
+        for (bi, b) in root.buffers.iter().enumerate() {
+            if b.extensions
+                .as_ref()
+                .and_then(|e| e.khr_meshopt_compression.as_ref())
+                .map(|m| m.fallback)
+                .unwrap_or(false)
+            {
+                fb_buffers.push(serde_json::Value::from(bi as u32));
+            }
+        }
+        if !bv_map.is_empty() || !fb_buffers.is_empty() {
+            let mut top = serde_json::Map::new();
+            if !bv_map.is_empty() {
+                top.insert("bufferViews".to_owned(), serde_json::Value::Object(bv_map));
+            }
+            if !fb_buffers.is_empty() {
+                top.insert(
+                    "fallbackBuffers".to_owned(),
+                    serde_json::Value::Array(fb_buffers),
+                );
+            }
+            scene.extras.insert(
+                "KHR_meshopt_compression".to_owned(),
+                serde_json::Value::Object(top),
+            );
+        }
+    }
+
     // Materials first — meshes need the IDs.
     let mut material_id_map: HashMap<u32, MaterialId> = HashMap::new();
     // Textures first — materials reference them by index.
@@ -870,8 +938,25 @@ fn decode_normalized_component(component_type: u32, bytes: &[u8]) -> Result<f32>
 fn resolve_buffers(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Vec<Arc<Vec<u8>>>> {
     let mut out = Vec::with_capacity(root.buffers.len());
     for (i, b) in root.buffers.iter().enumerate() {
-        let bytes = match &b.uri {
-            None => {
+        // Per `docs/3d/gltf/extensions/KHR_meshopt_compression.md`
+        // §"Fallback buffers" a buffer marked `{ "extensions":
+        // { "KHR_meshopt_compression": { "fallback": true } } }` is a
+        // no-data placeholder — it has no `uri`, doesn't refer to the
+        // GLB BIN chunk, and only exists so that the parent
+        // bufferViews retain a valid `buffer` reference per the
+        // base spec. Materialise it as a zero-filled byte vector of
+        // the declared `byteLength` so downstream slicing remains
+        // safe; a future meshopt decoder lane would inflate the real
+        // bytes into this region from the compressed source.
+        let is_fallback = b
+            .extensions
+            .as_ref()
+            .and_then(|e| e.khr_meshopt_compression.as_ref())
+            .map(|m| m.fallback)
+            .unwrap_or(false);
+        let bytes = match (&b.uri, is_fallback) {
+            (None, true) => vec![0u8; b.byte_length as usize],
+            (None, false) => {
                 // `.glb` BIN chunk — only legal for buffer 0.
                 if i != 0 {
                     return Err(invalid(format!(
@@ -890,8 +975,8 @@ fn resolve_buffers(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Vec<Arc<Ve
                 }
                 bin[..b.byte_length as usize].to_vec()
             }
-            Some(uri) if uri.starts_with("data:") => decode_data_uri(uri)?,
-            Some(uri) => {
+            (Some(uri), _) if uri.starts_with("data:") => decode_data_uri(uri)?,
+            (Some(uri), _) => {
                 return Err(unsupported(format!(
                     "buffer[{i}]: external URI {uri:?} not resolved (caller must inline before decode)"
                 )));

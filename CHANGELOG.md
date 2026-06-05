@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 240)
+
+- `KHR_meshopt_compression` extension per
+  `docs/3d/gltf/extensions/KHR_meshopt_compression.md`
+  §"Specifying compressed views" + §"Fallback buffers" + §"JSON
+  schema updates" — per-bufferView compression descriptors +
+  per-buffer `{ "fallback": true }` placeholder markers. The
+  crate is a pass-through engine (the meshopt bitstream decoder
+  in Appendix A is not implemented yet), so the extension is
+  handled at the JSON descriptor level: the decoder captures
+  every bufferView's `extensions.KHR_meshopt_compression` block
+  into `Scene3D::extras["KHR_meshopt_compression"]
+  .bufferViews["<bvi>"]` (carrying the full `buffer` /
+  `byteOffset` / `byteLength` / `byteStride` / `count` / `mode`
+  / optional `filter` descriptor) and the per-buffer fallback
+  markers under `…fallbackBuffers` as an array of buffer
+  indices. A uri-less fallback buffer is materialised as a
+  zero-filled byte vector of the declared `byteLength` so
+  downstream bufferView slicing remains safe; consumers wiring
+  up a meshopt decoder lane later can inflate the real bytes
+  into that region from the descriptor's compressed source
+  range. On encode the sidecar is stripped from `scene.extras`
+  and the descriptors are NOT re-emitted onto the freshly-built
+  uncompressed bufferViews — documents written by this crate
+  are always uncompressed (the compression is a load-time
+  concern only).
+- §3.12 stack validator coverage for `KHR_meshopt_compression`:
+  `ExtensionStackUsedNotDeclared` (data block on any
+  bufferView/buffer without the declaration);
+  `ExtensionStackMeshoptRequired` (uri-less fallback buffer
+  without `extensionsRequired` per spec §"Fallback buffers");
+  `ExtensionStackMeshoptMode` / `ExtensionStackMeshoptFilter` /
+  `ExtensionStackMeshoptLayout` / `ExtensionStackMeshoptStride`
+  / `ExtensionStackMeshoptCount` (§"JSON schema updates"
+  per-rule invariants); `ExtensionStackMeshoptBuffer` /
+  `ExtensionStackMeshoptRange` (source buffer index + range
+  bounds); `ExtensionStackMeshoptFallbackRef` (a fallback
+  buffer referenced by a bufferView WITHOUT the extension) /
+  `ExtensionStackMeshoptFallbackSource` (a descriptor's own
+  `buffer` pointing at a fallback buffer).
+- Added new typed model nodes `BufferViewExtensions`,
+  `KhrMeshoptCompression`, `BufferExtensions`,
+  `KhrMeshoptBufferFallback` in `json_model.rs`, plumbed
+  `extensions: Option<…>` through `BufferView` + `Buffer`,
+  taught `resolve_buffers` to recognise the fallback shape, and
+  added the sidecar capture + strip passes in `json_to_scene.rs`
+  / `scene_to_json.rs`.
+- 23 new tests in `tests/khr_meshopt_compression.rs` covering
+  descriptor lift, filter capture, fallback-buffer
+  materialisation, encode strips sidecar, §3.12 used-not-declared
+  rejection, fallback-without-required rejection, unknown
+  mode/filter rejection, parent-layout-mismatch rejection, per
+  mode byteStride / count invariants (ATTRIBUTES bounds,
+  TRIANGLES divisibility-by-3, INDICES stride),
+  TRIANGLES-with-non-NONE-filter rejection, per-filter
+  byteStride invariants (QUATERNION, EXPONENTIAL,
+  OCTAHEDRAL/COLOR), out-of-range `extension.buffer`, source
+  range overrun, fallback buffer referenced by a plain
+  bufferView, and descriptor `buffer` pointing at a fallback
+  buffer. Bare documents without the extension stay unaffected.
+
 ### Added (round 233)
 
 - `KHR_texture_basisu` extension per

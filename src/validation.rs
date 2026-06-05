@@ -41,9 +41,21 @@
 //!   `KHR_texture_transform` (on any of the five core PBR textureInfo
 //!   slots), `KHR_node_visibility` (on any node), and
 //!   `KHR_materials_variants` (root-level `variants` roster + per-primitive
-//!   `mappings`), and `KHR_xmp_json_ld` (root-level `packets[]` roster +
+//!   `mappings`), `KHR_xmp_json_ld` (root-level `packets[]` roster +
 //!   per-asset / per-scene / per-node / per-mesh / per-material
-//!   `{ packet: N }` indirection).
+//!   `{ packet: N }` indirection), and `KHR_meshopt_compression` (per-bufferView
+//!   compression descriptors + per-buffer `{ "fallback": true }` markers
+//!   per `docs/3d/gltf/extensions/KHR_meshopt_compression.md`).
+//! * `KHR_meshopt_compression` per-bufferView spec invariants from
+//!   §"JSON schema updates" (mode ∈ ATTRIBUTES/TRIANGLES/INDICES,
+//!   filter ∈ NONE/OCTAHEDRAL/QUATERNION/EXPONENTIAL/COLOR,
+//!   parent.byteLength == byteStride * count, per-mode byteStride
+//!   constraints, per-filter byteStride constraints, mode + filter
+//!   compatibility for TRIANGLES/INDICES, source buffer index/range
+//!   bounds) and §"Fallback buffers" invariants (fallback buffer
+//!   referenced only by extension-carrying bufferViews; extension's
+//!   own `buffer` MUST NOT be a fallback; uri-less fallback forces
+//!   `extensionsRequired`).
 //! * `KHR_materials_anisotropy.anisotropyStrength` MUST sit in `[0, 1]`
 //!   per the extension spec's "Anisotropy" section ("a dimensionless
 //!   number in the range [0, 1]"). The `anisotropyRotation` is
@@ -838,6 +850,299 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         ));
     }
 
+    // KHR_meshopt_compression — per-bufferView compression descriptor
+    // per `docs/3d/gltf/extensions/KHR_meshopt_compression.md`.
+    //
+    //   §3.12 — any document carrying the data block (on any
+    //   bufferView or on any buffer) MUST declare the extension in
+    //   `extensionsUsed`.
+    //
+    //   §"Fallback buffers" — when a fallback buffer is uri-less and
+    //   doesn't refer to the GLB binary chunk, the extension MUST be
+    //   listed in `extensionsRequired` ("If a fallback buffer doesn't
+    //   have a URI and doesn't refer to the GLB binary chunk, it
+    //   follows that KHR_meshopt_compression must be a required
+    //   extension."). A fallback buffer's references must come only
+    //   from bufferViews carrying the extension; the buffer index
+    //   referenced by the extension JSON itself must NOT be a
+    //   fallback buffer.
+    //
+    //   §"JSON schema updates" — per-bufferView invariants:
+    //     * `mode` ∈ {ATTRIBUTES, TRIANGLES, INDICES}
+    //     * `filter` ∈ {NONE, OCTAHEDRAL, QUATERNION, EXPONENTIAL,
+    //                   COLOR}
+    //     * parent.byteLength == byteStride * count
+    //     * mode == ATTRIBUTES  ⇒ byteStride % 4 == 0 ∧
+    //                              4 ≤ byteStride ≤ 256
+    //     * mode == TRIANGLES   ⇒ count % 3 == 0
+    //     * mode ∈ {TRIANGLES, INDICES} ⇒ byteStride ∈ {2, 4}
+    //     * mode ∈ {TRIANGLES, INDICES} ⇒ filter ∈ {NONE, omitted}
+    //     * filter == OCTAHEDRAL ⇒ byteStride ∈ {4, 8}
+    //     * filter == QUATERNION ⇒ byteStride == 8
+    //     * filter == EXPONENTIAL⇒ byteStride % 4 == 0
+    //     * filter == COLOR      ⇒ byteStride ∈ {4, 8}
+    //     * extension's `buffer` index resolves into `buffers[]`
+    //     * extension's compressed range fits within the source
+    //       buffer's declared `byteLength`
+    //
+    //   §"Exclusions" — `KHR_meshopt_compression` MUST NOT appear on
+    //   a bufferView (or buffer) that also uses
+    //   `EXT_meshopt_compression`. We currently don't surface
+    //   `EXT_meshopt_compression` (it's a pre-ratification name), so
+    //   we don't attempt to detect the collision; if the JSON carries
+    //   an `EXT_meshopt_compression` block alongside, it stays in the
+    //   bufferView's `extras` and round-trips through there.
+    let mut has_meshopt = false;
+    let mut fallback_buffers: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for (bi, buf) in root.buffers.iter().enumerate() {
+        if buf
+            .extensions
+            .as_ref()
+            .and_then(|e| e.khr_meshopt_compression.as_ref())
+            .map(|m| m.fallback)
+            .unwrap_or(false)
+        {
+            has_meshopt = true;
+            fallback_buffers.insert(bi as u32);
+        }
+    }
+    // A fallback buffer with no URI is the "required" trigger per the
+    // spec; a fallback buffer with a URI is permitted but doesn't
+    // force `extensionsRequired`.
+    let mut fallback_without_uri = false;
+    for &bi in &fallback_buffers {
+        if root.buffers[bi as usize].uri.is_none() {
+            fallback_without_uri = true;
+        }
+    }
+    for (bvi, bv) in root.buffer_views.iter().enumerate() {
+        let Some(mc) = bv
+            .extensions
+            .as_ref()
+            .and_then(|e| e.khr_meshopt_compression.as_ref())
+        else {
+            continue;
+        };
+        has_meshopt = true;
+        // Parent layout must equal byteStride * count.
+        let declared = mc.byte_stride.checked_mul(mc.count).ok_or_else(|| {
+            invalid(format!(
+                "ExtensionStackMeshoptLayout: bufferView[{bvi}] \
+                     KHR_meshopt_compression: byteStride * count overflows u32"
+            ))
+        })?;
+        if bv.byte_length != declared {
+            return Err(invalid(format!(
+                "ExtensionStackMeshoptLayout: bufferView[{bvi}].byteLength = {} \
+                 != byteStride ({}) * count ({}) = {} \
+                 (spec §\"JSON schema updates\")",
+                bv.byte_length, mc.byte_stride, mc.count, declared
+            )));
+        }
+        // Mode + per-mode byteStride / count / filter invariants.
+        match mc.mode.as_str() {
+            "ATTRIBUTES" => {
+                if mc.byte_stride % 4 != 0 || !(4..=256).contains(&mc.byte_stride) {
+                    return Err(invalid(format!(
+                        "ExtensionStackMeshoptStride: bufferView[{bvi}] mode \"ATTRIBUTES\" \
+                         requires byteStride divisible by 4 in [4, 256] (got {})",
+                        mc.byte_stride
+                    )));
+                }
+            }
+            "TRIANGLES" => {
+                if mc.count % 3 != 0 {
+                    return Err(invalid(format!(
+                        "ExtensionStackMeshoptCount: bufferView[{bvi}] mode \"TRIANGLES\" \
+                         requires count divisible by 3 (got {})",
+                        mc.count
+                    )));
+                }
+                if mc.byte_stride != 2 && mc.byte_stride != 4 {
+                    return Err(invalid(format!(
+                        "ExtensionStackMeshoptStride: bufferView[{bvi}] mode \"TRIANGLES\" \
+                         requires byteStride ∈ {{2, 4}} (got {})",
+                        mc.byte_stride
+                    )));
+                }
+                if let Some(f) = mc.filter.as_deref() {
+                    if f != "NONE" {
+                        return Err(invalid(format!(
+                            "ExtensionStackMeshoptFilter: bufferView[{bvi}] mode \"TRIANGLES\" \
+                             requires filter omitted or \"NONE\" (got {:?})",
+                            f
+                        )));
+                    }
+                }
+            }
+            "INDICES" => {
+                if mc.byte_stride != 2 && mc.byte_stride != 4 {
+                    return Err(invalid(format!(
+                        "ExtensionStackMeshoptStride: bufferView[{bvi}] mode \"INDICES\" \
+                         requires byteStride ∈ {{2, 4}} (got {})",
+                        mc.byte_stride
+                    )));
+                }
+                if let Some(f) = mc.filter.as_deref() {
+                    if f != "NONE" {
+                        return Err(invalid(format!(
+                            "ExtensionStackMeshoptFilter: bufferView[{bvi}] mode \"INDICES\" \
+                             requires filter omitted or \"NONE\" (got {:?})",
+                            f
+                        )));
+                    }
+                }
+            }
+            other => {
+                return Err(invalid(format!(
+                    "ExtensionStackMeshoptMode: bufferView[{bvi}] mode {:?} not one of \
+                     \"ATTRIBUTES\", \"TRIANGLES\", \"INDICES\" \
+                     (spec §\"JSON schema updates\")",
+                    other
+                )));
+            }
+        }
+        // Filter-specific byteStride invariants (already partially
+        // policed above for TRIANGLES / INDICES; here we cover
+        // ATTRIBUTES + omitted-mode-aware checks).
+        if let Some(f) = mc.filter.as_deref() {
+            match f {
+                "NONE" => {}
+                "OCTAHEDRAL" => {
+                    if mc.byte_stride != 4 && mc.byte_stride != 8 {
+                        return Err(invalid(format!(
+                            "ExtensionStackMeshoptFilter: bufferView[{bvi}] filter \"OCTAHEDRAL\" \
+                             requires byteStride ∈ {{4, 8}} (got {})",
+                            mc.byte_stride
+                        )));
+                    }
+                }
+                "QUATERNION" => {
+                    if mc.byte_stride != 8 {
+                        return Err(invalid(format!(
+                            "ExtensionStackMeshoptFilter: bufferView[{bvi}] filter \"QUATERNION\" \
+                             requires byteStride == 8 (got {})",
+                            mc.byte_stride
+                        )));
+                    }
+                }
+                "EXPONENTIAL" => {
+                    if mc.byte_stride % 4 != 0 {
+                        return Err(invalid(format!(
+                            "ExtensionStackMeshoptFilter: bufferView[{bvi}] filter \"EXPONENTIAL\" \
+                             requires byteStride divisible by 4 (got {})",
+                            mc.byte_stride
+                        )));
+                    }
+                }
+                "COLOR" => {
+                    if mc.byte_stride != 4 && mc.byte_stride != 8 {
+                        return Err(invalid(format!(
+                            "ExtensionStackMeshoptFilter: bufferView[{bvi}] filter \"COLOR\" \
+                             requires byteStride ∈ {{4, 8}} (got {})",
+                            mc.byte_stride
+                        )));
+                    }
+                }
+                other => {
+                    return Err(invalid(format!(
+                        "ExtensionStackMeshoptFilter: bufferView[{bvi}] filter {:?} not one of \
+                         \"NONE\", \"OCTAHEDRAL\", \"QUATERNION\", \"EXPONENTIAL\", \"COLOR\" \
+                         (spec §\"JSON schema updates\")",
+                        other
+                    )));
+                }
+            }
+        }
+        // Source buffer + range bounds: the compressed payload must
+        // resolve into an existing buffer and fit within its declared
+        // `byteLength`.
+        let src_buf = mc.buffer as usize;
+        if src_buf >= root.buffers.len() {
+            return Err(invalid(format!(
+                "ExtensionStackMeshoptBuffer: bufferView[{bvi}] \
+                 KHR_meshopt_compression.buffer = {} is out of range \
+                 (buffers[].len = {})",
+                mc.buffer,
+                root.buffers.len()
+            )));
+        }
+        let src_offset = mc.byte_offset.unwrap_or(0) as u64;
+        let end = src_offset + mc.byte_length as u64;
+        if end > root.buffers[src_buf].byte_length as u64 {
+            return Err(invalid(format!(
+                "ExtensionStackMeshoptRange: bufferView[{bvi}] \
+                 KHR_meshopt_compression compressed range [{}, {}) \
+                 overruns buffers[{}].byteLength = {}",
+                src_offset, end, src_buf, root.buffers[src_buf].byte_length
+            )));
+        }
+        // §"Fallback buffers": the buffer index referenced by the
+        // extension JSON itself MUST NOT be a fallback buffer ("No
+        // references to the buffer may come from KHR_meshopt_compression
+        // extension JSON").
+        if fallback_buffers.contains(&mc.buffer) {
+            return Err(invalid(format!(
+                "ExtensionStackMeshoptFallbackSource: bufferView[{bvi}] \
+                 KHR_meshopt_compression.buffer = {} resolves to a buffer \
+                 marked `fallback: true` (spec §\"Fallback buffers\": \
+                 \"No references to the buffer may come from \
+                 KHR_meshopt_compression extension JSON\")",
+                mc.buffer
+            )));
+        }
+        // §"Fallback buffers": when the parent bufferView's `buffer`
+        // index points at a fallback buffer, the bufferView MUST itself
+        // carry the extension. Since we already are inside an
+        // `if mc.is_some()` branch, this direction is satisfied. The
+        // converse — references to a fallback buffer from a
+        // bufferView WITHOUT the extension — is policed in a separate
+        // post-loop scan below.
+    }
+    // Second pass: every reference to a fallback buffer must come
+    // from a bufferView carrying KHR_meshopt_compression.
+    if !fallback_buffers.is_empty() {
+        for (bvi, bv) in root.buffer_views.iter().enumerate() {
+            if !fallback_buffers.contains(&bv.buffer) {
+                continue;
+            }
+            let has_ext = bv
+                .extensions
+                .as_ref()
+                .and_then(|e| e.khr_meshopt_compression.as_ref())
+                .is_some();
+            if !has_ext {
+                return Err(invalid(format!(
+                    "ExtensionStackMeshoptFallbackRef: bufferView[{bvi}] references \
+                     buffers[{}] which is marked `fallback: true`, but the bufferView \
+                     does NOT carry KHR_meshopt_compression (spec §\"Fallback buffers\": \
+                     \"All references to the buffer must come from bufferViews that \
+                     have a KHR_meshopt_compression extension specified\")",
+                    bv.buffer
+                )));
+            }
+        }
+    }
+    if has_meshopt && !used("KHR_meshopt_compression") {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_meshopt_compression data is \
+             present (on a bufferView or buffer) but the extension is not \
+             listed in extensionsUsed (spec §3.12)",
+        ));
+    }
+    if fallback_without_uri
+        && !root
+            .extensions_required
+            .iter()
+            .any(|r| r == "KHR_meshopt_compression")
+    {
+        return Err(invalid(
+            "ExtensionStackMeshoptRequired: a fallback buffer is uri-less \
+             (no URI and not the GLB binary chunk), so KHR_meshopt_compression \
+             MUST appear in extensionsRequired (spec §\"Fallback buffers\")",
+        ));
+    }
+
     // KHR_animation_pointer — per-channel-target extension. Per
     // `docs/3d/gltf/extensions/KHR_animation_pointer.md` §"Extension
     // Usage": when used the channel's `target.path` MUST be
@@ -1595,6 +1900,7 @@ mod tests {
             byte_stride: None,
             target: None,
             name: None,
+            extensions: None,
         }];
         let err = validate_alignment(&acc, &bvs, true, "POSITION").unwrap_err();
         assert!(format!("{err}").contains("VertexAttributeAlignment"));
@@ -1610,6 +1916,7 @@ mod tests {
             byte_stride: None,
             target: None,
             name: None,
+            extensions: None,
         }];
         validate_alignment(&acc, &bvs, true, "POSITION").unwrap();
     }
@@ -1624,6 +1931,7 @@ mod tests {
             byte_stride: Some(13), // not multiple of 4
             target: None,
             name: None,
+            extensions: None,
         }];
         let err = validate_alignment(&acc, &bvs, true, "POSITION").unwrap_err();
         assert!(format!("{err}").contains("byteStride"));
@@ -2966,6 +3274,7 @@ mod tests {
             byte_stride: None,
             target: None,
             name: None,
+            extensions: None,
         }
     }
 
@@ -2977,6 +3286,7 @@ mod tests {
             byte_stride: Some(stride),
             target: None,
             name: None,
+            extensions: None,
         }
     }
 
@@ -3086,6 +3396,7 @@ mod tests {
             byte_length,
             uri: None,
             name: None,
+            extensions: None,
         }
     }
 
@@ -3098,6 +3409,7 @@ mod tests {
             byte_stride: None,
             target: None,
             name: None,
+            extensions: None,
         };
         validate_bufferview_fits_buffer(0, &bv, &[buffer_of(300)]).unwrap();
     }
@@ -3111,6 +3423,7 @@ mod tests {
             byte_stride: None,
             target: None,
             name: None,
+            extensions: None,
         };
         let err = validate_bufferview_fits_buffer(0, &bv, &[buffer_of(300)]).unwrap_err();
         assert!(format!("{err}").contains("BufferViewFitBuffer"));
@@ -3125,6 +3438,7 @@ mod tests {
             byte_stride: None,
             target: None,
             name: None,
+            extensions: None,
         };
         let err = validate_bufferview_fits_buffer(0, &bv, &[buffer_of(300)]).unwrap_err();
         assert!(format!("{err}").contains("BufferViewFitBuffer"));
@@ -3139,6 +3453,7 @@ mod tests {
             byte_stride: Some(2),
             target: None,
             name: None,
+            extensions: None,
         };
         let err = validate_bufferview_fits_buffer(0, &bv, &[buffer_of(64)]).unwrap_err();
         assert!(format!("{err}").contains("BufferViewStrideRange"));
@@ -3153,6 +3468,7 @@ mod tests {
             byte_stride: Some(256),
             target: None,
             name: None,
+            extensions: None,
         };
         let err = validate_bufferview_fits_buffer(0, &bv, &[buffer_of(256)]).unwrap_err();
         assert!(format!("{err}").contains("BufferViewStrideRange"));
@@ -3169,6 +3485,7 @@ mod tests {
                 byte_stride: Some(s),
                 target: None,
                 name: None,
+                extensions: None,
             };
             validate_bufferview_fits_buffer(0, &bv, &[buffer_of(1024)]).unwrap();
         }

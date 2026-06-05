@@ -404,6 +404,56 @@ framework but usable standalone.
   must have a source" rule expands to cover the new spec-allowed
   shape: a texture is invalid only when it carries neither base
   `source` nor the extension indirection
+- KHR_meshopt_compression extension (Khronos Release Candidate,
+  ratified registry entry) — per-bufferView compression
+  descriptors + per-buffer `{ "fallback": true }` placeholder
+  markers from
+  `docs/3d/gltf/extensions/KHR_meshopt_compression.md`. The
+  crate is a pass-through engine (the meshopt bitstream decoder
+  in Appendix A is not implemented yet), so the extension is
+  handled at the JSON descriptor level: every bufferView's
+  `extensions.KHR_meshopt_compression` block (the full descriptor
+  with `buffer` / `byteOffset` / `byteLength` / `byteStride` /
+  `count` / `mode` / optional `filter`) is captured into
+  `Scene3D::extras["KHR_meshopt_compression"].bufferViews["<bvi>"]`
+  on decode, and every buffer marked
+  `extensions.KHR_meshopt_compression.fallback = true` is recorded
+  under `…fallbackBuffers` as an array of buffer indices. A
+  uri-less fallback buffer (the spec's "Fallback buffers" shape)
+  is materialised as a zero-filled byte vector of the declared
+  `byteLength` so downstream bufferView slicing remains safe;
+  consumers that wire up a meshopt decoder lane later can inflate
+  the real bytes into that region from the descriptor's compressed
+  source range. On encode the sidecar is stripped from
+  `scene.extras` and the descriptors are NOT re-emitted onto the
+  freshly-built uncompressed bufferViews — documents written by
+  this crate are always uncompressed (the compression is a
+  load-time concern only). The §3.12 stack validator rejects
+  documents with the data block on any bufferView/buffer without
+  the declaration (`ExtensionStackUsedNotDeclared`); uri-less
+  fallback buffers without `KHR_meshopt_compression` in
+  `extensionsRequired` (`ExtensionStackMeshoptRequired` per spec
+  §"Fallback buffers"); descriptors with `mode` outside
+  `{ATTRIBUTES, TRIANGLES, INDICES}`
+  (`ExtensionStackMeshoptMode`) or `filter` outside
+  `{NONE, OCTAHEDRAL, QUATERNION, EXPONENTIAL, COLOR}`
+  (`ExtensionStackMeshoptFilter`); parent-layout mismatches where
+  `byteStride * count != parent.byteLength`
+  (`ExtensionStackMeshoptLayout`); per-mode byteStride
+  invariants (ATTRIBUTES requires byteStride divisible by 4 in
+  `[4, 256]`; TRIANGLES / INDICES require byteStride ∈ `{2, 4}` —
+  `ExtensionStackMeshoptStride`); TRIANGLES count not divisible
+  by 3 (`ExtensionStackMeshoptCount`); TRIANGLES / INDICES with
+  any filter other than `"NONE"` (`ExtensionStackMeshoptFilter`);
+  per-filter byteStride invariants (OCTAHEDRAL ∈ `{4, 8}`,
+  QUATERNION == 8, EXPONENTIAL divisible by 4, COLOR ∈ `{4, 8}`);
+  descriptor `buffer` out of range
+  (`ExtensionStackMeshoptBuffer`); compressed range overrunning
+  the source buffer (`ExtensionStackMeshoptRange`); a bufferView
+  pointing at a fallback buffer WITHOUT carrying the extension
+  (`ExtensionStackMeshoptFallbackRef`); and a descriptor's own
+  `buffer` index pointing at a fallback buffer
+  (`ExtensionStackMeshoptFallbackSource`)
 - Skins + skeletons (joint roster, inverseBindMatrices accessor,
   optional skeleton root) per spec §3.7.3 — `node.skin` round-trips
 - Animations (channels + samplers) per spec §3.11 — translation /

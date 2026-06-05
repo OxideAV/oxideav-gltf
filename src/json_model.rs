@@ -388,6 +388,63 @@ pub struct BufferView {
     pub target: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Per-bufferView `extensions` block. Today this carries
+    /// `KHR_meshopt_compression` (the per-bufferView compression
+    /// descriptor that overrides the source buffer index and adds the
+    /// compression mode/filter/count/byteStride parameters per
+    /// `docs/3d/gltf/extensions/KHR_meshopt_compression.md`
+    /// §"Specifying compressed views").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<BufferViewExtensions>,
+}
+
+/// `extensions` block on a `bufferView` object. Currently surfaces
+/// `KHR_meshopt_compression` per
+/// `docs/3d/gltf/extensions/KHR_meshopt_compression.md`
+/// §"Specifying compressed views".
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct BufferViewExtensions {
+    #[serde(
+        rename = "KHR_meshopt_compression",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_meshopt_compression: Option<KhrMeshoptCompression>,
+}
+
+/// `KHR_meshopt_compression` bufferView extension object per
+/// `docs/3d/gltf/extensions/KHR_meshopt_compression.md` §"JSON schema
+/// updates". Overrides the source `buffer` index and supplies the
+/// compression layout parameters. The parent `bufferView` fields
+/// describe the *uncompressed* fallback layout; the fields here
+/// describe the *compressed* source bytes (which the meshopt decoder
+/// would inflate into the parent layout).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct KhrMeshoptCompression {
+    /// Index of the buffer holding the compressed data.
+    pub buffer: u32,
+    #[serde(
+        rename = "byteOffset",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub byte_offset: Option<u32>,
+    /// Length of the compressed payload in bytes (required).
+    #[serde(rename = "byteLength")]
+    pub byte_length: u32,
+    /// Stride of decompressed elements in bytes (required).
+    #[serde(rename = "byteStride")]
+    pub byte_stride: u32,
+    /// Number of elements (required).
+    pub count: u32,
+    /// Compression mode — one of `"ATTRIBUTES"`, `"TRIANGLES"`,
+    /// `"INDICES"`.
+    pub mode: String,
+    /// Post-decompression filter — one of `"NONE"`, `"OCTAHEDRAL"`,
+    /// `"QUATERNION"`, `"EXPONENTIAL"`, `"COLOR"`. Defaults to
+    /// `"NONE"` when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -400,6 +457,40 @@ pub struct Buffer {
     pub uri: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Per-buffer `extensions` block. Today this carries the
+    /// `KHR_meshopt_compression` `{ "fallback": true }` placeholder
+    /// marker per
+    /// `docs/3d/gltf/extensions/KHR_meshopt_compression.md`
+    /// §"Fallback buffers".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<BufferExtensions>,
+}
+
+/// `extensions` block on a `buffer` object. Currently surfaces
+/// `KHR_meshopt_compression`'s `{ "fallback": true }` placeholder
+/// marker per
+/// `docs/3d/gltf/extensions/KHR_meshopt_compression.md`
+/// §"Fallback buffers".
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct BufferExtensions {
+    #[serde(
+        rename = "KHR_meshopt_compression",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_meshopt_compression: Option<KhrMeshoptBufferFallback>,
+}
+
+/// `KHR_meshopt_compression` buffer-side marker tagging a buffer as a
+/// fallback (no-data placeholder) per
+/// `docs/3d/gltf/extensions/KHR_meshopt_compression.md`
+/// §"Fallback buffers". A fallback buffer's `byteLength` must be
+/// large enough to hold the decompressed bufferViews referencing it
+/// but its bytes are not required (no `uri`, no GLB chunk).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct KhrMeshoptBufferFallback {
+    #[serde(default, skip_serializing_if = "is_default_false")]
+    pub fallback: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
