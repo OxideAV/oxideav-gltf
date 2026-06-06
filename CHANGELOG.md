@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 243)
+
+- `KHR_gaussian_splatting` extension per
+  `docs/3d/gltf/extensions/KHR_gaussian_splatting.md` §"Extending
+  Mesh Primitives" — the per-primitive descriptor block that flags a
+  `POINTS` mesh primitive as a 3D Gaussian splat field. The descriptor
+  carries four string-valued fields: `kernel` (required — the spec
+  defines `"ellipse"`), `colorSpace` (required — `"srgb_rec709_display"`
+  or `"lin_rec709_display"`), `projection` (optional, default
+  `"perspective"`), and `sortingMethod` (optional, default
+  `"cameraDistance"`).
+  The decoder surfaces the descriptor through
+  `Primitive::extras["KHR_gaussian_splatting"]` as a JSON object so
+  the typed `oxideav_mesh3d::Primitive` round-trips without growing a
+  bespoke splat slot. The encoder lifts the sentinel back into the
+  typed `PrimitiveExtensions` block, emits the four fields verbatim,
+  and appends `KHR_gaussian_splatting` to `extensionsUsed` exactly
+  once per document. The custom attribute semantics
+  (`KHR_gaussian_splatting:ROTATION` / `:SCALE` / `:OPACITY` /
+  `:SH_DEGREE_l_COEF_n` per §"Ellipse Kernel" §"Attributes") flow
+  through the standard accessor pipeline as raw attributes — this
+  round delivers the descriptor handshake; the typed splat-field
+  decode + the spherical-harmonics evaluator described in §"Lighting"
+  remain for a follow-up.
+- §3.12 stack validator coverage for `KHR_gaussian_splatting`:
+  `ExtensionStackUsedNotDeclared` rejects a descriptor without the
+  `extensionsUsed` entry (spec §3.12 + the extension's §"Extending
+  Mesh Primitives" mandate). Four allowed-value rules cover the
+  spec-defined strings while leaving forward-compat carve-outs open
+  for vendor-extension-prefixed identifiers (`KHR_…`, `EXT_…`, vendor
+  prefixes per the registry's namespacing convention):
+  `ExtensionStackGaussianSplattingKernel`,
+  `ExtensionStackGaussianSplattingColorSpace`,
+  `ExtensionStackGaussianSplattingProjection`, and
+  `ExtensionStackGaussianSplattingSortingMethod`. The
+  ellipse-kernel-specific §"Ellipse Kernel" §"Dependencies on glTF"
+  rule (mesh primitive `mode` MUST be `POINTS` for the base
+  `"ellipse"` kernel) surfaces as
+  `ExtensionStackGaussianSplattingMode` — the validator defers to a
+  layered extension for any non-base kernel string so future
+  triangle-based splat reconstructions can land without re-touching
+  this crate.
+- New typed model node `KhrGaussianSplatting` in `json_model.rs`
+  alongside the extended `PrimitiveExtensions` block; new decoder
+  stash + encoder lift passes in `json_to_scene.rs` /
+  `scene_to_json.rs`; `emitted_gaussian_splatting` tracking in the
+  `convert_with_options` walk so the §3.12 declaration appears
+  exactly once.
+- 15 new tests in `tests/khr_gaussian_splatting.rs` covering
+  descriptor round-trip via GLB (kernel + colorSpace + projection +
+  sortingMethod), absent-by-default omission, optional-field
+  preservation (projection / sortingMethod absent means absent on
+  encode — no synthesis), `extensionsUsed` emission, missing-`used`
+  rejection, allowed-value rejection for each of kernel / colorSpace /
+  projection / sortingMethod, ellipse-kernel POINTS-mode requirement
+  (both explicit `mode: 4` and default-omitted `mode`),
+  vendor-prefixed kernel accepted (carve-out), linear color-space
+  accepted, vendor-prefixed kernel skips the mode check, and a
+  multi-primitive scene appending `extensionsUsed` exactly once.
+
 ### Added (round 240)
 
 - `KHR_meshopt_compression` extension per

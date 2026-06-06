@@ -1881,6 +1881,45 @@ fn convert_primitive(
                 serde_json::Value::Object(obj),
             );
         }
+        // KHR_gaussian_splatting — per-primitive descriptor block per
+        // `docs/3d/gltf/extensions/KHR_gaussian_splatting.md` §"Extending
+        // Mesh Primitives". The typed `oxideav_mesh3d::Primitive` has no
+        // splat slot, so the descriptor (kernel/colorSpace/projection/
+        // sortingMethod + optional `extras`) is surfaced through
+        // `primitive.extras["KHR_gaussian_splatting"]` for the encoder
+        // to lift back on write. The custom attribute semantics
+        // (`KHR_gaussian_splatting:ROTATION`, `:SCALE`, `:OPACITY`,
+        // `:SH_DEGREE_l_COEF_n`) flow through the standard accessor
+        // pipeline as raw attributes; the descriptor object is the
+        // primary handshake the renderer needs to switch into splat-
+        // rendering mode.
+        if let Some(splat) = &ext.khr_gaussian_splatting {
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "kernel".into(),
+                serde_json::Value::String(splat.kernel.clone()),
+            );
+            obj.insert(
+                "colorSpace".into(),
+                serde_json::Value::String(splat.color_space.clone()),
+            );
+            if let Some(proj) = &splat.projection {
+                obj.insert("projection".into(), serde_json::Value::String(proj.clone()));
+            }
+            if let Some(sort) = &splat.sorting_method {
+                obj.insert(
+                    "sortingMethod".into(),
+                    serde_json::Value::String(sort.clone()),
+                );
+            }
+            if let Some(e) = &splat.extras {
+                obj.insert("extras".into(), e.clone());
+            }
+            prim.extras.insert(
+                "KHR_gaussian_splatting".to_owned(),
+                serde_json::Value::Object(obj),
+            );
+        }
     }
 
     // Stash per-attribute quantisation metadata so the encoder can

@@ -258,7 +258,11 @@ pub struct Primitive {
 
 /// Per-primitive `extensions` block. Today carries the
 /// `KHR_materials_variants` mapping table that pairs material indices
-/// with the root-level variant indices they apply to.
+/// with the root-level variant indices they apply to, and the
+/// `KHR_gaussian_splatting` descriptor that tags a `POINTS` primitive
+/// as a 3D Gaussian-splat field per
+/// `docs/3d/gltf/extensions/KHR_gaussian_splatting.md` §"Extending Mesh
+/// Primitives".
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct PrimitiveExtensions {
     #[serde(
@@ -267,6 +271,55 @@ pub struct PrimitiveExtensions {
         skip_serializing_if = "Option::is_none"
     )]
     pub khr_materials_variants: Option<PrimitiveVariantMappings>,
+    /// `KHR_gaussian_splatting` per-primitive descriptor object — a
+    /// kernel/colorSpace/projection/sortingMethod tuple identifying
+    /// the splat-field rendering parameters per
+    /// `docs/3d/gltf/extensions/KHR_gaussian_splatting.md` §"Extending
+    /// Mesh Primitives". Only present on primitives whose mesh-level
+    /// data describes a 3D Gaussian splatting field.
+    #[serde(
+        rename = "KHR_gaussian_splatting",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_gaussian_splatting: Option<KhrGaussianSplatting>,
+}
+
+/// `KHR_gaussian_splatting` per-primitive descriptor block per
+/// `docs/3d/gltf/extensions/KHR_gaussian_splatting.md` §"Extending Mesh
+/// Primitives" — four string-valued fields that describe the splat
+/// field's kernel shape, color space, projection method, and rendering
+/// sort order. The spec marks `kernel` and `colorSpace` as required;
+/// `projection` defaults to `"perspective"` and `sortingMethod`
+/// defaults to `"cameraDistance"`.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct KhrGaussianSplatting {
+    /// Required — kernel identifier. The base spec defines a single
+    /// kernel string, `"ellipse"`, that maps to the 2D-ellipse kernel
+    /// described in §"Ellipse Kernel".
+    pub kernel: String,
+    /// Required — splat color-space identifier per §"Color Space".
+    /// The base spec lists two strings: `"srgb_rec709_display"` and
+    /// `"lin_rec709_display"`.
+    #[serde(rename = "colorSpace")]
+    pub color_space: String,
+    /// Optional — projection method per §"Projection". The base spec
+    /// defines `"perspective"` (the default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection: Option<String>,
+    /// Optional — sorting strategy per §"Sorting Method". The base
+    /// spec defines `"cameraDistance"` (the default).
+    #[serde(
+        rename = "sortingMethod",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sorting_method: Option<String>,
+    /// Pass-through `extras` per the glTF JSON conventions — the
+    /// descriptor is a typed object, so non-spec siblings are surfaced
+    /// here for round-trip preservation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<Value>,
 }
 
 /// `KHR_materials_variants` per-primitive extension object — a

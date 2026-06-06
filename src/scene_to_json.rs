@@ -66,6 +66,7 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
 
     // --- meshes + accessors + bufferViews ---
     let mut emitted_primitive_variants = false;
+    let mut emitted_gaussian_splatting = false;
     let mut emitted_mesh_xmp = false;
     // `KHR_mesh_quantization` is declared in both `extensionsUsed`
     // AND `extensionsRequired` whenever any primitive carries the
@@ -103,6 +104,18 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
                 .is_some()
         }) {
             emitted_primitive_variants = true;
+        }
+        // Track KHR_gaussian_splatting per-primitive descriptors per
+        // `docs/3d/gltf/extensions/KHR_gaussian_splatting.md` §"Extending
+        // Mesh Primitives" so the §3.12 declaration is emitted exactly
+        // once at root scope.
+        if primitives.iter().any(|p| {
+            p.extensions
+                .as_ref()
+                .and_then(|e| e.khr_gaussian_splatting.as_ref())
+                .is_some()
+        }) {
+            emitted_gaussian_splatting = true;
         }
         // Lift primitive[0]'s `__mesh_extras` sentinel back to mesh-level
         // extras (matches the decoder's stash; loss-tolerant if absent).
@@ -349,6 +362,16 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     if emitted_root_variants || emitted_primitive_variants {
         root.extensions_used
             .push("KHR_materials_variants".to_owned());
+    }
+    if emitted_gaussian_splatting {
+        // Per `docs/3d/gltf/extensions/KHR_gaussian_splatting.md` §"Extending
+        // Mesh Primitives" the extension MUST be listed in
+        // `extensionsUsed` when any primitive carries the descriptor
+        // (spec §3.12 stack rule). Independent of `extensionsRequired`
+        // — fallback to a point-cloud render is permitted when the
+        // extension is not required.
+        root.extensions_used
+            .push("KHR_gaussian_splatting".to_owned());
     }
 
     // --- skins ---
@@ -793,6 +816,7 @@ fn encode_primitive(
     prim_extras.remove("__mesh_weights");
     prim_extras.remove(crate::quantization::ATTR_QUANT_KEY);
     let variants_extra = prim_extras.remove("KHR_materials_variants");
+    let splatting_extra = prim_extras.remove("KHR_gaussian_splatting");
     let extras = if prim_extras.is_empty() {
         None
     } else {
@@ -807,7 +831,16 @@ fn encode_primitive(
     // caller is responsible for declaring `KHR_materials_variants` in
     // `extensionsUsed` — the surrounding `convert_with_options` walk
     // tracks the surfacing and appends it once.
-    let prim_extensions = variants_extra
+    //
+    // KHR_gaussian_splatting — per-primitive descriptor block per
+    // `docs/3d/gltf/extensions/KHR_gaussian_splatting.md` §"Extending
+    // Mesh Primitives". The decoder stashes the kernel/colorSpace/
+    // projection/sortingMethod tuple under
+    // `primitive.extras["KHR_gaussian_splatting"]`; the encoder lifts
+    // it back into the typed `PrimitiveExtensions` block here on write.
+    // The surrounding `convert_with_options` walk records the surfacing
+    // and appends `KHR_gaussian_splatting` to `extensionsUsed` once.
+    let variants_mappings: Option<gj::PrimitiveVariantMappings> = variants_extra
         .as_ref()
         .and_then(|v| v.as_object())
         .and_then(|o| o.get("mappings"))
@@ -837,10 +870,43 @@ fn encode_primitive(
                     })
                 })
                 .collect();
-            gj::PrimitiveExtensions {
-                khr_materials_variants: Some(gj::PrimitiveVariantMappings { mappings }),
-            }
+            gj::PrimitiveVariantMappings { mappings }
         });
+    let splatting_desc: Option<gj::KhrGaussianSplatting> = splatting_extra
+        .as_ref()
+        .and_then(|v| v.as_object())
+        .and_then(|obj| {
+            // kernel + colorSpace are required per the spec; if either
+            // is missing in the sentinel, we drop the descriptor
+            // (callers that build a partial sentinel by hand surface
+            // through the §3.12 validator instead).
+            let kernel = obj.get("kernel").and_then(|v| v.as_str())?.to_owned();
+            let color_space = obj.get("colorSpace").and_then(|v| v.as_str())?.to_owned();
+            let projection = obj
+                .get("projection")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let sorting_method = obj
+                .get("sortingMethod")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let extras = obj.get("extras").cloned();
+            Some(gj::KhrGaussianSplatting {
+                kernel,
+                color_space,
+                projection,
+                sorting_method,
+                extras,
+            })
+        });
+    let prim_extensions = if variants_mappings.is_some() || splatting_desc.is_some() {
+        Some(gj::PrimitiveExtensions {
+            khr_materials_variants: variants_mappings,
+            khr_gaussian_splatting: splatting_desc,
+        })
+    } else {
+        None
+    };
 
     // Re-emit morph targets as accessors per §3.7.2.2. Two paths feed
     // this:

@@ -454,6 +454,38 @@ framework but usable standalone.
   (`ExtensionStackMeshoptFallbackRef`); and a descriptor's own
   `buffer` index pointing at a fallback buffer
   (`ExtensionStackMeshoptFallbackSource`)
+- KHR_gaussian_splatting extension (Khronos Release Candidate) —
+  the per-primitive descriptor block that flags a `POINTS` mesh
+  primitive as a 3D Gaussian splat field per
+  `docs/3d/gltf/extensions/KHR_gaussian_splatting.md` §"Extending
+  Mesh Primitives". The descriptor carries `kernel` (required —
+  the spec defines `"ellipse"`), `colorSpace` (required —
+  `"srgb_rec709_display"` or `"lin_rec709_display"`), and the two
+  optional fields `projection` (default `"perspective"`) and
+  `sortingMethod` (default `"cameraDistance"`). The decoder surfaces
+  the descriptor through `Primitive::extras["KHR_gaussian_splatting"]`
+  as a JSON object so the typed `oxideav_mesh3d::Primitive` round-trips
+  unchanged; the encoder lifts it back into the typed
+  `PrimitiveExtensions` block on write and appends
+  `KHR_gaussian_splatting` to `extensionsUsed` exactly once. The
+  §3.12 stack validator rejects descriptor blocks without the
+  `extensionsUsed` entry (`ExtensionStackUsedNotDeclared`),
+  unknown `kernel` / `colorSpace` / `projection` / `sortingMethod`
+  strings outside the spec-defined sets
+  (`ExtensionStackGaussianSplattingKernel` /
+  `…ColorSpace` / `…Projection` / `…SortingMethod`), and rejects
+  a base-`"ellipse"` kernel on a non-POINTS primitive
+  (`ExtensionStackGaussianSplattingMode`, per §"Ellipse Kernel"
+  §"Dependencies on glTF"). The forward-compat carve-out lets a
+  vendor-extension-prefixed identifier (`KHR_…`, `EXT_…`, vendor
+  prefixes) layer additional kernels / color spaces / projections /
+  sorting methods on top without re-touching this crate. The custom
+  attribute semantics (`KHR_gaussian_splatting:ROTATION` / `:SCALE`
+  / `:OPACITY` / `:SH_DEGREE_l_COEF_n` per §"Ellipse Kernel"
+  §"Attributes") flow through the standard accessor pipeline as raw
+  attributes — this round delivers the descriptor handshake; the
+  typed splat-field decode + the spherical-harmonics evaluator from
+  §"Lighting" remain for a follow-up
 - Skins + skeletons (joint roster, inverseBindMatrices accessor,
   optional skeleton root) per spec §3.7.3 — `node.skin` round-trips
 - Animations (channels + samplers) per spec §3.11 — translation /

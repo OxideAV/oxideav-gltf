@@ -45,7 +45,11 @@
 //!   per-asset / per-scene / per-node / per-mesh / per-material
 //!   `{ packet: N }` indirection), and `KHR_meshopt_compression` (per-bufferView
 //!   compression descriptors + per-buffer `{ "fallback": true }` markers
-//!   per `docs/3d/gltf/extensions/KHR_meshopt_compression.md`).
+//!   per `docs/3d/gltf/extensions/KHR_meshopt_compression.md`), and
+//!   `KHR_gaussian_splatting` per-primitive descriptor blocks per
+//!   `docs/3d/gltf/extensions/KHR_gaussian_splatting.md` (kernel +
+//!   colorSpace + projection + sortingMethod with the spec's allowed-
+//!   value sets and the ellipse-kernel mode-MUST-be-POINTS dependency).
 //! * `KHR_meshopt_compression` per-bufferView spec invariants from
 //!   §"JSON schema updates" (mode ∈ ATTRIBUTES/TRIANGLES/INDICES,
 //!   filter ∈ NONE/OCTAHEDRAL/QUATERNION/EXPONENTIAL/COLOR,
@@ -1266,6 +1270,137 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         ));
     }
 
+    // KHR_gaussian_splatting — per-primitive descriptor block per
+    // `docs/3d/gltf/extensions/KHR_gaussian_splatting.md` §"Extending
+    // Mesh Primitives". Spec §3.12 stack rule: presence of the data
+    // block requires the extension to be listed in `extensionsUsed`.
+    // Additional spec invariants (from the same section, §"Color Space",
+    // §"Projection", §"Sorting Method", and §"Ellipse Kernel" §"Dependencies
+    // on glTF"):
+    //
+    //  * `kernel` MUST be one of the spec-defined strings — the base
+    //    spec defines `"ellipse"` and notes that additional kernels
+    //    can be introduced by separate extensions. The validator
+    //    therefore accepts the base value and any string prefixed
+    //    `KHR_` / `EXT_` / vendor-prefixed (`MSFT_`, `ADOBE_`, …) to
+    //    allow forward-compatible kernel extensions to layer on top.
+    //  * `colorSpace` MUST be one of `"srgb_rec709_display"` or
+    //    `"lin_rec709_display"`, with the same forward-compat carve-out
+    //    for vendor/extension-prefixed strings.
+    //  * `projection` (when present) MUST be `"perspective"` with the
+    //    same forward-compat carve-out.
+    //  * `sortingMethod` (when present) MUST be `"cameraDistance"` with
+    //    the same forward-compat carve-out.
+    //  * §"Ellipse Kernel" §"Dependencies on glTF" — when `kernel ==
+    //    "ellipse"` the primitive's `mode` MUST be `POINTS` (0). For
+    //    other kernels this validator defers to the kernel-defining
+    //    extension.
+    let has_splatting = root.meshes.iter().any(|m| {
+        m.primitives.iter().any(|p| {
+            p.extensions
+                .as_ref()
+                .and_then(|e| e.khr_gaussian_splatting.as_ref())
+                .is_some()
+        })
+    });
+    if has_splatting && !used("KHR_gaussian_splatting") {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_gaussian_splatting data is \
+             present on a primitive but the extension is not listed in \
+             extensionsUsed (spec §3.12)",
+        ));
+    }
+    // Helper: a string is "spec-known or vendor-prefixed". The two
+    // prefixes that count as vendor-extension namespaces in the glTF
+    // ecosystem are anything containing an underscore-separated prefix
+    // followed by the body. We accept the spec strings and conservatively
+    // accept any non-spec value containing `_` (treating it as a vendor
+    // namespace handshake forwarded from a layered extension), while
+    // rejecting bare unknown identifiers that have no namespace marker.
+    fn spec_or_extension(name: &str, spec_values: &[&str]) -> bool {
+        if spec_values.contains(&name) {
+            return true;
+        }
+        // Vendor-extension strings carry an underscore-separated
+        // prefix per the glTF naming convention (`KHR_`, `EXT_`,
+        // `MSFT_`, `ADOBE_`, etc.). A non-empty prefix terminated by
+        // `_` plus a non-empty body suffices.
+        if let Some((prefix, body)) = name.split_once('_') {
+            !prefix.is_empty() && !body.is_empty()
+        } else {
+            false
+        }
+    }
+    const SPLAT_KERNELS: &[&str] = &["ellipse"];
+    const SPLAT_COLOR_SPACES: &[&str] = &["srgb_rec709_display", "lin_rec709_display"];
+    const SPLAT_PROJECTIONS: &[&str] = &["perspective"];
+    const SPLAT_SORTING: &[&str] = &["cameraDistance"];
+    for (mi, mesh) in root.meshes.iter().enumerate() {
+        for (pi, prim) in mesh.primitives.iter().enumerate() {
+            let splat = match prim
+                .extensions
+                .as_ref()
+                .and_then(|e| e.khr_gaussian_splatting.as_ref())
+            {
+                Some(s) => s,
+                None => continue,
+            };
+            if !spec_or_extension(&splat.kernel, SPLAT_KERNELS) {
+                return Err(invalid(format!(
+                    "ExtensionStackGaussianSplattingKernel: meshes[{mi}].primitives[{pi}] \
+                     .extensions.KHR_gaussian_splatting.kernel = {:?} is not the spec-defined \
+                     value \"ellipse\" or a vendor-extension-prefixed identifier",
+                    splat.kernel
+                )));
+            }
+            if !spec_or_extension(&splat.color_space, SPLAT_COLOR_SPACES) {
+                return Err(invalid(format!(
+                    "ExtensionStackGaussianSplattingColorSpace: meshes[{mi}].primitives[{pi}] \
+                     .extensions.KHR_gaussian_splatting.colorSpace = {:?} is not one of \
+                     \"srgb_rec709_display\" / \"lin_rec709_display\" or a vendor-extension-prefixed \
+                     identifier",
+                    splat.color_space
+                )));
+            }
+            if let Some(proj) = &splat.projection {
+                if !spec_or_extension(proj, SPLAT_PROJECTIONS) {
+                    return Err(invalid(format!(
+                        "ExtensionStackGaussianSplattingProjection: meshes[{mi}].primitives[{pi}] \
+                         .extensions.KHR_gaussian_splatting.projection = {:?} is not \
+                         \"perspective\" or a vendor-extension-prefixed identifier",
+                        proj
+                    )));
+                }
+            }
+            if let Some(sort) = &splat.sorting_method {
+                if !spec_or_extension(sort, SPLAT_SORTING) {
+                    return Err(invalid(format!(
+                        "ExtensionStackGaussianSplattingSortingMethod: meshes[{mi}] \
+                         .primitives[{pi}].extensions.KHR_gaussian_splatting.sortingMethod = \
+                         {:?} is not \"cameraDistance\" or a vendor-extension-prefixed \
+                         identifier",
+                        sort
+                    )));
+                }
+            }
+            // §"Ellipse Kernel" §"Dependencies on glTF" — for the
+            // `"ellipse"` kernel the primitive MUST be drawn as POINTS.
+            // Default `mode` per spec §3.7.2 is 4 (TRIANGLES); only an
+            // explicit 0 satisfies the ellipse-kernel rule.
+            if splat.kernel == "ellipse" {
+                let mode = prim.mode.unwrap_or(crate::json_model::MODE_TRIANGLES);
+                if mode != crate::json_model::MODE_POINTS {
+                    return Err(invalid(format!(
+                        "ExtensionStackGaussianSplattingMode: meshes[{mi}].primitives[{pi}] \
+                         carries KHR_gaussian_splatting with kernel \"ellipse\" but mode = \
+                         {mode} (the ellipse kernel requires mode = 0 / POINTS per \
+                         §\"Ellipse Kernel\" §\"Dependencies on glTF\")"
+                    )));
+                }
+            }
+        }
+    }
+
     // KHR_xmp_json_ld — both a root-level `packets[]` roster and
     // per-object packet refs surface this extension. Per spec §3.12
     // any presence of the data block requires the extension to be
@@ -2221,6 +2356,7 @@ mod tests {
                     khr_materials_variants: Some(crate::json_model::PrimitiveVariantMappings {
                         mappings,
                     }),
+                    khr_gaussian_splatting: None,
                 }),
                 extras: None,
             }],
