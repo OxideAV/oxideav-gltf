@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 249)
+
+- `KHR_draco_mesh_compression` validator extension —
+  `ExtensionStackDracoByteStride` rejects a per-primitive descriptor
+  whose `bufferView` refers to a bufferView that defines
+  `byteStride`. Per glTF 2.0 §5.11.4 a `byteStride` is reserved for
+  vertex attribute data layouts ("Buffer views with other types of
+  data MUST NOT define byteStride (unless such layout is explicitly
+  enabled by an extension)"); the Draco descriptor's bufferView
+  holds an opaque compressed payload, neither vertex attribute data
+  nor an indexed array, and `KHR_draco_mesh_compression` does not
+  enable a strided payload layout, so a stride on that bufferView is
+  semantically nonsensical. The check has the same shape as the
+  §5.3.1 sparse-indices `MUST NOT have byteStride` rule already in
+  this validator. Three new tests in
+  `tests/khr_draco_mesh_compression.rs` lock in the rejection for
+  two distinct strides inside the `[4, 252]` generic range and the
+  acceptance of a stride-less Draco bufferView.
+
 ### Added (round 246)
 
 - `KHR_draco_mesh_compression` extension per

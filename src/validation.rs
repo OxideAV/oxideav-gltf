@@ -125,6 +125,12 @@
 //!   `target` or `byteStride` property (the sparse-indices buffer view
 //!   is a tightly-packed index array; a stride or target hint would be
 //!   semantically nonsensical).
+//! * §5.11.4 — the bufferView referenced by a
+//!   `KHR_draco_mesh_compression` per-primitive descriptor MUST NOT
+//!   carry `byteStride`. The descriptor's bufferView holds an opaque
+//!   Draco-compressed payload, not vertex attribute data, and the
+//!   extension does not enable a strided payload layout. Same shape
+//!   as the §5.3.1 sparse-indices rule.
 //!
 //! All failures surface as `Error::InvalidData` with a stable
 //! `VertexAttribute…` / `ExtensionStack…` / `AnimationChannel…` /
@@ -1464,6 +1470,32 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
                      range (bufferViews[].len = {})",
                     draco.buffer_view,
                     root.buffer_views.len()
+                )));
+            }
+            // glTF 2.0 §5.11.4 — `bufferView.byteStride`, when defined,
+            // is reserved for vertex attribute data layouts ("Buffer
+            // views with other types of data MUST NOT define byteStride
+            // (unless such layout is explicitly enabled by an
+            // extension)"). The Draco descriptor's bufferView carries
+            // an opaque compressed payload — neither vertex attribute
+            // data nor an indexed array — and `KHR_draco_mesh_compression`
+            // does not enable a strided layout for the payload. So
+            // `byteStride` MUST NOT be defined on the referenced
+            // bufferView. The same reasoning is already enforced for
+            // sparse-indices / sparse-values bufferViews by spec
+            // §5.3.1 (the sparse-indices and sparse-values checks above
+            // in this file).
+            let draco_bv = &root.buffer_views[bvi];
+            if let Some(stride) = draco_bv.byte_stride {
+                return Err(invalid(format!(
+                    "ExtensionStackDracoByteStride: meshes[{mi}].primitives[{pi}] \
+                     .extensions.KHR_draco_mesh_compression.bufferView = {bvi} \
+                     -> bufferViews[{bvi}].byteStride = {stride} — MUST NOT be \
+                     defined on a Draco-compressed payload bufferView (glTF 2.0 \
+                     §5.11.4: byteStride is reserved for vertex attribute data \
+                     layouts; the Draco payload is opaque compressed bytes, not \
+                     vertex attributes, and KHR_draco_mesh_compression does not \
+                     enable a strided payload layout)"
                 )));
             }
             // attributes keys ⊆ parent primitive attributes keys.

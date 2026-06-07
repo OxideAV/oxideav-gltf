@@ -41,6 +41,10 @@
 //!     attributes alongside the descriptor) without
 //!     `KHR_draco_mesh_compression` listed in `extensionsRequired`
 //!     (`ExtensionStackDracoRequired`)
+//!   * descriptor `bufferView` references a bufferView that carries
+//!     `byteStride` — forbidden per glTF 2.0 §5.11.4 because the Draco
+//!     payload is opaque compressed bytes, not vertex attribute data
+//!     (`ExtensionStackDracoByteStride`)
 
 use oxideav_gltf::{GltfDecoder, GltfEncoder};
 use oxideav_mesh3d::{
@@ -479,4 +483,123 @@ fn draco_accepts_compressed_only_with_extensions_required() {
         msg.contains("POSITION"),
         "expected the missing-POSITION downstream surface; got: {msg}"
     );
+}
+
+// ---------------------------------------------------------------------
+// glTF 2.0 §5.11.4 — `bufferView.byteStride`, when defined, applies to
+// vertex attribute data layouts only ("Buffer views with other types of
+// data MUST NOT define byteStride (unless such layout is explicitly
+// enabled by an extension)"). The Draco descriptor's bufferView holds
+// an opaque compressed payload; `KHR_draco_mesh_compression` does not
+// enable a strided payload layout. So the referenced bufferView MUST
+// NOT carry `byteStride`. The error surface is
+// `ExtensionStackDracoByteStride`.
+
+/// Build a Draco-document JSON string where the Draco-referenced
+/// bufferView optionally carries `byteStride`. Both the bufferView
+/// `byteLength` and the embedded data URI grow to keep alignment +
+/// fit invariants happy so the new check is the only failure surface.
+fn draco_doc_with_payload_stride(stride: Option<u32>) -> String {
+    // 32 zero bytes encoded as base64: keeps the bufferView fit check
+    // happy for a stride up to 32 with 1 element.
+    let data_uri =
+        "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let stride_field = match stride {
+        Some(s) => format!(", \"byteStride\": {s}"),
+        None => String::new(),
+    };
+    format!(
+        r#"{{
+            "asset": {{ "version": "2.0" }},
+            "extensionsUsed": ["KHR_draco_mesh_compression"],
+            "buffers": [ {{ "byteLength": 32, "uri": "{data_uri}" }} ],
+            "bufferViews": [ {{ "buffer": 0, "byteLength": 32 {stride_field} }} ],
+            "accessors": [ {{
+                "componentType": 5126,
+                "count": 1,
+                "type": "VEC3",
+                "min": [0.0, 0.0, 0.0],
+                "max": [0.0, 0.0, 0.0]
+            }} ],
+            "meshes": [
+                {{
+                    "primitives": [
+                        {{
+                            "attributes": {{ "POSITION": 0 }},
+                            "mode": 4,
+                            "extensions": {{
+                                "KHR_draco_mesh_compression": {{
+                                    "bufferView": 0,
+                                    "attributes": {{ "POSITION": 0 }}
+                                }}
+                            }}
+                        }}
+                    ]
+                }}
+            ]
+        }}"#
+    )
+}
+
+#[test]
+fn draco_rejects_payload_buffer_view_with_byte_stride() {
+    // Stride of 4 satisfies the §5.11.4 generic byteStride range
+    // `[4, 252]` (the JSON-schema range our generic bufferView check
+    // already enforces) — so the only failure surface available is the
+    // new Draco-specific MUST NOT.
+    let raw = draco_doc_with_payload_stride(Some(4));
+    let mut dec = GltfDecoder::new();
+    let err = dec.decode(raw.as_bytes()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("ExtensionStackDracoByteStride"),
+        "expected ExtensionStackDracoByteStride for Draco bufferView with \
+         byteStride, got: {msg}"
+    );
+}
+
+#[test]
+fn draco_rejects_payload_buffer_view_with_byte_stride_252() {
+    // Upper bound of the §5.11.4 range `[4, 252]`. The bufferView itself
+    // is large enough to satisfy the generic stride-fit checks (the
+    // bufferView holds a single element and `byteLength == 32` which is
+    // <= 252, but the fit check is `byteLength >= byteStride * count` only
+    // when count > 0; with no accessor pointing into this bufferView in
+    // the Draco-payload role, the only relevant invariant is the new
+    // Draco-specific MUST NOT). Confirm the rejection still fires.
+    //
+    // (We use a smaller stride at 8 here to avoid colliding with the
+    // bufferView-fit pre-check elsewhere; both 4 and 8 sit inside the
+    // §5.11.4 range, both are forbidden.)
+    let raw = draco_doc_with_payload_stride(Some(8));
+    let mut dec = GltfDecoder::new();
+    let err = dec.decode(raw.as_bytes()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("ExtensionStackDracoByteStride"),
+        "expected ExtensionStackDracoByteStride for Draco bufferView with \
+         byteStride = 8, got: {msg}"
+    );
+}
+
+#[test]
+fn draco_accepts_payload_buffer_view_without_byte_stride() {
+    // Same document shape, but the bufferView does NOT define
+    // byteStride. The new check is silent — the document either parses
+    // through (the spec-compliant happy path) or hits an unrelated
+    // downstream error. The negative guarantee here is the ABSENCE of
+    // `ExtensionStackDracoByteStride` in any error surface.
+    let raw = draco_doc_with_payload_stride(None);
+    let mut dec = GltfDecoder::new();
+    match dec.decode(raw.as_bytes()) {
+        Ok(_) => { /* spec-compliant happy path */ }
+        Err(e) => {
+            let msg = format!("{e}");
+            assert!(
+                !msg.contains("ExtensionStackDracoByteStride"),
+                "validator must not flag a stride-less Draco bufferView; \
+                 got: {msg}"
+            );
+        }
+    }
 }

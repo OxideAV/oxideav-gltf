@@ -503,23 +503,28 @@ framework but usable standalone.
   the parent accessors describe the decompressed data). The encoder
   lifts the sidecar back into the typed `PrimitiveExtensions` block
   and appends `KHR_draco_mesh_compression` to `extensionsUsed` once
-  per document. The §3.12 + §Conformance validators cover six
+  per document. The §3.12 + §Conformance validators cover seven
   failure modes with stable `ExtensionStackDraco…` prefixes:
   descriptor present without the `extensionsUsed` entry
   (`ExtensionStackUsedNotDeclared`); descriptor `bufferView` out of
-  range (`ExtensionStackDracoBufferView`); descriptor `attributes`
-  key that is not present in the parent primitive's own attributes
-  map (`ExtensionStackDracoAttributes`, per §"attributes" subset
-  rule); duplicate Draco-side attribute IDs within one descriptor
-  (`ExtensionStackDracoAttributeId`); primitive `mode` outside
-  `{TRIANGLES (4), TRIANGLE_STRIP (5)}` per §"Restrictions on
-  geometry type" (`ExtensionStackDracoMode`); and a compressed-only
-  shape (parent primitive carries no uncompressed attributes
-  alongside the descriptor) without `KHR_draco_mesh_compression`
-  listed in `extensionsRequired` per §Conformance
-  (`ExtensionStackDracoRequired`). The compressed-payload inflation
-  remains a follow-up; the descriptor handshake is in place for any
-  Draco-aware consumer layered above this crate
+  range (`ExtensionStackDracoBufferView`); descriptor `bufferView`
+  refers to a bufferView that defines `byteStride` — forbidden per
+  glTF 2.0 §5.11.4 because the Draco payload is opaque compressed
+  bytes, not vertex attribute data, and the extension does not
+  enable a strided payload layout (`ExtensionStackDracoByteStride`,
+  the same shape as the §5.3.1 sparse-indices `MUST NOT` rule);
+  descriptor `attributes` key that is not present in the parent
+  primitive's own attributes map (`ExtensionStackDracoAttributes`,
+  per §"attributes" subset rule); duplicate Draco-side attribute IDs
+  within one descriptor (`ExtensionStackDracoAttributeId`); primitive
+  `mode` outside `{TRIANGLES (4), TRIANGLE_STRIP (5)}` per
+  §"Restrictions on geometry type" (`ExtensionStackDracoMode`); and
+  a compressed-only shape (parent primitive carries no uncompressed
+  attributes alongside the descriptor) without
+  `KHR_draco_mesh_compression` listed in `extensionsRequired` per
+  §Conformance (`ExtensionStackDracoRequired`). The compressed-
+  payload inflation remains a follow-up; the descriptor handshake is
+  in place for any Draco-aware consumer layered above this crate
 - Skins + skeletons (joint roster, inverseBindMatrices accessor,
   optional skeleton root) per spec §3.7.3 — `node.skin` round-trips
 - Animations (channels + samplers) per spec §3.11 — translation /
