@@ -67,6 +67,7 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     // --- meshes + accessors + bufferViews ---
     let mut emitted_primitive_variants = false;
     let mut emitted_gaussian_splatting = false;
+    let mut emitted_draco_mesh_compression = false;
     let mut emitted_mesh_xmp = false;
     // `KHR_mesh_quantization` is declared in both `extensionsUsed`
     // AND `extensionsRequired` whenever any primitive carries the
@@ -116,6 +117,18 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
                 .is_some()
         }) {
             emitted_gaussian_splatting = true;
+        }
+        // Track KHR_draco_mesh_compression per-primitive descriptors per
+        // `docs/3d/gltf/extensions/KHR_draco_mesh_compression.md`
+        // §"glTF Schema Updates" so the §3.12 declaration is emitted
+        // exactly once at root scope.
+        if primitives.iter().any(|p| {
+            p.extensions
+                .as_ref()
+                .and_then(|e| e.khr_draco_mesh_compression.as_ref())
+                .is_some()
+        }) {
+            emitted_draco_mesh_compression = true;
         }
         // Lift primitive[0]'s `__mesh_extras` sentinel back to mesh-level
         // extras (matches the decoder's stash; loss-tolerant if absent).
@@ -372,6 +385,23 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
         // extension is not required.
         root.extensions_used
             .push("KHR_gaussian_splatting".to_owned());
+    }
+    if emitted_draco_mesh_compression {
+        // Per `docs/3d/gltf/extensions/KHR_draco_mesh_compression.md`
+        // §Conformance the extension MUST appear in `extensionsUsed`
+        // when any primitive carries the descriptor (spec §3.12 stack
+        // rule). When the document does not also carry uncompressed
+        // fallback accessors the extension MUST additionally appear in
+        // `extensionsRequired` ("If the uncompressed version of the
+        // asset is not provided, then KHR_draco_mesh_compression must
+        // be added to extensionsRequired"). This crate is a pass-
+        // through engine: the encoder always emits uncompressed
+        // fallback accessors alongside the descriptor (the regular
+        // accessor-write path runs first), so we never push it into
+        // `extensionsRequired` on its own — that decision is left to
+        // the consumer that orchestrates the compressed-only output.
+        root.extensions_used
+            .push("KHR_draco_mesh_compression".to_owned());
     }
 
     // --- skins ---
@@ -817,6 +847,7 @@ fn encode_primitive(
     prim_extras.remove(crate::quantization::ATTR_QUANT_KEY);
     let variants_extra = prim_extras.remove("KHR_materials_variants");
     let splatting_extra = prim_extras.remove("KHR_gaussian_splatting");
+    let draco_extra = prim_extras.remove("KHR_draco_mesh_compression");
     let extras = if prim_extras.is_empty() {
         None
     } else {
@@ -899,14 +930,47 @@ fn encode_primitive(
                 extras,
             })
         });
-    let prim_extensions = if variants_mappings.is_some() || splatting_desc.is_some() {
-        Some(gj::PrimitiveExtensions {
-            khr_materials_variants: variants_mappings,
-            khr_gaussian_splatting: splatting_desc,
-        })
-    } else {
-        None
-    };
+    // KHR_draco_mesh_compression — per-primitive descriptor per
+    // `docs/3d/gltf/extensions/KHR_draco_mesh_compression.md`
+    // §"glTF Schema Updates". The decoder stashes the bufferView
+    // indirection + Draco-side attribute-id map under
+    // `primitive.extras["KHR_draco_mesh_compression"]`. The encoder
+    // lifts it back into the typed `PrimitiveExtensions` block here on
+    // write; the parent primitive's uncompressed fallback accessors
+    // are emitted by the normal accessor-write path above (the spec
+    // permits the descriptor to coexist with an uncompressed copy of
+    // the same data). The surrounding `convert_with_options` walk
+    // appends `KHR_draco_mesh_compression` to `extensionsUsed` once
+    // when any primitive carries the descriptor.
+    let draco_desc: Option<gj::KhrDracoMeshCompression> = draco_extra
+        .as_ref()
+        .and_then(|v| v.as_object())
+        .and_then(|obj| {
+            let buffer_view = obj.get("bufferView").and_then(|v| v.as_u64())? as u32;
+            let attrs_obj = obj.get("attributes").and_then(|v| v.as_object())?;
+            let mut attributes: HashMap<String, u32> = HashMap::new();
+            for (k, v) in attrs_obj {
+                if let Some(id) = v.as_u64() {
+                    attributes.insert(k.clone(), id as u32);
+                }
+            }
+            let extras = obj.get("extras").cloned();
+            Some(gj::KhrDracoMeshCompression {
+                buffer_view,
+                attributes,
+                extras,
+            })
+        });
+    let prim_extensions =
+        if variants_mappings.is_some() || splatting_desc.is_some() || draco_desc.is_some() {
+            Some(gj::PrimitiveExtensions {
+                khr_materials_variants: variants_mappings,
+                khr_gaussian_splatting: splatting_desc,
+                khr_draco_mesh_compression: draco_desc,
+            })
+        } else {
+            None
+        };
 
     // Re-emit morph targets as accessors per §3.7.2.2. Two paths feed
     // this:

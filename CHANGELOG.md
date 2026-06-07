@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 246)
+
+- `KHR_draco_mesh_compression` extension per
+  `docs/3d/gltf/extensions/KHR_draco_mesh_compression.md` §"glTF
+  Schema Updates" — the per-primitive descriptor block that redirects
+  a mesh primitive's geometry to a Draco-compressed `bufferView`
+  payload. The descriptor carries a `bufferView` indirection plus an
+  `attributes` map pairing the parent primitive's attribute names
+  (POSITION, NORMAL, …) with the Draco-side unique attribute IDs.
+  The decoder surfaces the descriptor through
+  `Primitive::extras["KHR_draco_mesh_compression"]` as a JSON object
+  so the typed `oxideav_mesh3d::Primitive` round-trips without
+  growing a bespoke compressed-payload slot. The encoder lifts the
+  sidecar back into the typed `PrimitiveExtensions` block, emits the
+  `bufferView` + `attributes` map verbatim, and appends
+  `KHR_draco_mesh_compression` to `extensionsUsed` exactly once per
+  document. The crate is a pass-through engine — the Draco bitstream
+  inflate path is out of scope for this round — so the parent
+  primitive's uncompressed-fallback accessors are processed through
+  the usual accessor pipeline (per spec §"accessors": the parent
+  accessors describe the decompressed data and remain authoritative
+  for the uncompressed lane). A Draco-aware consumer layered above
+  this crate can pick up the descriptor and inflate the compressed
+  payload itself.
+- §3.12 + §Conformance stack-validator coverage for
+  `KHR_draco_mesh_compression`. Six failure modes surface with stable
+  `ExtensionStack…` error prefixes for grep-ability alongside the
+  existing extension-stack vocabulary:
+  `ExtensionStackUsedNotDeclared` rejects descriptors without the
+  `extensionsUsed` entry; `ExtensionStackDracoBufferView` rejects an
+  out-of-range `bufferView`; `ExtensionStackDracoAttributes` rejects
+  descriptor `attributes` keys that are not present in the parent
+  primitive's own `attributes` map per spec §"attributes" subset
+  rule; `ExtensionStackDracoAttributeId` rejects duplicate Draco-side
+  attribute IDs within one descriptor per §"attributes" uniqueness
+  rule; `ExtensionStackDracoMode` rejects primitive `mode` outside
+  `{TRIANGLES (4), TRIANGLE_STRIP (5)}` per §"Restrictions on
+  geometry type"; and `ExtensionStackDracoRequired` rejects the
+  compressed-only shape (no uncompressed fallback attributes) when
+  `KHR_draco_mesh_compression` is missing from `extensionsRequired`
+  per §Conformance.
+- New typed model node `KhrDracoMeshCompression` in `json_model.rs`
+  alongside the extended `PrimitiveExtensions` block; new decoder
+  stash + encoder lift passes in `json_to_scene.rs` /
+  `scene_to_json.rs`; `emitted_draco_mesh_compression` tracking in
+  the `convert_with_options` walk so the §3.12 declaration appears
+  exactly once.
+- 16 new tests in `tests/khr_draco_mesh_compression.rs` covering
+  descriptor round-trip via GLB (bufferView + attributes map),
+  absent-by-default omission, `extras` pass-through preservation,
+  the §3.12 stack rule, all five rejection paths
+  (`ExtensionStackDracoBufferView` / `ExtensionStackDracoAttributes`
+  / `ExtensionStackDracoAttributeId` / `ExtensionStackDracoMode` /
+  `ExtensionStackDracoRequired`), `mode` acceptance for both
+  TRIANGLES and TRIANGLE_STRIP, and rejection paths for POINTS /
+  LINE_LOOP / TRIANGLE_FAN.
+
 ### Added (round 243)
 
 - `KHR_gaussian_splatting` extension per

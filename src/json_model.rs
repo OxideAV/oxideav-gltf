@@ -258,11 +258,15 @@ pub struct Primitive {
 
 /// Per-primitive `extensions` block. Today carries the
 /// `KHR_materials_variants` mapping table that pairs material indices
-/// with the root-level variant indices they apply to, and the
+/// with the root-level variant indices they apply to, the
 /// `KHR_gaussian_splatting` descriptor that tags a `POINTS` primitive
 /// as a 3D Gaussian-splat field per
 /// `docs/3d/gltf/extensions/KHR_gaussian_splatting.md` §"Extending Mesh
-/// Primitives".
+/// Primitives", and the `KHR_draco_mesh_compression` descriptor that
+/// redirects a primitive's `attributes` + `indices` to a Draco-encoded
+/// bufferView payload per
+/// `docs/3d/gltf/extensions/KHR_draco_mesh_compression.md`
+/// §"glTF Schema Updates".
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct PrimitiveExtensions {
     #[serde(
@@ -283,6 +287,47 @@ pub struct PrimitiveExtensions {
         skip_serializing_if = "Option::is_none"
     )]
     pub khr_gaussian_splatting: Option<KhrGaussianSplatting>,
+    /// `KHR_draco_mesh_compression` per-primitive descriptor object —
+    /// the `bufferView` index of the Draco-compressed payload plus an
+    /// `attributes` map pairing the parent primitive's attribute names
+    /// with Draco-side unique attribute IDs per
+    /// `docs/3d/gltf/extensions/KHR_draco_mesh_compression.md`
+    /// §"glTF Schema Updates".
+    #[serde(
+        rename = "KHR_draco_mesh_compression",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub khr_draco_mesh_compression: Option<KhrDracoMeshCompression>,
+}
+
+/// `KHR_draco_mesh_compression` per-primitive extension object per
+/// `docs/3d/gltf/extensions/KHR_draco_mesh_compression.md`
+/// §"glTF Schema Updates". The `bufferView` indirection points at the
+/// compressed payload bytes; the `attributes` map carries each parent-
+/// primitive attribute name (POSITION, NORMAL, …) paired with the
+/// Draco-side attribute identifier. Per the spec §"attributes" the
+/// extension's `attributes` keys MUST be a subset of the parent
+/// primitive's `attributes` keys. This crate is a pass-through engine —
+/// the Draco bitstream decoder is out of scope for this round — so the
+/// descriptor round-trips through the JSON model + a primitive-level
+/// extras sidecar (`primitive.extras["KHR_draco_mesh_compression"]`)
+/// without an attempt to inflate the compressed bytes.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct KhrDracoMeshCompression {
+    /// Index of the `bufferView` containing the Draco-compressed
+    /// payload bytes (required).
+    #[serde(rename = "bufferView")]
+    pub buffer_view: u32,
+    /// Parent attribute name → Draco-side attribute identifier (required).
+    /// Each value is a unique non-negative integer that addresses the
+    /// attribute inside the Draco point-cloud / mesh.
+    pub attributes: HashMap<String, u32>,
+    /// Pass-through `extras` per the glTF JSON conventions — the
+    /// descriptor is a typed object, so non-spec siblings are surfaced
+    /// here for round-trip preservation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<Value>,
 }
 
 /// `KHR_gaussian_splatting` per-primitive descriptor block per

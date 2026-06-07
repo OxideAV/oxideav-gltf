@@ -486,6 +486,40 @@ framework but usable standalone.
   attributes — this round delivers the descriptor handshake; the
   typed splat-field decode + the spherical-harmonics evaluator from
   §"Lighting" remain for a follow-up
+- KHR_draco_mesh_compression extension (Khronos ratified) — the
+  per-primitive descriptor that redirects a mesh primitive's
+  `attributes` + `indices` to a Draco-compressed `bufferView`
+  payload, per
+  `docs/3d/gltf/extensions/KHR_draco_mesh_compression.md` §"glTF
+  Schema Updates". The descriptor carries a `bufferView` indirection
+  plus an `attributes` map pairing the parent primitive's attribute
+  names (POSITION, NORMAL, …) with the Draco-side unique attribute
+  IDs. This crate is a pass-through engine — the Draco bitstream
+  inflate path is out of scope for this round — so the decoder
+  surfaces the descriptor through
+  `Primitive::extras["KHR_draco_mesh_compression"]` as a JSON object
+  while reading the parent primitive's uncompressed-fallback
+  accessors through the usual accessor pipeline (per §"accessors"
+  the parent accessors describe the decompressed data). The encoder
+  lifts the sidecar back into the typed `PrimitiveExtensions` block
+  and appends `KHR_draco_mesh_compression` to `extensionsUsed` once
+  per document. The §3.12 + §Conformance validators cover six
+  failure modes with stable `ExtensionStackDraco…` prefixes:
+  descriptor present without the `extensionsUsed` entry
+  (`ExtensionStackUsedNotDeclared`); descriptor `bufferView` out of
+  range (`ExtensionStackDracoBufferView`); descriptor `attributes`
+  key that is not present in the parent primitive's own attributes
+  map (`ExtensionStackDracoAttributes`, per §"attributes" subset
+  rule); duplicate Draco-side attribute IDs within one descriptor
+  (`ExtensionStackDracoAttributeId`); primitive `mode` outside
+  `{TRIANGLES (4), TRIANGLE_STRIP (5)}` per §"Restrictions on
+  geometry type" (`ExtensionStackDracoMode`); and a compressed-only
+  shape (parent primitive carries no uncompressed attributes
+  alongside the descriptor) without `KHR_draco_mesh_compression`
+  listed in `extensionsRequired` per §Conformance
+  (`ExtensionStackDracoRequired`). The compressed-payload inflation
+  remains a follow-up; the descriptor handshake is in place for any
+  Draco-aware consumer layered above this crate
 - Skins + skeletons (joint roster, inverseBindMatrices accessor,
   optional skeleton root) per spec §3.7.3 — `node.skin` round-trips
 - Animations (channels + samplers) per spec §3.11 — translation /

@@ -1401,6 +1401,142 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         }
     }
 
+    // KHR_draco_mesh_compression — per-primitive Draco-compressed
+    // geometry descriptor per
+    // `docs/3d/gltf/extensions/KHR_draco_mesh_compression.md`.
+    //
+    //   §3.12 — any document carrying the data block on any primitive
+    //   MUST declare the extension in `extensionsUsed`.
+    //
+    //   §"glTF Schema Updates" — per-primitive invariants:
+    //     * extension `bufferView` resolves into `buffer_views[]`
+    //     * extension `attributes` keys MUST be a subset of the parent
+    //       primitive's `attributes` keys ("The `attributes` defined in
+    //       the extension must be a subset of the attributes of the
+    //       primitive")
+    //     * extension `attributes` values (Draco-side attribute IDs)
+    //       MUST be unique within one descriptor ("each attribute is
+    //       associated with an attribute id which is its unique id in
+    //       the compressed data")
+    //
+    //   §"Restrictions on geometry type" — the primitive's `mode` MUST
+    //   be `TRIANGLES` (4) or `TRIANGLE_STRIP` (5) when this extension
+    //   is used. Per spec §3.7.2 the default `mode` is 4 (TRIANGLES) —
+    //   compliant with the restriction.
+    //
+    //   §Conformance — when the uncompressed-fallback accessors are
+    //   absent the extension MUST appear in `extensionsRequired` ("If
+    //   the uncompressed version of the asset is not provided, then
+    //   KHR_draco_mesh_compression must be added to extensionsRequired").
+    //   Our crate's encoder always emits uncompressed accessors
+    //   alongside the descriptor, so the parent primitive's
+    //   `attributes` map is always populated; documents that ship the
+    //   compressed-only shape land here from external sources. We
+    //   detect that shape by checking whether every parent attribute
+    //   key the descriptor names corresponds to an accessor index that
+    //   actually points at the compressed bufferView (i.e. the
+    //   accessor.bufferView == the descriptor's bufferView). When the
+    //   parent primitive carries NO uncompressed `attributes` at all
+    //   (an empty map) we treat the document as compressed-only and
+    //   require the declaration in `extensionsRequired`. The
+    //   spec-permitted partial-shape (some attributes uncompressed,
+    //   some compressed-only) is not modelled here; it lives in a
+    //   layered profile.
+    let mut has_draco = false;
+    let mut compressed_only = false;
+    for (mi, mesh) in root.meshes.iter().enumerate() {
+        for (pi, prim) in mesh.primitives.iter().enumerate() {
+            let draco = match prim
+                .extensions
+                .as_ref()
+                .and_then(|e| e.khr_draco_mesh_compression.as_ref())
+            {
+                Some(d) => d,
+                None => continue,
+            };
+            has_draco = true;
+            // bufferView index in range.
+            let bvi = draco.buffer_view as usize;
+            if bvi >= root.buffer_views.len() {
+                return Err(invalid(format!(
+                    "ExtensionStackDracoBufferView: meshes[{mi}].primitives[{pi}] \
+                     .extensions.KHR_draco_mesh_compression.bufferView = {} is out of \
+                     range (bufferViews[].len = {})",
+                    draco.buffer_view,
+                    root.buffer_views.len()
+                )));
+            }
+            // attributes keys ⊆ parent primitive attributes keys.
+            for parent_attr in draco.attributes.keys() {
+                if !prim.attributes.contains_key(parent_attr) {
+                    return Err(invalid(format!(
+                        "ExtensionStackDracoAttributes: meshes[{mi}].primitives[{pi}] \
+                         .extensions.KHR_draco_mesh_compression.attributes lists key \
+                         {:?} that is not present in the parent primitive's attributes \
+                         map (spec §\"attributes\": \"The `attributes` defined in the \
+                         extension must be a subset of the attributes of the primitive\")",
+                        parent_attr
+                    )));
+                }
+            }
+            // attributes values (Draco-side IDs) MUST be unique.
+            let mut seen_ids: std::collections::HashSet<u32> = std::collections::HashSet::new();
+            for (k, &id) in &draco.attributes {
+                if !seen_ids.insert(id) {
+                    return Err(invalid(format!(
+                        "ExtensionStackDracoAttributeId: meshes[{mi}].primitives[{pi}] \
+                         .extensions.KHR_draco_mesh_compression.attributes assigns the \
+                         same Draco attribute id {id} to more than one parent attribute \
+                         (last seen at {:?}); each Draco-side id must be unique per spec \
+                         §\"attributes\"",
+                        k
+                    )));
+                }
+            }
+            // §"Restrictions on geometry type" — mode MUST be TRIANGLES (4)
+            // or TRIANGLE_STRIP (5).
+            let mode = prim.mode.unwrap_or(crate::json_model::MODE_TRIANGLES);
+            if mode != crate::json_model::MODE_TRIANGLES
+                && mode != crate::json_model::MODE_TRIANGLE_STRIP
+            {
+                return Err(invalid(format!(
+                    "ExtensionStackDracoMode: meshes[{mi}].primitives[{pi}] carries \
+                     KHR_draco_mesh_compression with mode = {mode}; spec \
+                     §\"Restrictions on geometry type\" requires mode ∈ {{4 (TRIANGLES), \
+                     5 (TRIANGLE_STRIP)}}"
+                )));
+            }
+            // Compressed-only detection (parent primitive has no
+            // uncompressed attributes alongside the descriptor) — when
+            // this is true on any primitive, the extension MUST also
+            // appear in `extensionsRequired` per §Conformance.
+            if prim.attributes.is_empty() {
+                compressed_only = true;
+            }
+        }
+    }
+    if has_draco && !used("KHR_draco_mesh_compression") {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_draco_mesh_compression data is \
+             present on a primitive but the extension is not listed in \
+             extensionsUsed (spec §3.12 + §Conformance)",
+        ));
+    }
+    if compressed_only
+        && !root
+            .extensions_required
+            .iter()
+            .any(|r| r == "KHR_draco_mesh_compression")
+    {
+        return Err(invalid(
+            "ExtensionStackDracoRequired: a primitive carries \
+             KHR_draco_mesh_compression with no uncompressed fallback attributes; \
+             the extension MUST appear in extensionsRequired (spec §Conformance: \
+             \"If the uncompressed version of the asset is not provided, then \
+             KHR_draco_mesh_compression must be added to extensionsRequired\")",
+        ));
+    }
+
     // KHR_xmp_json_ld — both a root-level `packets[]` roster and
     // per-object packet refs surface this extension. Per spec §3.12
     // any presence of the data block requires the extension to be
@@ -2357,6 +2493,7 @@ mod tests {
                         mappings,
                     }),
                     khr_gaussian_splatting: None,
+                    khr_draco_mesh_compression: None,
                 }),
                 extras: None,
             }],

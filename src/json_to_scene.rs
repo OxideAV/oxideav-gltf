@@ -1920,6 +1920,41 @@ fn convert_primitive(
                 serde_json::Value::Object(obj),
             );
         }
+        // KHR_draco_mesh_compression — per-primitive extension object
+        // per `docs/3d/gltf/extensions/KHR_draco_mesh_compression.md`
+        // §"glTF Schema Updates". The typed `oxideav_mesh3d::Primitive`
+        // has no compressed-payload slot and this crate is a pass-
+        // through engine (no Draco bitstream inflate path), so the
+        // bufferView indirection + Draco-side attribute-id map are
+        // surfaced through `primitive.extras["KHR_draco_mesh_compression"]`
+        // for round-trip preservation. The parent primitive's own
+        // `attributes` + `indices` accessors are processed normally
+        // (per spec §"accessors": the accessors describe the
+        // decompressed data and remain authoritative for the
+        // uncompressed-fallback lane). Per §Conformance step 4 a Draco-
+        // aware consumer would inflate the compressed payload first
+        // and rebuild the accessor data from it; we surface enough of
+        // the descriptor that such a consumer (layered over this
+        // crate) can do so.
+        if let Some(draco) = &ext.khr_draco_mesh_compression {
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "bufferView".into(),
+                serde_json::Value::from(draco.buffer_view),
+            );
+            let mut attr_obj = serde_json::Map::new();
+            for (k, v) in &draco.attributes {
+                attr_obj.insert(k.clone(), serde_json::Value::from(*v));
+            }
+            obj.insert("attributes".into(), serde_json::Value::Object(attr_obj));
+            if let Some(e) = &draco.extras {
+                obj.insert("extras".into(), e.clone());
+            }
+            prim.extras.insert(
+                "KHR_draco_mesh_compression".to_owned(),
+                serde_json::Value::Object(obj),
+            );
+        }
     }
 
     // Stash per-attribute quantisation metadata so the encoder can
