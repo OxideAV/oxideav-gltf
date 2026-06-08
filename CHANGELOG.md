@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 261)
+
+- `KHR_animation_pointer` non-FLOAT output accessor lanes — per
+  `docs/3d/gltf/extensions/KHR_animation_pointer.md` §"Output Accessor
+  Component Types" (`float*` Object Model Data Type branch), the decoder
+  now accepts all six accessor `componentType` values for pointer
+  channel outputs: FLOAT (5126) pass-through, normalised BYTE (5120) /
+  UBYTE (5121) / SHORT (5122) / USHORT (5123) via the spec §3.6.2.2
+  dequantisation equations (`f = max(c/127, -1)` / `f = c/255` / `f =
+  max(c/32767, -1)` / `f = c/65535`), and non-normalised BYTE / UBYTE /
+  SHORT / USHORT / UINT (5125) cast directly to `f32` per spec line 93
+  ("`1` to `1.0`"). The `Scene3D::extras["KHR_animation_pointer"]`
+  sidecar gains `output_component_type` + `output_normalized` keys
+  recording the source accessor format; the encoder re-emits the same
+  on-the-wire format via per-component quantisers (re-using the
+  existing `quantize_u8` / `quantize_u16` / `quantize_i8` /
+  `quantize_i16` helpers for the normalised lanes) and a new family of
+  range-clamping casts (`truncate_to_{u8,u16,u32,i8,i16}`) for the
+  non-normalised lanes. Sidecars omitting the new keys default to
+  FLOAT + normalised=false, preserving r218 documents unchanged. The
+  decoder rejects `componentType=5125` with `normalized=true` (no
+  §3.6.2.2 row for normalised UINT) and the encoder symmetrically
+  refuses the same combination. 12 new tests in
+  `tests/khr_animation_pointer.rs` lock in: per-mode decode for all
+  four normalised-integer lanes (including the §3.6.2.2 reserved-slot
+  rule that clamps i8 `-128` and i16 `-32768` to `-1.0`), per-mode
+  decode for UBYTE / SHORT / UINT non-normalised lanes, the
+  normalised-UINT rejection, full encode→decode round-trips for
+  UBYTE-normalised / SHORT-normalised / UINT-unnormalised that confirm
+  the emitted JSON carries `"componentType":5121` / `5122` / `5125` and
+  `"normalized":true` / `false` (not silently widened to FLOAT), and a
+  legacy-sidecar test confirming r218 documents still encode as FLOAT.
+  The `int` / `bool` Object Model Data Type branches require a
+  pointer-string property registry to dispatch; deferred to a follow-up
+  round (rolled into the README roadmap).
+
 ### Added (round 256)
 
 - `accessor.sparse.values.bufferView` validator —

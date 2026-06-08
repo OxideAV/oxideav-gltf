@@ -318,13 +318,22 @@ framework but usable standalone.
   { "channel": ci, "pointer": "/...", "interpolation": "LINEAR" |
   "STEP" | "CUBICSPLINE", "input": [...f32...], "output_kind":
   "SCALAR" | "VEC2" | "VEC3" | "VEC4" | "MAT2" | "MAT3" | "MAT4",
-  "output": [...f32...] } ] } ] }`. The encoder lifts each channel
-  back into the typed `target.extensions` block (emitting fresh
-  FLOAT-typed input + output accessors and a sampler) and appends
-  `KHR_animation_pointer` to `extensionsUsed`. r218 carries the FLOAT
-  output lane only — the spec's normalized-int and non-normalized-int
-  conversion modes (per §"Output Accessor Component Types") are
-  deferred to a follow-up round. The §3.12 stack validator rejects
+  "output_component_type": 5120 | 5121 | 5122 | 5123 | 5125 | 5126,
+  "output_normalized": bool, "output": [...f32...] } ] } ] }`. The
+  encoder lifts each channel back into the typed `target.extensions`
+  block (emitting an input accessor + a sampler + an output accessor
+  re-quantised to the recorded `output_component_type` +
+  `output_normalized` lane) and appends `KHR_animation_pointer` to
+  `extensionsUsed`. All eight `float*` Object Model Data Type
+  conversion modes from §"Output Accessor Component Types" are
+  covered: FLOAT pass-through, normalised BYTE / UBYTE / SHORT /
+  USHORT via the §3.6.2.2 dequantisation table (`f = max(c/127, -1)`
+  / `f = c/255` / `f = max(c/32767, -1)` / `f = c/65535`), and
+  non-normalised BYTE / UBYTE / SHORT / USHORT / UINT cast directly
+  to f32 (`1` → `1.0` per spec). Normalised UINT is rejected because
+  §3.6.2.2 has no dequantisation row for it. The `int` / `bool`
+  Object Model Data Type branches require a pointer-string property
+  registry to dispatch — implementation deferred. The §3.12 stack validator rejects
   documents carrying the data block without the declaration
   (`ExtensionStackUsedNotDeclared`); rejects pointer channels with
   `target.node` set (`ExtensionStackAnimationPointerNode` — the spec
@@ -633,15 +642,19 @@ The KHR extension registry is now staged under
 `docs/3d/gltf/extensions/` (25 specs + index), so the remaining work
 is implementation, not docs:
 
-- KHR_animation_pointer non-FLOAT output paths — the spec table in
-  §"Output Accessor Component Types" allows normalized-int (BYTE /
-  UBYTE / SHORT / USHORT) outputs for `float*` data types and
-  non-normalized-int outputs for `int` data types plus UBYTE for
-  `bool`; r218 only carries the FLOAT lane, so the other modes are
-  the next iteration. Also pending: spec-aware Object-Model
-  validation of the pointer string (resolving it to a mutable
-  property and checking accessor-type vs data-type compatibility per
-  the spec table)
+- KHR_animation_pointer Object-Model property registry — r261 lights
+  up the full `float*` branch of §"Output Accessor Component Types"
+  (FLOAT / normalised-int / non-normalised-int), but the spec also
+  defines `int` (componentType MUST be non-normalised integer, value
+  used as-is) and `bool` (componentType MUST be UNSIGNED_BYTE, `0` →
+  false, else true) branches keyed on the Object Model Data Type of
+  the pointer's target property. Dispatching those branches requires
+  a registry mapping the per-extension pointer property paths to
+  their Object Model data types so the decoder can pick the right
+  conversion table. The same registry would also gate spec-aware
+  validation (resolving the pointer to a mutable property and
+  checking accessor-type vs data-type compatibility per the spec
+  table)
 - KHR_texture_basisu transcode lane — round 233 lands the per-
   texture indirection round-trip (sidecar + §3.12 validation) as
   a pass-through; an actual KTX2 / Basis Universal transcode lane

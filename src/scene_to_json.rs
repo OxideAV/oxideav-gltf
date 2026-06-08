@@ -479,8 +479,14 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
                 // arity per spec §3.6.2.1.
                 let input_acc =
                     push_scalar_f32_accessor_with_minmax(&mut root, &mut bin, &pc.input, "input")?;
-                let output_acc =
-                    push_pointer_output_accessor(&mut root, &mut bin, &pc.output_kind, &pc.output)?;
+                let output_acc = push_pointer_output_accessor(
+                    &mut root,
+                    &mut bin,
+                    &pc.output_kind,
+                    pc.output_component_type,
+                    pc.output_normalized,
+                    &pc.output,
+                )?;
                 let interpolation = match pc.interpolation.as_str() {
                     // LINEAR is the spec default; omit for tighter JSON.
                     "LINEAR" => None,
@@ -3008,12 +3014,20 @@ fn encode_animation(
 /// Parsed `KHR_animation_pointer` channel data from the
 /// `scene.extras["KHR_animation_pointer"].animations[i].channels[j]`
 /// side-channel — the encode-loop counterpart of the decoder's
-/// `pointer_channels` accumulator.
+/// `pointer_channels` accumulator. `output_component_type` +
+/// `output_normalized` record the on-the-wire output-accessor format
+/// (the four §3.6.2.2 normalized integer types, the five
+/// non-normalized integer types, or the FLOAT default) so the
+/// encoder can re-emit the same shape on round-trip per
+/// `docs/3d/gltf/extensions/KHR_animation_pointer.md` §"Output
+/// Accessor Component Types".
 struct PointerChannelData {
     pointer: String,
     interpolation: String,
     input: Vec<f32>,
     output_kind: String,
+    output_component_type: u32,
+    output_normalized: bool,
     output: Vec<f32>,
 }
 
@@ -3036,6 +3050,19 @@ fn parse_pointer_channel(v: &serde_json::Value) -> Option<PointerChannelData> {
         .and_then(|x| x.as_str())
         .unwrap_or("SCALAR")
         .to_owned();
+    // Spec default per §"Output Accessor Component Types": FLOAT
+    // (componentType 5126) without `normalized`. Older sidecars
+    // emitted by r218 omit these keys entirely; the defaults
+    // preserve their FLOAT round-trip behaviour.
+    let output_component_type = obj
+        .get("output_component_type")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as u32)
+        .unwrap_or(gj::COMPONENT_TYPE_FLOAT);
+    let output_normalized = obj
+        .get("output_normalized")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false);
     let output: Vec<f32> = obj
         .get("output")?
         .as_array()?
@@ -3047,19 +3074,29 @@ fn parse_pointer_channel(v: &serde_json::Value) -> Option<PointerChannelData> {
         interpolation,
         input,
         output_kind,
+        output_component_type,
+        output_normalized,
         output,
     })
 }
 
-/// Push a FLOAT-typed accessor with arity per `output_kind` (per spec
-/// §3.6.2.1 element counts) — the dense-FLOAT lane of the
-/// KHR_animation_pointer output table from
-/// `docs/3d/gltf/extensions/KHR_animation_pointer.md`. The flat `data`
-/// stream MUST have `count * arity` elements.
+/// Push the output accessor for a `KHR_animation_pointer` channel.
+/// Arity comes from `output_kind` per spec §3.6.2.1 element counts.
+/// `component_type` + `normalized` follow
+/// `docs/3d/gltf/extensions/KHR_animation_pointer.md` §"Output
+/// Accessor Component Types" — the same dispatch as the decoder:
+/// FLOAT writes raw f32s; non-normalized integer types cast each
+/// component to its representable range (truncating fractions);
+/// normalized integer types invert the §3.6.2.2 dequantisation
+/// equations via the existing `quantize_u8` / `quantize_u16` /
+/// `quantize_i8` / `quantize_i16` helpers. The flat `data` stream
+/// MUST have `count * arity` elements.
 fn push_pointer_output_accessor(
     root: &mut GltfRoot,
     bin: &mut Vec<u8>,
     output_kind: &str,
+    component_type: u32,
+    normalized: bool,
     data: &[f32],
 ) -> Result<u32> {
     let arity = match output_kind {
@@ -3084,10 +3121,9 @@ fn push_pointer_output_accessor(
     }
     pad_to_4(bin);
     let byte_offset = bin.len();
-    for v in data {
-        bin.extend_from_slice(&v.to_le_bytes());
-    }
+    encode_pointer_output_components(bin, component_type, normalized, data)?;
     let byte_length = bin.len() - byte_offset;
+    pad_to_4(bin);
     let bv_idx = root.buffer_views.len() as u32;
     root.buffer_views.push(gj::BufferView {
         buffer: 0,
@@ -3102,16 +3138,139 @@ fn push_pointer_output_accessor(
     root.accessors.push(gj::Accessor {
         buffer_view: Some(bv_idx),
         byte_offset: None,
-        component_type: gj::COMPONENT_TYPE_FLOAT,
+        component_type,
         count: (data.len() / arity) as u32,
         kind: output_kind.to_owned(),
-        normalized: false,
+        normalized,
         min: None,
         max: None,
         name: Some("pointer_output".to_owned()),
         sparse: None,
     });
     Ok(acc_idx)
+}
+
+/// Serialise a flat `[f32]` stream into the output accessor's raw
+/// bytes per §"Output Accessor Component Types". Non-normalized
+/// integer types take the float value as a literal (truncation +
+/// clamp to the type range); normalized integer types invert the
+/// §3.6.2.2 equations using the existing per-component helpers.
+fn encode_pointer_output_components(
+    bin: &mut Vec<u8>,
+    component_type: u32,
+    normalized: bool,
+    data: &[f32],
+) -> Result<()> {
+    match (component_type, normalized) {
+        (gj::COMPONENT_TYPE_FLOAT, false) => {
+            for v in data {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        (gj::COMPONENT_TYPE_FLOAT, true) => {
+            return Err(invalid(
+                "KHR_animation_pointer output: FLOAT (5126) accessors cannot carry normalized=true",
+            ));
+        }
+        (gj::COMPONENT_TYPE_UNSIGNED_BYTE, true) => {
+            for &v in data {
+                bin.push(quantize_u8(v));
+            }
+        }
+        (gj::COMPONENT_TYPE_UNSIGNED_SHORT, true) => {
+            for &v in data {
+                bin.extend_from_slice(&quantize_u16(v).to_le_bytes());
+            }
+        }
+        (gj::COMPONENT_TYPE_BYTE, true) => {
+            for &v in data {
+                bin.extend_from_slice(&quantize_i8(v).to_le_bytes());
+            }
+        }
+        (gj::COMPONENT_TYPE_SHORT, true) => {
+            for &v in data {
+                bin.extend_from_slice(&quantize_i16(v).to_le_bytes());
+            }
+        }
+        (gj::COMPONENT_TYPE_UNSIGNED_BYTE, false) => {
+            for &v in data {
+                bin.push(truncate_to_u8(v));
+            }
+        }
+        (gj::COMPONENT_TYPE_UNSIGNED_SHORT, false) => {
+            for &v in data {
+                bin.extend_from_slice(&truncate_to_u16(v).to_le_bytes());
+            }
+        }
+        (gj::COMPONENT_TYPE_BYTE, false) => {
+            for &v in data {
+                bin.extend_from_slice(&truncate_to_i8(v).to_le_bytes());
+            }
+        }
+        (gj::COMPONENT_TYPE_SHORT, false) => {
+            for &v in data {
+                bin.extend_from_slice(&truncate_to_i16(v).to_le_bytes());
+            }
+        }
+        (gj::COMPONENT_TYPE_UNSIGNED_INT, false) => {
+            for &v in data {
+                bin.extend_from_slice(&truncate_to_u32(v).to_le_bytes());
+            }
+        }
+        (gj::COMPONENT_TYPE_UNSIGNED_INT, true) => {
+            return Err(invalid(
+                "KHR_animation_pointer output: UNSIGNED_INT (5125) has no §3.6.2.2 \
+                 dequantisation row and cannot carry normalized=true",
+            ));
+        }
+        (other, _) => {
+            return Err(invalid(format!(
+                "KHR_animation_pointer output: componentType {other} not in spec table"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Cast f32 to u8 for the non-normalized integer-output lane of
+/// KHR_animation_pointer §"Output Accessor Component Types": "values
+/// are converted to the equal floating-point values" (read forward),
+/// so the reverse trims to the representable range with NaN → 0.
+fn truncate_to_u8(f: f32) -> u8 {
+    if !f.is_finite() {
+        return 0;
+    }
+    f.clamp(0.0, u8::MAX as f32) as u8
+}
+
+fn truncate_to_u16(f: f32) -> u16 {
+    if !f.is_finite() {
+        return 0;
+    }
+    f.clamp(0.0, u16::MAX as f32) as u16
+}
+
+fn truncate_to_u32(f: f32) -> u32 {
+    if !f.is_finite() {
+        return 0;
+    }
+    // u32::MAX as f32 rounds to 2^32 exactly; clamp using f64 to keep
+    // the boundary representable.
+    f.clamp(0.0, u32::MAX as f64 as f32) as u32
+}
+
+fn truncate_to_i8(f: f32) -> i8 {
+    if !f.is_finite() {
+        return 0;
+    }
+    f.clamp(i8::MIN as f32, i8::MAX as f32) as i8
+}
+
+fn truncate_to_i16(f: f32) -> i16 {
+    if !f.is_finite() {
+        return 0;
+    }
+    f.clamp(i16::MIN as f32, i16::MAX as f32) as i16
 }
 
 fn push_scalar_f32_accessor(

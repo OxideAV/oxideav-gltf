@@ -572,10 +572,20 @@ fn convert_animation(
             .map(|p| p.pointer.clone());
         if is_pointer_path || pointer_str.is_some() {
             // Materialise the channel sampler + push onto the side
-            // roster as JSON. Restrict r218 to FLOAT outputs (the
-            // primary spec case — "float accessor values are used as-is"
-            // per §"Output Accessor Component Types"); normalized-int
-            // + non-normalized-int + bool follow in a later round.
+            // roster as JSON. Per
+            // `docs/3d/gltf/extensions/KHR_animation_pointer.md`
+            // §"Output Accessor Component Types" (float* Object Model
+            // Data Types branch): FLOAT accessor values are used
+            // as-is; non-normalized integer values are cast to floats
+            // (`1` → `1.0`); normalized integer values dequantise via
+            // the §3.6.2.2 equations of the base glTF 2.0 spec. The
+            // `int` and `bool` Object Model Data Type branches
+            // require an Object Model property registry to dispatch
+            // by pointer string; that's a follow-up and isn't reached
+            // here — every pointer output decodes to a flat `Vec<f32>`
+            // with the source `componentType` + `normalized` flag
+            // carried in the side-channel so the encoder can
+            // re-emit the original on-the-wire format.
             let pointer = pointer_str.ok_or_else(|| {
                 invalid(format!(
                     "animation channel {ci}: target.path = \"pointer\" but \
@@ -627,22 +637,17 @@ fn convert_animation(
                 .accessors
                 .get(s.output as usize)
                 .ok_or_else(|| invalid(format!("animation sampler output {} oob", s.output)))?;
-            if output_acc.component_type != gj::COMPONENT_TYPE_FLOAT {
-                // r218 carries only the FLOAT path; normalized-int /
-                // non-normalized-int / bool outputs are deferred per the
-                // spec table in §"Output Accessor Component Types".
-                return Err(unsupported(format!(
-                    "KHR_animation_pointer: r218 only supports FLOAT output \
-                     accessors; got componentType {} on channel {ci}",
-                    output_acc.component_type
-                )));
-            }
             let out_bytes = materialise_accessor(output_acc, &root.buffer_views, buffers)?;
             let out_view = view_from_materialised(output_acc, &out_bytes)?;
             let output_kind = output_acc.kind.clone();
-            // Read raw floats per spec §3.6.2.1 element layout. The
-            // accessor `count` is the number of elements, each of width
-            // {SCALAR:1, VEC2:2, VEC3:3, VEC4:4, MAT2:4, MAT3:9, MAT4:16}.
+            let output_component_type = output_acc.component_type;
+            let output_normalized = output_acc.normalized;
+            // Read elements per spec §3.6.2.1 layout (arity given by
+            // the accessor `type`: SCALAR=1, VEC2=2, VEC3=3, VEC4=4,
+            // MAT2=4, MAT3=9, MAT4=16) and dispatch on
+            // `componentType` + `normalized` per
+            // `docs/3d/gltf/extensions/KHR_animation_pointer.md`
+            // §"Output Accessor Component Types" (float* branch).
             let output_values = read_pointer_output_floats(output_acc, &out_view)?;
             let mut obj = serde_json::Map::new();
             obj.insert("channel".into(), Value::from(ci as u32));
@@ -653,6 +658,16 @@ fn convert_animation(
                 Value::Array(input_values.into_iter().map(json_f32).collect()),
             );
             obj.insert("output_kind".into(), Value::String(output_kind));
+            // Carry the source on-the-wire format so the encoder can
+            // re-emit the same `componentType` + `normalized` flag.
+            // FLOAT + normalized=false is the spec-default lane — emit
+            // those defaults to keep the round-trip representation
+            // minimal for callers that only ever touch FLOAT outputs.
+            obj.insert(
+                "output_component_type".into(),
+                Value::from(output_component_type),
+            );
+            obj.insert("output_normalized".into(), Value::Bool(output_normalized));
             obj.insert(
                 "output".into(),
                 Value::Array(output_values.into_iter().map(json_f32).collect()),
@@ -734,9 +749,20 @@ fn convert_animation(
     Ok((anim, pointer_channels))
 }
 
-/// Per spec §3.6.2.1 element count: SCALAR=1, VEC2=2, VEC3=3, VEC4=4,
-/// MAT2=4, MAT3=9, MAT4=16 (all stored as f32 for the FLOAT path).
+/// Decode every output element of a `KHR_animation_pointer` channel
+/// into a flat `Vec<f32>`. Element arity comes from `accessor.type`
+/// per spec §3.6.2.1 (SCALAR=1, VEC2=2, VEC3=3, VEC4=4, MAT2=4,
+/// MAT3=9, MAT4=16). Per-component conversion follows
+/// `docs/3d/gltf/extensions/KHR_animation_pointer.md` §"Output
+/// Accessor Component Types" (float* Object Model Data Type branch):
+/// FLOAT components pass through; non-normalized integer components
+/// cast directly to f32 (`1` → `1.0`); normalized integer components
+/// dequantise via the §3.6.2.2 equations.
 fn read_pointer_output_floats(acc: &gj::Accessor, view: &AccessorView<'_>) -> Result<Vec<f32>> {
+    use gj::{
+        COMPONENT_TYPE_BYTE, COMPONENT_TYPE_FLOAT, COMPONENT_TYPE_SHORT,
+        COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_INT, COMPONENT_TYPE_UNSIGNED_SHORT,
+    };
     let arity = match acc.kind.as_str() {
         "SCALAR" => 1,
         "VEC2" => 2,
@@ -751,25 +777,112 @@ fn read_pointer_output_floats(acc: &gj::Accessor, view: &AccessorView<'_>) -> Re
             )))
         }
     };
-    let expected = arity * 4;
+    let csize = match acc.component_type {
+        COMPONENT_TYPE_BYTE | COMPONENT_TYPE_UNSIGNED_BYTE => 1,
+        COMPONENT_TYPE_SHORT | COMPONENT_TYPE_UNSIGNED_SHORT => 2,
+        COMPONENT_TYPE_UNSIGNED_INT | COMPONENT_TYPE_FLOAT => 4,
+        other => {
+            return Err(unsupported(format!(
+                "KHR_animation_pointer: output componentType {other} not in spec table"
+            )))
+        }
+    };
+    let expected = arity * csize;
     if view.element_size != expected {
         return Err(invalid(format!(
             "KHR_animation_pointer output accessor: element_size {} != {expected} \
-             (kind={:?}, FLOAT)",
-            view.element_size, acc.kind
+             (kind={:?}, componentType={})",
+            view.element_size, acc.kind, acc.component_type
         )));
     }
     let mut out = Vec::with_capacity(view.count * arity);
     for elem in view.elements() {
         for i in 0..arity {
-            let off = i * 4;
-            let bytes: [u8; 4] = elem[off..off + 4]
-                .try_into()
-                .map_err(|_| invalid("KHR_animation_pointer: short f32 read"))?;
-            out.push(f32::from_le_bytes(bytes));
+            let off = i * csize;
+            let bytes = &elem[off..off + csize];
+            out.push(decode_pointer_output_component(
+                acc.component_type,
+                acc.normalized,
+                bytes,
+            )?);
         }
     }
     Ok(out)
+}
+
+/// One-component conversion for the float* Object Model Data Type
+/// branch of KHR_animation_pointer §"Output Accessor Component Types".
+/// Normalized integer values use the §3.6.2.2 dequantisation equations
+/// from the base glTF 2.0 spec; non-normalized integers cast to f32;
+/// FLOAT passes through.
+fn decode_pointer_output_component(
+    component_type: u32,
+    normalized: bool,
+    bytes: &[u8],
+) -> Result<f32> {
+    use gj::{
+        COMPONENT_TYPE_BYTE, COMPONENT_TYPE_FLOAT, COMPONENT_TYPE_SHORT,
+        COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_INT, COMPONENT_TYPE_UNSIGNED_SHORT,
+    };
+    Ok(match component_type {
+        COMPONENT_TYPE_FLOAT => {
+            let b: [u8; 4] = bytes
+                .try_into()
+                .map_err(|_| invalid("KHR_animation_pointer: short f32 read"))?;
+            f32::from_le_bytes(b)
+        }
+        COMPONENT_TYPE_BYTE => {
+            let c = i8::from_le_bytes([bytes[0]]) as f32;
+            if normalized {
+                (c / 127.0).max(-1.0)
+            } else {
+                c
+            }
+        }
+        COMPONENT_TYPE_UNSIGNED_BYTE => {
+            let c = bytes[0] as f32;
+            if normalized {
+                c / 255.0
+            } else {
+                c
+            }
+        }
+        COMPONENT_TYPE_SHORT => {
+            let c = i16::from_le_bytes([bytes[0], bytes[1]]) as f32;
+            if normalized {
+                (c / 32767.0).max(-1.0)
+            } else {
+                c
+            }
+        }
+        COMPONENT_TYPE_UNSIGNED_SHORT => {
+            let c = u16::from_le_bytes([bytes[0], bytes[1]]) as f32;
+            if normalized {
+                c / 65535.0
+            } else {
+                c
+            }
+        }
+        COMPONENT_TYPE_UNSIGNED_INT => {
+            // Spec line 93 covers non-normalized integers generally;
+            // normalized UINT is not used in any ratified extension
+            // (no §3.6.2.2 dequantisation row for it), so reject the
+            // combination here rather than guess.
+            if normalized {
+                return Err(unsupported(
+                    "KHR_animation_pointer: UNSIGNED_INT output with normalized=true \
+                     has no §3.6.2.2 dequantisation row",
+                ));
+            }
+            let c = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            c as f32
+        }
+        other => {
+            return Err(unsupported(format!(
+                "KHR_animation_pointer: output componentType {other} not in spec table"
+            )))
+        }
+    })
 }
 
 /// Lossless `f32 → JSON Number` (uses f64 widening, finite-only).
