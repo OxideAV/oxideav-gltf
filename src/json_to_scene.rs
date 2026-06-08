@@ -38,7 +38,7 @@ use crate::validation::{
     check_asset_version, validate_accessor_fits_bufferview, validate_alignment,
     validate_animation_channels, validate_attribute_counts, validate_bufferview_fits_buffer,
     validate_color0_range, validate_extension_stack, validate_index_no_restart,
-    validate_sparse_indices_buffer_views, validate_tangent_w,
+    validate_sparse_indices_buffer_views, validate_sparse_values_buffer_views, validate_tangent_w,
 };
 
 /// Decode a parsed [`GltfRoot`] into a [`Scene3D`], using `glb_bin`
@@ -81,6 +81,11 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
     // Spec §5.3.1 — accessor.sparse.indices.bufferView MUST NOT carry
     // `target` or `byteStride` properties.
     validate_sparse_indices_buffer_views(&root.accessors, &root.buffer_views)?;
+    // Spec §5.4.1 — accessor.sparse.values.bufferView MUST NOT carry
+    // `target` or `byteStride` properties either (the sparse-values
+    // block is tightly-packed per §5.4 "The elements are tightly
+    // packed", same shape as the §5.3.1 sparse-indices rule above).
+    validate_sparse_values_buffer_views(&root.accessors, &root.buffer_views)?;
 
     let buffers = resolve_buffers(root, glb_bin)?;
     let mut scene = Scene3D::new();

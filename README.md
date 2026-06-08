@@ -615,6 +615,16 @@ framework but usable standalone.
   `byteStride` is rejected with `SparseIndicesBufferViewTarget` /
   `SparseIndicesBufferViewStride`; out-of-range indices surface as
   `SparseIndicesBufferViewIndex`
+- Sparse-values bufferView restrictions per spec §5.4.1 — an
+  `accessor.sparse.values.bufferView` that carries `target` or
+  `byteStride` is rejected with `SparseValuesBufferViewTarget` /
+  `SparseValuesBufferViewStride`; out-of-range indices surface as
+  `SparseValuesBufferViewIndex`. The §5.4 paragraph says the override
+  elements are "tightly packed", so a strided layout would be a spec
+  violation, and the bufferView is not a vertex-attribute /
+  element-array buffer in the GPU-pipeline sense so a `target` hint
+  is equally nonsensical — the symmetric companion to the §5.3.1
+  rule above
 - `extras` round-trip on root, scenes, nodes, materials, primitives
 
 ## Extension roadmap (next-round work)

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 256)
+
+- `accessor.sparse.values.bufferView` validator —
+  `SparseValuesBufferViewTarget` / `SparseValuesBufferViewStride` /
+  `SparseValuesBufferViewIndex` reject a sparse-accessor whose
+  `values.bufferView` carries a `target` or `byteStride` property, or
+  resolves out of range. Per glTF 2.0 spec §5.4.1 the sparse-values
+  bufferView MUST NOT define `target` or `byteStride`; per §5.4 the
+  override elements are "tightly packed", so a strided layout is
+  semantically nonsensical and a `target` hint (ARRAY_BUFFER /
+  ELEMENT_ARRAY_BUFFER) is equally wrong on a tightly-packed scratch
+  block. This is the symmetric companion to the §5.3.1
+  `sparse.indices.bufferView` validator landed in round 8 — the spec
+  paragraph repeats the same MUST-NOT rule for the two sides of the
+  sparse triple. Seven new tests in `validation::tests` lock in
+  rejection for both target sentinels and a non-zero stride, an
+  out-of-range bufferView index, acceptance of a clean sparse block,
+  the no-op path for non-sparse accessors, and independence from the
+  `sparse.indices.bufferView` rule (a stride on the indices side
+  doesn't trigger the values-side validator). Wired into `convert()`
+  alongside `validate_sparse_indices_buffer_views` so every decode
+  path runs both checks before buffer materialisation.
+
 ### Added (round 249)
 
 - `KHR_draco_mesh_compression` validator extension —

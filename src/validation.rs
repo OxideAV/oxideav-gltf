@@ -125,6 +125,12 @@
 //!   `target` or `byteStride` property (the sparse-indices buffer view
 //!   is a tightly-packed index array; a stride or target hint would be
 //!   semantically nonsensical).
+//! * §5.4.1 — `accessor.sparse.values.bufferView` MUST NOT carry a
+//!   `target` or `byteStride` property either. The sparse-values block
+//!   is a tightly-packed array of element-sized overrides (spec §5.4
+//!   "The elements are tightly packed"), so a target or stride hint
+//!   on its bufferView is the same shape of violation as the §5.3.1
+//!   sparse-indices rule.
 //! * §5.11.4 — the bufferView referenced by a
 //!   `KHR_draco_mesh_compression` per-primitive descriptor MUST NOT
 //!   carry `byteStride`. The descriptor's bufferView holds an opaque
@@ -136,7 +142,7 @@
 //! `VertexAttribute…` / `ExtensionStack…` / `AnimationChannel…` /
 //! `JsonDepthExceeded` / `JsonTooLarge` / `AssetVersion…` /
 //! `AccessorFit…` / `BufferViewFit…` / `BufferViewStride…` /
-//! `SparseIndicesBufferView…` prefix so callers can grep for the
+//! `SparseIndicesBufferView…` / `SparseValuesBufferView…` prefix so callers can grep for the
 //! specific sub-rule without reaching for a typed enum (the shared
 //! `oxideav_core::Error` enum can't gain a new variant from a sibling
 //! crate).
@@ -2164,6 +2170,54 @@ pub fn validate_sparse_indices_buffer_views(
     Ok(())
 }
 
+/// Spec §5.4.1: an `accessor.sparse.values.bufferView` MUST NOT carry a
+/// `target` or `byteStride` property — symmetric to the §5.3.1 rule on
+/// `sparse.indices.bufferView`. The §5.4 paragraph states "The elements
+/// are tightly packed", so a strided layout on the values bufferView is
+/// a spec violation; the bufferView is also not a vertex-attribute /
+/// element-array buffer in the GPU-pipeline sense, so a `target` hint is
+/// equally nonsensical.
+///
+/// We walk every accessor's sparse block (when present) and check the
+/// referenced bufferView. Out-of-range `bufferView` indices are reported
+/// with `SparseValuesBufferViewIndex`; the alignment rule "Data MUST be
+/// aligned following the same rules as the base accessor" is enforced
+/// upstream by `validate_alignment` against the base accessor's
+/// component type.
+pub fn validate_sparse_values_buffer_views(
+    accessors: &[Accessor],
+    buffer_views: &[BufferView],
+) -> Result<()> {
+    for (ai, acc) in accessors.iter().enumerate() {
+        let Some(sparse) = acc.sparse.as_ref() else {
+            continue;
+        };
+        let bv_idx = sparse.values.buffer_view as usize;
+        let bv = buffer_views.get(bv_idx).ok_or_else(|| {
+            invalid(format!(
+                "SparseValuesBufferViewIndex: accessors[{ai}].sparse.values.bufferView \
+                 = {bv_idx} out of range (have {} buffer views, spec §5.4.1)",
+                buffer_views.len()
+            ))
+        })?;
+        if bv.target.is_some() {
+            return Err(invalid(format!(
+                "SparseValuesBufferViewTarget: accessors[{ai}].sparse.values.bufferView \
+                 -> bufferViews[{bv_idx}].target = {:?} — MUST NOT be defined (spec §5.4.1)",
+                bv.target
+            )));
+        }
+        if bv.byte_stride.is_some() {
+            return Err(invalid(format!(
+                "SparseValuesBufferViewStride: accessors[{ai}].sparse.values.bufferView \
+                 -> bufferViews[{bv_idx}].byteStride = {:?} — MUST NOT be defined (spec §5.4.1)",
+                bv.byte_stride
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3861,5 +3915,102 @@ mod tests {
     fn sparse_indices_bv_skips_non_sparse_accessors() {
         let acc = vec3_float_accessor(0, 3, 0); // no sparse field
         validate_sparse_indices_buffer_views(&[acc], &[]).unwrap();
+    }
+
+    // --- Sparse-values bufferView restrictions (spec §5.4.1, round 256) -----
+
+    fn sparse_acc_values(values_bv: u32) -> Accessor {
+        Accessor {
+            buffer_view: None,
+            byte_offset: None,
+            component_type: COMPONENT_TYPE_FLOAT,
+            count: 4,
+            kind: "VEC3".into(),
+            normalized: false,
+            min: None,
+            max: None,
+            name: None,
+            sparse: Some(AccessorSparse {
+                count: 2,
+                indices: AccessorSparseIndices {
+                    buffer_view: 0,
+                    byte_offset: None,
+                    component_type: COMPONENT_TYPE_UNSIGNED_BYTE,
+                },
+                values: AccessorSparseValues {
+                    buffer_view: values_bv,
+                    byte_offset: None,
+                },
+            }),
+        }
+    }
+
+    #[test]
+    fn sparse_values_bv_accepts_plain() {
+        let accs = vec![sparse_acc_values(0)];
+        let bvs = vec![bv(64)];
+        validate_sparse_values_buffer_views(&accs, &bvs).unwrap();
+    }
+
+    #[test]
+    fn sparse_values_bv_rejects_target() {
+        let accs = vec![sparse_acc_values(0)];
+        let mut bvs = vec![bv(64)];
+        // ARRAY_BUFFER target — spec §5.4.1 says the values bufferView
+        // MUST NOT define `target`.
+        bvs[0].target = Some(34962);
+        let err = validate_sparse_values_buffer_views(&accs, &bvs).unwrap_err();
+        assert!(format!("{err}").contains("SparseValuesBufferViewTarget"));
+    }
+
+    #[test]
+    fn sparse_values_bv_rejects_element_array_target() {
+        // ELEMENT_ARRAY_BUFFER target — same rule, different value, to
+        // lock in both target sentinels.
+        let accs = vec![sparse_acc_values(0)];
+        let mut bvs = vec![bv(64)];
+        bvs[0].target = Some(34963);
+        let err = validate_sparse_values_buffer_views(&accs, &bvs).unwrap_err();
+        assert!(format!("{err}").contains("SparseValuesBufferViewTarget"));
+    }
+
+    #[test]
+    fn sparse_values_bv_rejects_stride() {
+        let accs = vec![sparse_acc_values(0)];
+        let mut bvs = vec![bv(64)];
+        bvs[0].byte_stride = Some(4);
+        let err = validate_sparse_values_buffer_views(&accs, &bvs).unwrap_err();
+        assert!(format!("{err}").contains("SparseValuesBufferViewStride"));
+    }
+
+    #[test]
+    fn sparse_values_bv_rejects_out_of_range() {
+        // values.bufferView = 7 against a buffer-views vec of length 1.
+        let accs = vec![sparse_acc_values(7)];
+        let bvs = vec![bv(64)];
+        let err = validate_sparse_values_buffer_views(&accs, &bvs).unwrap_err();
+        assert!(format!("{err}").contains("SparseValuesBufferViewIndex"));
+    }
+
+    #[test]
+    fn sparse_values_bv_skips_non_sparse_accessors() {
+        // Accessor without a sparse block must never be inspected.
+        let acc = vec3_float_accessor(0, 3, 0);
+        validate_sparse_values_buffer_views(&[acc], &[]).unwrap();
+    }
+
+    #[test]
+    fn sparse_values_bv_independent_of_indices_bv() {
+        // values.bufferView resolves to a clean bufferView while the
+        // indices.bufferView (also at slot 0) carries a stride. The
+        // values-only validator MUST NOT flag the stride on the indices
+        // bufferView — that's the §5.3.1 validator's job. We give the
+        // sparse accessor a clean bv at slot 1 for `values` so this
+        // validator passes; the indices-side rule is exercised separately.
+        let mut accs = vec![sparse_acc_values(1)];
+        accs[0].sparse.as_mut().unwrap().indices.buffer_view = 0;
+        let mut bvs = vec![bv(64), bv(64)];
+        bvs[0].byte_stride = Some(8); // dirties indices bv, not values bv
+        validate_sparse_values_buffer_views(&accs, &bvs).unwrap();
     }
 }
