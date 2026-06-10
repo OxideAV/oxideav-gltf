@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 277)
+
+- Camera property validation per core spec §5.12 + §5.13 + §5.14. A
+  new `validate_cameras` pass in `src/validation.rs` runs inside
+  `convert()` over every `cameras[i]` entry (referenced by a node or
+  not) and rejects the spec's MUST-level violations with stable
+  prefixes: `CameraProjectionExclusive` (perspective and orthographic
+  blocks are mutually exclusive per §5.12), `CameraOrthographicXmag`
+  / `CameraOrthographicYmag` (magnification MUST NOT be zero,
+  §5.13.1/.2), `CameraOrthographicZfar` (`zfar > 0`, §5.13.3),
+  `CameraOrthographicZRange` (`zfar > znear`, §5.13.3),
+  `CameraOrthographicZnear` (`znear >= 0`, §5.13.4),
+  `CameraPerspectiveYfov` (`yfov > 0`, §5.14.2),
+  `CameraPerspectiveZnear` (`znear > 0`, §5.14.4),
+  `CameraPerspectiveAspectRatio` (when defined, `> 0`, §5.14.1), and
+  `CameraPerspectiveZfar` / `CameraPerspectiveZRange` (when defined,
+  `zfar > 0` and `> znear`, §5.14.3). Non-finite values (NaN / ±∞)
+  are rejected by the same rules so a NaN `znear` can't slip through
+  the comparisons. SHOULD-level advice (non-negative magnification,
+  `yfov < π`) is deliberately not enforced, and an undefined
+  perspective `zfar` (infinite projection) stays valid. Covered by
+  six unit tests in `src/validation.rs` plus the new
+  `tests/camera_validation.rs` end-to-end suite (10 tests) that pins
+  the decoder wiring.
+
 ### Added (round 269)
 
 - `KHR_animation_pointer` Object-Model pointer-template registry +

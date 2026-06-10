@@ -138,10 +138,22 @@
 //!   extension does not enable a strided payload layout. Same shape
 //!   as the §5.3.1 sparse-indices rule.
 //!
+//! Camera properties (round r277):
+//!
+//! * §5.12 — `camera.perspective` and `camera.orthographic` MUST NOT
+//!   both be defined on one camera.
+//! * §5.13 — `orthographic.xmag` / `ymag` MUST NOT be zero;
+//!   `zfar > 0`, `zfar > znear`, `znear >= 0`.
+//! * §5.14 — `perspective.yfov > 0`, `znear > 0`; `aspectRatio`
+//!   (when defined) `> 0`; `zfar` (when defined) `> 0` and
+//!   `> znear`. Non-finite values are rejected everywhere; the
+//!   spec's SHOULD-level advice (non-negative magnification,
+//!   `yfov < π`) is NOT enforced.
+//!
 //! All failures surface as `Error::InvalidData` with a stable
 //! `VertexAttribute…` / `ExtensionStack…` / `AnimationChannel…` /
 //! `JsonDepthExceeded` / `JsonTooLarge` / `AssetVersion…` /
-//! `AccessorFit…` / `BufferViewFit…` / `BufferViewStride…` /
+//! `AccessorFit…` / `BufferViewFit…` / `BufferViewStride…` / `Camera…` /
 //! `SparseIndicesBufferView…` / `SparseValuesBufferView…` prefix so callers can grep for the
 //! specific sub-rule without reaching for a typed enum (the shared
 //! `oxideav_core::Error` enum can't gain a new variant from a sibling
@@ -149,8 +161,8 @@
 
 use crate::error::{invalid, Result};
 use crate::json_model::{
-    component_size, type_components, Accessor, Animation, Buffer, BufferView, GltfRoot, Mesh,
-    COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_INT, COMPONENT_TYPE_UNSIGNED_SHORT,
+    component_size, type_components, Accessor, Animation, Buffer, BufferView, Camera, GltfRoot,
+    Mesh, COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_INT, COMPONENT_TYPE_UNSIGNED_SHORT,
 };
 use crate::object_model::{pointer_data_type, ObjectModelDataType};
 use std::collections::HashMap;
@@ -2273,6 +2285,123 @@ pub fn validate_sparse_values_buffer_views(
     Ok(())
 }
 
+/// Validate every `cameras[i]` entry per spec §5.12 + §5.13 + §5.14.
+///
+/// MUST-level rules enforced (SHOULDs — negative `xmag` / `ymag`,
+/// `yfov >= π` — are deliberately allowed through):
+///
+/// * §5.12 — `camera.perspective` MUST NOT be defined when
+///   `camera.orthographic` is defined, and vice versa
+///   (`CameraProjectionExclusive`).
+/// * §5.13.1 / §5.13.2 — `orthographic.xmag` / `orthographic.ymag`
+///   MUST NOT be zero (`CameraOrthographicXmag` /
+///   `CameraOrthographicYmag`).
+/// * §5.13.3 — `orthographic.zfar` MUST NOT be zero and its JSON
+///   schema minimum is `> 0` (`CameraOrthographicZfar`); it MUST be
+///   greater than `znear` (`CameraOrthographicZRange`).
+/// * §5.13.4 — `orthographic.znear` schema minimum is `>= 0`
+///   (`CameraOrthographicZnear`).
+/// * §5.14.1 — `perspective.aspectRatio`, when defined, MUST be `> 0`
+///   (`CameraPerspectiveAspectRatio`).
+/// * §5.14.2 — `perspective.yfov` MUST be `> 0`
+///   (`CameraPerspectiveYfov`).
+/// * §5.14.3 — `perspective.zfar`, when defined, MUST be `> 0`
+///   (`CameraPerspectiveZfar`) and MUST be greater than `znear`
+///   (`CameraPerspectiveZRange`); an undefined `zfar` means an
+///   infinite projection and is valid.
+/// * §5.14.4 — `perspective.znear` MUST be `> 0`
+///   (`CameraPerspectiveZnear`).
+///
+/// Non-finite values (NaN / ±∞) are rejected by the same rules — a NaN
+/// `znear` would otherwise slip through every comparison.
+pub fn validate_cameras(cameras: &[Camera]) -> Result<()> {
+    for (ci, cam) in cameras.iter().enumerate() {
+        if cam.perspective.is_some() && cam.orthographic.is_some() {
+            return Err(invalid(format!(
+                "CameraProjectionExclusive: cameras[{ci}] defines BOTH perspective and \
+                 orthographic — each MUST NOT be defined when the other is (spec §5.12)"
+            )));
+        }
+        if let Some(o) = &cam.orthographic {
+            if !o.xmag.is_finite() || o.xmag == 0.0 {
+                return Err(invalid(format!(
+                    "CameraOrthographicXmag: cameras[{ci}].orthographic.xmag = {} \
+                     — MUST be finite and MUST NOT be zero (spec §5.13.1)",
+                    o.xmag
+                )));
+            }
+            if !o.ymag.is_finite() || o.ymag == 0.0 {
+                return Err(invalid(format!(
+                    "CameraOrthographicYmag: cameras[{ci}].orthographic.ymag = {} \
+                     — MUST be finite and MUST NOT be zero (spec §5.13.2)",
+                    o.ymag
+                )));
+            }
+            if !o.znear.is_finite() || o.znear < 0.0 {
+                return Err(invalid(format!(
+                    "CameraOrthographicZnear: cameras[{ci}].orthographic.znear = {} \
+                     — MUST be finite and >= 0 (spec §5.13.4)",
+                    o.znear
+                )));
+            }
+            if !o.zfar.is_finite() || o.zfar <= 0.0 {
+                return Err(invalid(format!(
+                    "CameraOrthographicZfar: cameras[{ci}].orthographic.zfar = {} \
+                     — MUST be finite and > 0 (spec §5.13.3)",
+                    o.zfar
+                )));
+            }
+            if o.zfar <= o.znear {
+                return Err(invalid(format!(
+                    "CameraOrthographicZRange: cameras[{ci}].orthographic.zfar = {} \
+                     MUST be greater than znear = {} (spec §5.13.3)",
+                    o.zfar, o.znear
+                )));
+            }
+        }
+        if let Some(p) = &cam.perspective {
+            if !p.yfov.is_finite() || p.yfov <= 0.0 {
+                return Err(invalid(format!(
+                    "CameraPerspectiveYfov: cameras[{ci}].perspective.yfov = {} \
+                     — MUST be finite and > 0 (spec §5.14.2)",
+                    p.yfov
+                )));
+            }
+            if !p.znear.is_finite() || p.znear <= 0.0 {
+                return Err(invalid(format!(
+                    "CameraPerspectiveZnear: cameras[{ci}].perspective.znear = {} \
+                     — MUST be finite and > 0 (spec §5.14.4)",
+                    p.znear
+                )));
+            }
+            if let Some(ar) = p.aspect_ratio {
+                if !ar.is_finite() || ar <= 0.0 {
+                    return Err(invalid(format!(
+                        "CameraPerspectiveAspectRatio: cameras[{ci}].perspective.aspectRatio \
+                         = {ar} — when defined, MUST be finite and > 0 (spec §5.14.1)"
+                    )));
+                }
+            }
+            if let Some(zfar) = p.zfar {
+                if !zfar.is_finite() || zfar <= 0.0 {
+                    return Err(invalid(format!(
+                        "CameraPerspectiveZfar: cameras[{ci}].perspective.zfar = {zfar} \
+                         — when defined, MUST be finite and > 0 (spec §5.14.3)"
+                    )));
+                }
+                if zfar <= p.znear {
+                    return Err(invalid(format!(
+                        "CameraPerspectiveZRange: cameras[{ci}].perspective.zfar = {zfar} \
+                         MUST be greater than znear = {} (spec §5.14.3)",
+                        p.znear
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4067,5 +4196,112 @@ mod tests {
         let mut bvs = vec![bv(64), bv(64)];
         bvs[0].byte_stride = Some(8); // dirties indices bv, not values bv
         validate_sparse_values_buffer_views(&accs, &bvs).unwrap();
+    }
+
+    // --- §5.12–§5.14 camera property validation ------------------------
+
+    fn persp(aspect_ratio: Option<f32>, yfov: f32, znear: f32, zfar: Option<f32>) -> Camera {
+        Camera {
+            kind: "perspective".to_owned(),
+            perspective: Some(crate::json_model::CameraPerspective {
+                aspect_ratio,
+                yfov,
+                znear,
+                zfar,
+            }),
+            orthographic: None,
+            name: None,
+        }
+    }
+
+    fn ortho(xmag: f32, ymag: f32, znear: f32, zfar: f32) -> Camera {
+        Camera {
+            kind: "orthographic".to_owned(),
+            perspective: None,
+            orthographic: Some(crate::json_model::CameraOrthographic {
+                xmag,
+                ymag,
+                znear,
+                zfar,
+            }),
+            name: None,
+        }
+    }
+
+    #[test]
+    fn cameras_accept_valid_documents() {
+        // Perspective with + without optional fields, orthographic with
+        // znear exactly 0 (§5.13.4 minimum is >= 0), negative xmag
+        // (SHOULD NOT, not MUST NOT), yfov above π (SHOULD, not MUST).
+        validate_cameras(&[
+            persp(Some(16.0 / 9.0), 1.0, 0.1, Some(100.0)),
+            persp(None, 4.0, 0.05, None),
+            ortho(5.0, 3.0, 0.0, 50.0),
+            ortho(-5.0, -3.0, 0.1, 50.0),
+        ])
+        .unwrap();
+        validate_cameras(&[]).unwrap();
+    }
+
+    #[test]
+    fn cameras_reject_both_projections() {
+        let mut cam = persp(None, 1.0, 0.1, None);
+        cam.orthographic = Some(crate::json_model::CameraOrthographic {
+            xmag: 1.0,
+            ymag: 1.0,
+            znear: 0.1,
+            zfar: 10.0,
+        });
+        let err = validate_cameras(&[cam]).unwrap_err();
+        assert!(format!("{err}").contains("CameraProjectionExclusive"));
+    }
+
+    #[test]
+    fn cameras_reject_zero_or_nan_magnification() {
+        let err = validate_cameras(&[ortho(0.0, 1.0, 0.1, 10.0)]).unwrap_err();
+        assert!(format!("{err}").contains("CameraOrthographicXmag"));
+        let err = validate_cameras(&[ortho(1.0, 0.0, 0.1, 10.0)]).unwrap_err();
+        assert!(format!("{err}").contains("CameraOrthographicYmag"));
+        let err = validate_cameras(&[ortho(f32::NAN, 1.0, 0.1, 10.0)]).unwrap_err();
+        assert!(format!("{err}").contains("CameraOrthographicXmag"));
+    }
+
+    #[test]
+    fn cameras_reject_orthographic_z_violations() {
+        // znear < 0 breaks the §5.13.4 schema minimum.
+        let err = validate_cameras(&[ortho(1.0, 1.0, -0.5, 10.0)]).unwrap_err();
+        assert!(format!("{err}").contains("CameraOrthographicZnear"));
+        // zfar == 0 is the explicit MUST NOT of §5.13.3.
+        let err = validate_cameras(&[ortho(1.0, 1.0, 0.0, 0.0)]).unwrap_err();
+        assert!(format!("{err}").contains("CameraOrthographicZfar"));
+        // zfar <= znear breaks "zfar MUST be greater than znear".
+        let err = validate_cameras(&[ortho(1.0, 1.0, 5.0, 5.0)]).unwrap_err();
+        assert!(format!("{err}").contains("CameraOrthographicZRange"));
+        // Non-finite zfar would dodge every comparison via NaN.
+        let err = validate_cameras(&[ortho(1.0, 1.0, 0.1, f32::NAN)]).unwrap_err();
+        assert!(format!("{err}").contains("CameraOrthographicZfar"));
+    }
+
+    #[test]
+    fn cameras_reject_perspective_violations() {
+        // yfov MUST be > 0 (§5.14.2).
+        let err = validate_cameras(&[persp(None, 0.0, 0.1, None)]).unwrap_err();
+        assert!(format!("{err}").contains("CameraPerspectiveYfov"));
+        // znear MUST be > 0 (§5.14.4) — zero is invalid here, unlike
+        // the orthographic camera where the schema minimum is >= 0.
+        let err = validate_cameras(&[persp(None, 1.0, 0.0, None)]).unwrap_err();
+        assert!(format!("{err}").contains("CameraPerspectiveZnear"));
+        // aspectRatio, when defined, MUST be > 0 (§5.14.1).
+        let err = validate_cameras(&[persp(Some(0.0), 1.0, 0.1, None)]).unwrap_err();
+        assert!(format!("{err}").contains("CameraPerspectiveAspectRatio"));
+        // zfar, when defined, MUST be > 0 (§5.14.3) …
+        let err = validate_cameras(&[persp(None, 1.0, 0.1, Some(-1.0))]).unwrap_err();
+        assert!(format!("{err}").contains("CameraPerspectiveZfar"));
+        // … and MUST be greater than znear.
+        let err = validate_cameras(&[persp(None, 1.0, 2.0, Some(2.0))]).unwrap_err();
+        assert!(format!("{err}").contains("CameraPerspectiveZRange"));
+        // NaN yfov must not slip through the comparisons.
+        let err = validate_cameras(&[persp(None, f32::NAN, 0.1, None)]).unwrap_err();
+        assert!(format!("{err}").contains("CameraPerspectiveYfov"));
     }
 }

@@ -648,6 +648,22 @@ framework but usable standalone.
   element-array buffer in the GPU-pipeline sense so a `target` hint
   is equally nonsensical — the symmetric companion to the §5.3.1
   rule above
+- Camera property validation per spec §5.12 + §5.13 + §5.14 — every
+  `cameras[i]` entry (referenced or not) is checked before
+  conversion: the two projection blocks are mutually exclusive
+  (`CameraProjectionExclusive`); orthographic `xmag` / `ymag` MUST
+  NOT be zero (`CameraOrthographicXmag` / `…Ymag`), `zfar` MUST be
+  `> 0` (`CameraOrthographicZfar`) and `> znear`
+  (`CameraOrthographicZRange`), `znear` MUST be `>= 0`
+  (`CameraOrthographicZnear`); perspective `yfov` / `znear` MUST be
+  `> 0` (`CameraPerspectiveYfov` / `…Znear`), `aspectRatio` (when
+  defined) MUST be `> 0` (`CameraPerspectiveAspectRatio`), `zfar`
+  (when defined) MUST be `> 0` (`CameraPerspectiveZfar`) and
+  `> znear` (`CameraPerspectiveZRange`). Non-finite values (NaN /
+  ±∞) are rejected by the same rules; the spec's SHOULD-level advice
+  (non-negative magnification, `yfov < π`) is deliberately NOT
+  enforced, and an undefined perspective `zfar` (infinite
+  projection) stays valid
 - `extras` round-trip on root, scenes, nodes, materials, primitives
 
 ## Extension roadmap (next-round work)
