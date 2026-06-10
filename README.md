@@ -331,9 +331,17 @@ framework but usable standalone.
   / `f = c/255` / `f = max(c/32767, -1)` / `f = c/65535`), and
   non-normalised BYTE / UBYTE / SHORT / USHORT / UINT cast directly
   to f32 (`1` → `1.0` per spec). Normalised UINT is rejected because
-  §3.6.2.2 has no dequantisation row for it. The `int` / `bool`
-  Object Model Data Type branches require a pointer-string property
-  registry to dispatch — implementation deferred. The §3.12 stack validator rejects
+  §3.6.2.2 has no dequantisation row for it. The `bool` Object Model
+  Data Type branch dispatches through the pointer-template registry in
+  `object_model.rs` (seeded from the staged extension specs' §"Extending
+  glTF 2.0 Asset Object Model" tables — today the single row
+  `/nodes/{}/extensions/KHR_node_visibility/visible` → `bool`): a
+  registry-matched channel surfaces JSON booleans in the sidecar
+  (`output_data_type: "bool"`, `0` → `false`, any other value →
+  `true` per §"Output Accessor Component Types") and re-encodes as a
+  SCALAR UNSIGNED_BYTE 0/1 accessor with a STEP sampler. The `int`
+  branch stays deferred — no staged Object Model table declares an
+  `int`-typed property (core `ObjectModel.adoc` is not staged). The §3.12 stack validator rejects
   documents carrying the data block without the declaration
   (`ExtensionStackUsedNotDeclared`); rejects pointer channels with
   `target.node` set (`ExtensionStackAnimationPointerNode` — the spec
@@ -344,8 +352,14 @@ framework but usable standalone.
   strings within one animation
   (`ExtensionStackAnimationPointerDuplicate` — spec §Operation:
   "different channels of the same animation MUST NOT have identical
-  pointers"); and rejects malformed RFC 6901 prefixes
-  (`ExtensionStackAnimationPointerSyntax`)
+  pointers"); rejects malformed RFC 6901 prefixes
+  (`ExtensionStackAnimationPointerSyntax`); and enforces the three
+  bool-lane MUSTs on registry-matched pointers — non-SCALAR output
+  accessor type (`ExtensionStackAnimationPointerBoolType`), output
+  componentType other than UNSIGNED_BYTE
+  (`ExtensionStackAnimationPointerBoolComponentType`), and sampler
+  interpolation other than STEP
+  (`ExtensionStackAnimationPointerBoolInterpolation`)
 - KHR_mesh_quantization (Khronos ratified) decode + encode — quantized
   vertex attributes AND quantized morph-target deltas from
   `docs/3d/gltf/extensions/KHR_mesh_quantization.md`. Base mesh
@@ -642,19 +656,20 @@ The KHR extension registry is now staged under
 `docs/3d/gltf/extensions/` (25 specs + index), so the remaining work
 is implementation, not docs:
 
-- KHR_animation_pointer Object-Model property registry — r261 lights
-  up the full `float*` branch of §"Output Accessor Component Types"
-  (FLOAT / normalised-int / non-normalised-int), but the spec also
-  defines `int` (componentType MUST be non-normalised integer, value
-  used as-is) and `bool` (componentType MUST be UNSIGNED_BYTE, `0` →
-  false, else true) branches keyed on the Object Model Data Type of
-  the pointer's target property. Dispatching those branches requires
-  a registry mapping the per-extension pointer property paths to
-  their Object Model data types so the decoder can pick the right
-  conversion table. The same registry would also gate spec-aware
-  validation (resolving the pointer to a mutable property and
-  checking accessor-type vs data-type compatibility per the spec
-  table)
+- KHR_animation_pointer `int` Object-Model branch + core property
+  table — r269 lands the pointer-template registry
+  (`object_model.rs`) and the `bool` branch (componentType MUST be
+  UNSIGNED_BYTE, `0` → false, else true, STEP-only samplers), seeded
+  from the staged extension specs' §"Extending glTF 2.0 Asset Object
+  Model" tables. The `int` branch (componentType MUST be a
+  non-normalised integer, values used as-is, STEP-only) is wired the
+  same way but has zero registry rows to dispatch on — **blocked on
+  DOCS-GAP**: the core spec's Object Model table (`ObjectModel.adoc`)
+  is not staged under `docs/3d/gltf/`, and no staged extension
+  declares an `int`-typed mutable property. Staging `ObjectModel.adoc`
+  would also unlock spec-aware pointer-resolution validation
+  (accessor-type vs data-type compatibility per the §Operation table
+  for core properties)
 - KHR_texture_basisu transcode lane — round 233 lands the per-
   texture indirection round-trip (sidecar + §3.12 validation) as
   a pass-through; an actual KTX2 / Basis Universal transcode lane

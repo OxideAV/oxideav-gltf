@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 269)
+
+- `KHR_animation_pointer` Object-Model pointer-template registry +
+  `bool` output lane. New `src/object_model.rs` module holds the
+  pointer templates whose Object Model Data Type is not in the
+  `float*` family, transcribed from the staged extension specs'
+  §"Extending glTF 2.0 Asset Object Model" tables — today the single
+  row `/nodes/{}/extensions/KHR_node_visibility/visible` → `bool`
+  from `docs/3d/gltf/extensions/KHR_node_visibility.md`. Template
+  matching treats `{}` as exactly one RFC 6901 §4 array-index token
+  (digits, no leading zero); unmatched pointers keep the r261
+  `float*` conversion branch unchanged. Per
+  `docs/3d/gltf/extensions/KHR_animation_pointer.md` §"Output
+  Accessor Component Types", a registry-matched `bool` channel
+  decodes each output component with the truthiness rule (`0` →
+  `false`, any other value → `true`) and surfaces JSON booleans in
+  the `Scene3D::extras["KHR_animation_pointer"]` sidecar under a new
+  `output_data_type: "bool"` key (absent key = `float*` lane, so
+  r261-and-earlier sidecars round-trip unchanged); the encoder
+  re-emits a SCALAR UNSIGNED_BYTE accessor holding canonical 0/1
+  bytes with a STEP sampler and refuses malformed hand-authored
+  bool sidecars (non-STEP interpolation, non-SCALAR kind,
+  non-UNSIGNED_BYTE componentType). Three new
+  `validate_extension_stack` rules enforce the spec MUSTs on decode:
+  `ExtensionStackAnimationPointerBoolType` (the §Operation data-type
+  table pins `bool` → SCALAR),
+  `ExtensionStackAnimationPointerBoolComponentType` ("the output
+  accessor component type MUST be unsigned byte"), and
+  `ExtensionStackAnimationPointerBoolInterpolation` ("Animation
+  samplers used with `int` or `bool` Object Model Data Types MUST
+  use STEP interpolation" — an absent interpolation key defaults to
+  LINEAR per §3.11 and is equally rejected). 8 new integration tests
+  in `tests/khr_animation_pointer.rs` (bool decode, three rejection
+  paths, default-LINEAR rejection, GLB round-trip with truthy-byte
+  canonicalisation, float-lane fallback for unregistered pointers,
+  encode-time STEP refusal) + 3 registry unit tests in
+  `object_model::tests`. The `int` branch remains deferred: the core
+  Object Model table (`ObjectModel.adoc`) is not staged under
+  `docs/3d/gltf/` and no staged extension declares an `int`-typed
+  mutable property, so there is no registry row to dispatch it.
+
 ### Added (round 261)
 
 - `KHR_animation_pointer` non-FLOAT output accessor lanes — per

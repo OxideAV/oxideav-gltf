@@ -649,6 +649,17 @@ fn convert_animation(
             // `docs/3d/gltf/extensions/KHR_animation_pointer.md`
             // §"Output Accessor Component Types" (float* branch).
             let output_values = read_pointer_output_floats(output_acc, &out_view)?;
+            // Object-Model data-type dispatch: pointers that resolve
+            // through the staged pointer-template registry
+            // (`object_model::pointer_data_type`) to a `bool` property
+            // surface typed booleans per
+            // `docs/3d/gltf/extensions/KHR_animation_pointer.md`
+            // §"Output Accessor Component Types": "`0` is converted to
+            // `false`, any other value is converted to `true`". The
+            // accessor-shape MUSTs (SCALAR / unsigned-byte / STEP) were
+            // enforced by `validate_extension_stack` before conversion.
+            // Unmatched pointers stay on the `float*` branch.
+            let data_type = crate::object_model::pointer_data_type(&pointer);
             let mut obj = serde_json::Map::new();
             obj.insert("channel".into(), Value::from(ci as u32));
             obj.insert("pointer".into(), Value::String(pointer));
@@ -668,10 +679,30 @@ fn convert_animation(
                 Value::from(output_component_type),
             );
             obj.insert("output_normalized".into(), Value::Bool(output_normalized));
-            obj.insert(
-                "output".into(),
-                Value::Array(output_values.into_iter().map(json_f32).collect()),
-            );
+            match data_type {
+                Some(crate::object_model::ObjectModelDataType::Bool) => {
+                    // `output_data_type` records the registry hit so
+                    // the encoder picks the bool re-emission lane;
+                    // sidecars without the key default to the float*
+                    // branch (r261-and-earlier documents unchanged).
+                    obj.insert("output_data_type".into(), Value::String("bool".into()));
+                    obj.insert(
+                        "output".into(),
+                        Value::Array(
+                            output_values
+                                .into_iter()
+                                .map(|v| Value::Bool(v != 0.0))
+                                .collect(),
+                        ),
+                    );
+                }
+                None => {
+                    obj.insert(
+                        "output".into(),
+                        Value::Array(output_values.into_iter().map(json_f32).collect()),
+                    );
+                }
+            }
             pointer_channels.push(Value::Object(obj));
             continue;
         }

@@ -47,6 +47,7 @@ pub mod error;
 pub mod glb;
 pub mod json_model;
 pub mod json_to_scene;
+pub mod object_model;
 pub mod quantization;
 pub mod scene_to_json;
 pub mod validation;

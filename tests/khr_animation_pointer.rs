@@ -786,3 +786,302 @@ fn legacy_sidecar_without_component_type_keys_defaults_to_float() {
     );
     assert_eq!(out, vec![1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0]);
 }
+
+// --------------------------------------------------------------------------
+// r269: Object-Model pointer-template registry — `bool` data-type lane.
+//
+// The staged extension specs declare one non-float* Object Model
+// property: `/nodes/{}/extensions/KHR_node_visibility/visible` → `bool`
+// (KHR_node_visibility.md §"Extending glTF 2.0 Asset Object Model").
+// Per KHR_animation_pointer §"Output Accessor Component Types" a
+// bool-typed channel's output accessor componentType MUST be unsigned
+// byte (`0` → false, any other value → true), the §Operation data-type
+// table pins `bool` → SCALAR, and the sampler MUST use STEP
+// interpolation.
+// --------------------------------------------------------------------------
+
+const VISIBLE_POINTER: &str = "/nodes/0/extensions/KHR_node_visibility/visible";
+
+/// Hand-build a pointer-targeted doc with full control over the
+/// pointer string, sampler interpolation, and output accessor shape.
+/// `interpolation` of `None` omits the key (spec default LINEAR).
+fn pointer_doc_full(
+    pointer: &str,
+    interpolation: Option<&str>,
+    output_bytes: &[u8],
+    component_type: u32,
+    kind: &str,
+    count: u32,
+) -> Vec<u8> {
+    let mut bin: Vec<u8> = Vec::new();
+    // Input: `count` keyframes at t = 0, 1, 2, ...
+    for k in 0..count {
+        bin.extend_from_slice(&(k as f32).to_le_bytes());
+    }
+    let output_offset = bin.len();
+    bin.extend_from_slice(output_bytes);
+    let total = bin.len();
+    let input_len = output_offset;
+    let output_len = output_bytes.len();
+    let max_t = (count - 1) as f32;
+    let uri = format!("data:application/octet-stream;base64,{}", b64(&bin));
+    let interp = interpolation
+        .map(|s| format!("\"interpolation\": \"{s}\", "))
+        .unwrap_or_default();
+    format!(
+        r#"{{
+            "asset": {{ "version": "2.0" }},
+            "extensionsUsed": ["KHR_animation_pointer"],
+            "nodes": [{{}}],
+            "buffers": [{{ "uri": "{uri}", "byteLength": {total} }}],
+            "bufferViews": [
+                {{ "buffer": 0, "byteOffset": 0, "byteLength": {input_len} }},
+                {{ "buffer": 0, "byteOffset": {output_offset}, "byteLength": {output_len} }}
+            ],
+            "accessors": [
+                {{ "bufferView": 0, "componentType": 5126, "count": {count}, "type": "SCALAR", "min": [0.0], "max": [{max_t}] }},
+                {{ "bufferView": 1, "componentType": {component_type}, "count": {count}, "type": "{kind}" }}
+            ],
+            "animations": [
+                {{
+                    "channels": [
+                        {{
+                            "sampler": 0,
+                            "target": {{
+                                "path": "pointer",
+                                "extensions": {{
+                                    "KHR_animation_pointer": {{ "pointer": "{pointer}" }}
+                                }}
+                            }}
+                        }}
+                    ],
+                    "samplers": [
+                        {{ "input": 0, {interp}"output": 1 }}
+                    ]
+                }}
+            ]
+        }}"#
+    )
+    .into_bytes()
+}
+
+fn pointer_channel_obj(
+    scene: &oxideav_mesh3d::Scene3D,
+) -> &serde_json::Map<String, serde_json::Value> {
+    scene
+        .extras
+        .get("KHR_animation_pointer")
+        .and_then(|v| v.as_object())
+        .and_then(|o| o.get("animations"))
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.first())
+        .and_then(|e| e.get("channels"))
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.first())
+        .and_then(|x| x.as_object())
+        .expect("pointer channel present in side-channel roster")
+}
+
+#[test]
+fn bool_pointer_output_decodes_to_booleans() {
+    // UBYTE SCALAR STEP, bytes [0, 1, 7] — `0` → false, any other
+    // value → true per §"Output Accessor Component Types".
+    let doc = pointer_doc_full(
+        VISIBLE_POINTER,
+        Some("STEP"),
+        &[0u8, 1, 7],
+        5121,
+        "SCALAR",
+        3,
+    );
+    let scene = GltfDecoder::new().decode(&doc).unwrap();
+    let ch = pointer_channel_obj(&scene);
+    assert_eq!(
+        ch.get("output_data_type").and_then(|x| x.as_str()),
+        Some("bool"),
+        "registry hit recorded in the sidecar"
+    );
+    assert_eq!(
+        ch.get("output_component_type").and_then(|x| x.as_u64()),
+        Some(5121)
+    );
+    let out: Vec<bool> = ch
+        .get("output")
+        .and_then(|a| a.as_array())
+        .unwrap()
+        .iter()
+        .map(|v| v.as_bool().expect("bool lane surfaces JSON booleans"))
+        .collect();
+    assert_eq!(out, vec![false, true, true]);
+}
+
+#[test]
+fn bool_pointer_with_float_output_is_rejected() {
+    // componentType MUST be unsigned byte for a bool-typed property.
+    let mut out_bytes = Vec::new();
+    for f in [0.0f32, 1.0] {
+        out_bytes.extend_from_slice(&f.to_le_bytes());
+    }
+    let doc = pointer_doc_full(VISIBLE_POINTER, Some("STEP"), &out_bytes, 5126, "SCALAR", 2);
+    let err = GltfDecoder::new().decode(&doc).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("ExtensionStackAnimationPointerBoolComponentType"),
+        "expected ExtensionStackAnimationPointerBoolComponentType, got {msg}"
+    );
+}
+
+#[test]
+fn bool_pointer_with_non_scalar_output_is_rejected() {
+    // §Operation data-type table: `bool` → SCALAR.
+    let doc = pointer_doc_full(
+        VISIBLE_POINTER,
+        Some("STEP"),
+        &[0u8, 1, 1, 0],
+        5121,
+        "VEC2",
+        2,
+    );
+    let err = GltfDecoder::new().decode(&doc).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("ExtensionStackAnimationPointerBoolType"),
+        "expected ExtensionStackAnimationPointerBoolType, got {msg}"
+    );
+}
+
+#[test]
+fn bool_pointer_with_linear_interpolation_is_rejected() {
+    // "Animation samplers used with `int` or `bool` Object Model Data
+    // Types MUST use STEP interpolation."
+    let doc = pointer_doc_full(
+        VISIBLE_POINTER,
+        Some("LINEAR"),
+        &[0u8, 1],
+        5121,
+        "SCALAR",
+        2,
+    );
+    let err = GltfDecoder::new().decode(&doc).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("ExtensionStackAnimationPointerBoolInterpolation"),
+        "expected ExtensionStackAnimationPointerBoolInterpolation, got {msg}"
+    );
+}
+
+#[test]
+fn bool_pointer_with_default_interpolation_is_rejected() {
+    // An absent `interpolation` key defaults to LINEAR (spec §3.11),
+    // which the bool lane MUST refuse just like an explicit LINEAR.
+    let doc = pointer_doc_full(VISIBLE_POINTER, None, &[0u8, 1], 5121, "SCALAR", 2);
+    let err = GltfDecoder::new().decode(&doc).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("ExtensionStackAnimationPointerBoolInterpolation"),
+        "expected ExtensionStackAnimationPointerBoolInterpolation, got {msg}"
+    );
+}
+
+#[test]
+fn bool_pointer_round_trips_through_glb() {
+    // Decode → encode → decode. The emitted JSON keeps the mandatory
+    // unsigned-byte componentType + STEP interpolation; truthy source
+    // bytes (7) canonicalise to 1 but stay `true`.
+    let doc = pointer_doc_full(
+        VISIBLE_POINTER,
+        Some("STEP"),
+        &[0u8, 7, 1],
+        5121,
+        "SCALAR",
+        3,
+    );
+    let scene = GltfDecoder::new().decode(&doc).unwrap();
+    let glb = GltfEncoder::new().encode(&scene).unwrap();
+    let json_bytes = extract_json_chunk(&glb);
+    let raw = std::str::from_utf8(&json_bytes).unwrap();
+    assert!(
+        raw.contains("\"componentType\":5121"),
+        "encoder must emit UBYTE componentType on the bool lane, got {raw}"
+    );
+    assert!(
+        raw.contains("\"interpolation\":\"STEP\""),
+        "encoder must emit STEP interpolation on the bool lane, got {raw}"
+    );
+    let scene2 = GltfDecoder::new().decode(&glb).unwrap();
+    let ch = pointer_channel_obj(&scene2);
+    assert_eq!(
+        ch.get("output_data_type").and_then(|x| x.as_str()),
+        Some("bool")
+    );
+    let out: Vec<bool> = ch
+        .get("output")
+        .and_then(|a| a.as_array())
+        .unwrap()
+        .iter()
+        .map(|v| v.as_bool().unwrap())
+        .collect();
+    assert_eq!(out, vec![false, true, true]);
+}
+
+#[test]
+fn unregistered_pointer_stays_on_float_lane() {
+    // A pointer with no registry row (here a core material factor)
+    // keeps the float* branch: numeric sidecar output and no
+    // `output_data_type` key, even with a UBYTE STEP sampler.
+    let doc = pointer_doc_full(
+        "/materials/0/pbrMetallicRoughness/metallicFactor",
+        Some("STEP"),
+        &[0u8, 1, 7],
+        5121,
+        "SCALAR",
+        3,
+    );
+    let scene = GltfDecoder::new().decode(&doc).unwrap();
+    let ch = pointer_channel_obj(&scene);
+    assert!(
+        ch.get("output_data_type").is_none(),
+        "float* lane omits the output_data_type key"
+    );
+    let out: Vec<f64> = ch
+        .get("output")
+        .and_then(|a| a.as_array())
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().expect("float lane surfaces JSON numbers"))
+        .collect();
+    assert_eq!(out, vec![0.0, 1.0, 7.0]);
+}
+
+#[test]
+fn bool_sidecar_with_linear_interpolation_refuses_to_encode() {
+    // A hand-authored sidecar that pairs the bool lane with a LINEAR
+    // sampler violates the STEP MUST and is refused at encode time.
+    use oxideav_mesh3d::Scene3D;
+    use serde_json::json;
+    let mut scene = Scene3D::new();
+    scene.extras.insert(
+        "KHR_animation_pointer".into(),
+        json!({
+            "animations": [{
+                "animation": 0u32,
+                "channels": [{
+                    "channel": 0u32,
+                    "pointer": VISIBLE_POINTER,
+                    "interpolation": "LINEAR",
+                    "input": [0.0, 1.0],
+                    "output_kind": "SCALAR",
+                    "output_data_type": "bool",
+                    "output": [true, false],
+                }],
+            }],
+        }),
+    );
+    scene.animations.push(oxideav_mesh3d::Animation::new(None));
+    let err = GltfEncoder::new().encode(&scene).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("STEP"),
+        "expected the STEP-interpolation MUST to surface, got {msg}"
+    );
+}

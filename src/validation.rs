@@ -152,6 +152,7 @@ use crate::json_model::{
     component_size, type_components, Accessor, Animation, Buffer, BufferView, GltfRoot, Mesh,
     COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_INT, COMPONENT_TYPE_UNSIGNED_SHORT,
 };
+use crate::object_model::{pointer_data_type, ObjectModelDataType};
 use std::collections::HashMap;
 
 /// Maximum nesting depth a glTF JSON document may declare before the
@@ -1220,6 +1221,60 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
                          non-empty JSON Pointers MUST start with '/' (RFC 6901 §3)",
                         p.pointer
                     )));
+                }
+                // Object-Model data-type rules — when the pointer
+                // resolves through the registry of staged pointer
+                // templates (`object_model::pointer_data_type`) to a
+                // `bool` property, three MUSTs from
+                // `docs/3d/gltf/extensions/KHR_animation_pointer.md`
+                // bind the channel's sampler + output accessor:
+                // §Operation data-type table pins `bool` → SCALAR;
+                // §"Output Accessor Component Types": "the output
+                // accessor component type MUST be unsigned byte"; and
+                // "Animation samplers used with `int` or `bool` Object
+                // Model Data Types MUST use STEP interpolation".
+                // Out-of-range sampler / accessor indices are skipped
+                // here — `validate_animation_channels` owns those.
+                if pointer_data_type(&p.pointer) == Some(ObjectModelDataType::Bool) {
+                    if let Some(s) = anim.samplers.get(ch.sampler as usize) {
+                        if s.interpolation.as_deref() != Some("STEP") {
+                            return Err(invalid(format!(
+                                "ExtensionStackAnimationPointerBoolInterpolation: \
+                                 animations[{ai}].channels[{ci}] targets the bool-typed \
+                                 property {:?} but its sampler interpolation is {:?} — \
+                                 samplers used with `int` or `bool` Object Model Data \
+                                 Types MUST use STEP interpolation \
+                                 (KHR_animation_pointer §\"Output Accessor Component Types\")",
+                                p.pointer,
+                                s.interpolation.as_deref().unwrap_or("LINEAR")
+                            )));
+                        }
+                        if let Some(out_acc) = root.accessors.get(s.output as usize) {
+                            if out_acc.kind != "SCALAR" {
+                                return Err(invalid(format!(
+                                    "ExtensionStackAnimationPointerBoolType: \
+                                     animations[{ai}].channels[{ci}] targets the bool-typed \
+                                     property {:?} but the output accessor type is {:?} — \
+                                     the §Operation data-type table pins `bool` to SCALAR \
+                                     (KHR_animation_pointer)",
+                                    p.pointer, out_acc.kind
+                                )));
+                            }
+                            if out_acc.component_type
+                                != crate::json_model::COMPONENT_TYPE_UNSIGNED_BYTE
+                            {
+                                return Err(invalid(format!(
+                                    "ExtensionStackAnimationPointerBoolComponentType: \
+                                     animations[{ai}].channels[{ci}] targets the bool-typed \
+                                     property {:?} but the output accessor componentType is \
+                                     {} — \"the output accessor component type MUST be \
+                                     unsigned byte\" (5121) \
+                                     (KHR_animation_pointer §\"Output Accessor Component Types\")",
+                                    p.pointer, out_acc.component_type
+                                )));
+                            }
+                        }
+                    }
                 }
             }
         }

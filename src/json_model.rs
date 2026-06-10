@@ -181,7 +181,8 @@ pub struct Node {
     pub matrix: Option<[f32; 16]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub translation: Option<[f32; 3]>,
-    /// xyzw quaternion per glTF (Three.js / Unity convention).
+    /// xyzw quaternion per glTF 2.0 spec §5.25 (`rotation` is
+    /// "a unit quaternion value, XYZW, in the local coordinate system").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotation: Option<[f32; 4]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

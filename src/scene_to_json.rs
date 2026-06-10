@@ -477,6 +477,39 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
                 // accessor-format table. The input MUST carry min/max
                 // (§3.6.2.1.5 + §3.11), the output kind carries the
                 // arity per spec §3.6.2.1.
+                // Bool-typed Object Model lane MUSTs per
+                // `docs/3d/gltf/extensions/KHR_animation_pointer.md`:
+                // the sampler MUST use STEP interpolation, the output
+                // accessor MUST be SCALAR (§Operation data-type
+                // table) with unsigned-byte componentType (§"Output
+                // Accessor Component Types"). Enforce before any
+                // accessor is pushed so a malformed hand-authored
+                // sidecar can't emit a non-conformant document.
+                if pc.output_is_bool {
+                    if pc.interpolation != "STEP" {
+                        return Err(invalid(format!(
+                            "KHR_animation_pointer bool output: sampler interpolation \
+                             {:?} — samplers used with `int` or `bool` Object Model \
+                             Data Types MUST use STEP interpolation",
+                            pc.interpolation
+                        )));
+                    }
+                    if pc.output_kind != "SCALAR" {
+                        return Err(invalid(format!(
+                            "KHR_animation_pointer bool output: output_kind {:?} — \
+                             the §Operation data-type table pins `bool` to SCALAR",
+                            pc.output_kind
+                        )));
+                    }
+                    if pc.output_component_type != gj::COMPONENT_TYPE_UNSIGNED_BYTE {
+                        return Err(invalid(format!(
+                            "KHR_animation_pointer bool output: componentType {} — \
+                             \"the output accessor component type MUST be unsigned \
+                             byte\" (5121)",
+                            pc.output_component_type
+                        )));
+                    }
+                }
                 let input_acc =
                     push_scalar_f32_accessor_with_minmax(&mut root, &mut bin, &pc.input, "input")?;
                 let output_acc = push_pointer_output_accessor(
@@ -485,6 +518,7 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
                     &pc.output_kind,
                     pc.output_component_type,
                     pc.output_normalized,
+                    pc.output_is_bool,
                     &pc.output,
                 )?;
                 let interpolation = match pc.interpolation.as_str() {
@@ -3028,6 +3062,13 @@ struct PointerChannelData {
     output_kind: String,
     output_component_type: u32,
     output_normalized: bool,
+    /// `true` when the sidecar's `output_data_type` key is `"bool"` —
+    /// the channel targets a bool-typed Object Model property (per the
+    /// staged pointer-template registry in `object_model`) and the
+    /// output re-emits through the bool lane of
+    /// `docs/3d/gltf/extensions/KHR_animation_pointer.md` §"Output
+    /// Accessor Component Types" (unsigned-byte 0/1 + STEP sampler).
+    output_is_bool: bool,
     output: Vec<f32>,
 }
 
@@ -3050,24 +3091,47 @@ fn parse_pointer_channel(v: &serde_json::Value) -> Option<PointerChannelData> {
         .and_then(|x| x.as_str())
         .unwrap_or("SCALAR")
         .to_owned();
+    // Object Model Data Type lane selector — absent means the float*
+    // branch (every sidecar authored before this key existed is a
+    // float* channel).
+    let output_is_bool = obj
+        .get("output_data_type")
+        .and_then(|x| x.as_str())
+        .map(|s| s == "bool")
+        .unwrap_or(false);
     // Spec default per §"Output Accessor Component Types": FLOAT
     // (componentType 5126) without `normalized`. Older sidecars
     // emitted by r218 omit these keys entirely; the defaults
-    // preserve their FLOAT round-trip behaviour.
+    // preserve their FLOAT round-trip behaviour. A bool-typed channel
+    // instead defaults to the lane's mandatory unsigned byte ("the
+    // output accessor component type MUST be unsigned byte").
+    let default_component_type = if output_is_bool {
+        gj::COMPONENT_TYPE_UNSIGNED_BYTE
+    } else {
+        gj::COMPONENT_TYPE_FLOAT
+    };
     let output_component_type = obj
         .get("output_component_type")
         .and_then(|x| x.as_u64())
         .map(|x| x as u32)
-        .unwrap_or(gj::COMPONENT_TYPE_FLOAT);
+        .unwrap_or(default_component_type);
     let output_normalized = obj
         .get("output_normalized")
         .and_then(|x| x.as_bool())
         .unwrap_or(false);
+    // Output values: numbers on the float* lane; the bool lane holds
+    // JSON booleans (`true` → 1.0, `false` → 0.0 internally — the
+    // §"Output Accessor Component Types" truthiness mapping inverted).
+    // Numeric entries are accepted on the bool lane too via the same
+    // `0` ↔ false / non-zero ↔ true correspondence.
     let output: Vec<f32> = obj
         .get("output")?
         .as_array()?
         .iter()
-        .filter_map(|n| n.as_f64().map(|x| x as f32))
+        .filter_map(|n| match n {
+            serde_json::Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+            _ => n.as_f64().map(|x| x as f32),
+        })
         .collect();
     Some(PointerChannelData {
         pointer,
@@ -3076,6 +3140,7 @@ fn parse_pointer_channel(v: &serde_json::Value) -> Option<PointerChannelData> {
         output_kind,
         output_component_type,
         output_normalized,
+        output_is_bool,
         output,
     })
 }
@@ -3089,14 +3154,19 @@ fn parse_pointer_channel(v: &serde_json::Value) -> Option<PointerChannelData> {
 /// component to its representable range (truncating fractions);
 /// normalized integer types invert the §3.6.2.2 dequantisation
 /// equations via the existing `quantize_u8` / `quantize_u16` /
-/// `quantize_i8` / `quantize_i16` helpers. The flat `data` stream
-/// MUST have `count * arity` elements.
+/// `quantize_i8` / `quantize_i16` helpers. `bool_lane` selects the
+/// `bool` Object Model Data Type branch instead: each value is the
+/// internal 0.0/1.0 truthiness form and serialises as the unsigned
+/// byte `0` (false) or `1` (true) per "`0` is converted to `false`,
+/// any other value is converted to `true`" read in reverse. The flat
+/// `data` stream MUST have `count * arity` elements.
 fn push_pointer_output_accessor(
     root: &mut GltfRoot,
     bin: &mut Vec<u8>,
     output_kind: &str,
     component_type: u32,
     normalized: bool,
+    bool_lane: bool,
     data: &[f32],
 ) -> Result<u32> {
     let arity = match output_kind {
@@ -3121,7 +3191,16 @@ fn push_pointer_output_accessor(
     }
     pad_to_4(bin);
     let byte_offset = bin.len();
-    encode_pointer_output_components(bin, component_type, normalized, data)?;
+    if bool_lane {
+        // `bool` Object Model Data Type — unsigned-byte 0/1 storage;
+        // the truthiness mapping makes any non-zero internal value a
+        // `true`, serialised canonically as 1.
+        for &v in data {
+            bin.push(u8::from(v != 0.0));
+        }
+    } else {
+        encode_pointer_output_components(bin, component_type, normalized, data)?;
+    }
     let byte_length = bin.len() - byte_offset;
     pad_to_4(bin);
     let bv_idx = root.buffer_views.len() as u32;
