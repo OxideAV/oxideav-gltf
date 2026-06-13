@@ -409,6 +409,198 @@ pub fn validate_color0_range(colors: &[[f32; 4]]) -> Result<()> {
     Ok(())
 }
 
+/// `KHR_gaussian_splatting` §"Ellipse Kernel" §"Attributes" — validate
+/// the per-attribute storage contract of an `"ellipse"` kernel splat
+/// primitive against the accessor table.
+///
+/// The ellipse kernel defines an exact accessor type + component-type +
+/// normalized layout for each splat-field semantic
+/// (`docs/3d/gltf/extensions/KHR_gaussian_splatting.md`, the Attributes
+/// table):
+///
+/// | Semantic                          | Type   | Component types |
+/// |-----------------------------------|--------|-----------------|
+/// | `POSITION`                        | VEC3   | inherited       |
+/// | `KHR_gaussian_splatting:ROTATION` | VEC4   | float / sbyte-n / sshort-n |
+/// | `KHR_gaussian_splatting:SCALE`    | VEC3   | float / ubyte(-n) / ushort(-n) |
+/// | `KHR_gaussian_splatting:OPACITY`  | SCALAR | float / ubyte-n / ushort-n |
+/// | `KHR_gaussian_splatting:SH_DEGREE_l_COEF_n` | VEC3 | float |
+///
+/// All five core semantics (`POSITION`, `ROTATION`, `SCALE`, `OPACITY`,
+/// `SH_DEGREE_0_COEF_0`) are required; the higher spherical-harmonics
+/// degrees are optional but MUST be fully defined — for any degree `l`
+/// in 1..=3 that is partially present, all `2l + 1` coefficients of that
+/// degree AND every lower degree MUST be defined ("either all
+/// coefficients for a given degree and all lower degrees MUST be defined
+/// or none").
+fn validate_gaussian_splatting_attributes(
+    root: &GltfRoot,
+    prim: &crate::json_model::Primitive,
+    mi: usize,
+    pi: usize,
+) -> Result<()> {
+    use crate::json_model::{
+        COMPONENT_TYPE_BYTE, COMPONENT_TYPE_FLOAT, COMPONENT_TYPE_SHORT,
+        COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_SHORT,
+    };
+
+    const ROTATION: &str = "KHR_gaussian_splatting:ROTATION";
+    const SCALE: &str = "KHR_gaussian_splatting:SCALE";
+    const OPACITY: &str = "KHR_gaussian_splatting:OPACITY";
+    const SH_0_0: &str = "KHR_gaussian_splatting:SH_DEGREE_0_COEF_0";
+
+    // Look up an attribute's accessor and verify its `type` + component
+    // layout. `comps` is `(kind, allowed)` where each allowed entry is
+    // `(component_type, normalized_requirement)`; a `None` normalized
+    // requirement accepts either flag, `Some(b)` requires `normalized == b`.
+    let check =
+        |name: &str, kind: &str, allowed: &[(u32, Option<bool>)], label: &str| -> Result<()> {
+            let idx = match prim.attributes.get(name) {
+                Some(&i) => i,
+                // Presence of optional attributes is enforced separately; a
+                // missing attribute here is not this check's concern.
+                None => return Ok(()),
+            };
+            let acc = root.accessors.get(idx as usize).ok_or_else(|| {
+                invalid(format!(
+                    "ExtensionStackGaussianSplattingAttributeAccessor: \
+                 meshes[{mi}].primitives[{pi}].attributes[{name:?}] = {idx} \
+                 is out of range of accessors[] ({label})"
+                ))
+            })?;
+            if acc.kind != kind {
+                return Err(invalid(format!(
+                    "ExtensionStackGaussianSplattingAttributeType: \
+                 meshes[{mi}].primitives[{pi}].attributes[{name:?}] \
+                 accessor type = {:?} but the ellipse kernel requires \
+                 {kind:?} ({label})",
+                    acc.kind
+                )));
+            }
+            let ok = allowed.iter().any(|&(ct, norm)| {
+                acc.component_type == ct && norm.map_or(true, |n| acc.normalized == n)
+            });
+            if !ok {
+                return Err(invalid(format!(
+                    "ExtensionStackGaussianSplattingAttributeComponent: \
+                 meshes[{mi}].primitives[{pi}].attributes[{name:?}] \
+                 accessor componentType = {} (normalized = {}) is not a \
+                 spec-allowed storage form ({label})",
+                    acc.component_type, acc.normalized
+                )));
+            }
+            Ok(())
+        };
+
+    // POSITION is required and its storage is governed by the base glTF
+    // specification (already validated by the vertex-attribute pass); we
+    // only enforce its presence here.
+    if !prim.attributes.contains_key("POSITION") {
+        return Err(invalid(format!(
+            "ExtensionStackGaussianSplattingMissingAttribute: \
+             meshes[{mi}].primitives[{pi}] uses the ellipse kernel but is \
+             missing the required POSITION attribute (§\"Ellipse Kernel\" \
+             §\"Attributes\")"
+        )));
+    }
+    for &name in &[ROTATION, SCALE, OPACITY, SH_0_0] {
+        if !prim.attributes.contains_key(name) {
+            return Err(invalid(format!(
+                "ExtensionStackGaussianSplattingMissingAttribute: \
+                 meshes[{mi}].primitives[{pi}] uses the ellipse kernel but \
+                 is missing the required attribute {name:?} (§\"Ellipse \
+                 Kernel\" §\"Attributes\")"
+            )));
+        }
+    }
+
+    // ROTATION: VEC4 — float / signed byte normalized / signed short
+    // normalized.
+    check(
+        ROTATION,
+        "VEC4",
+        &[
+            (COMPONENT_TYPE_FLOAT, None),
+            (COMPONENT_TYPE_BYTE, Some(true)),
+            (COMPONENT_TYPE_SHORT, Some(true)),
+        ],
+        "rotation quaternion",
+    )?;
+    // SCALE: VEC3 — float / unsigned byte (raw or normalized) / unsigned
+    // short (raw or normalized).
+    check(
+        SCALE,
+        "VEC3",
+        &[
+            (COMPONENT_TYPE_FLOAT, None),
+            (COMPONENT_TYPE_UNSIGNED_BYTE, None),
+            (COMPONENT_TYPE_UNSIGNED_SHORT, None),
+        ],
+        "scale",
+    )?;
+    // OPACITY: SCALAR — float / unsigned byte normalized / unsigned short
+    // normalized.
+    check(
+        OPACITY,
+        "SCALAR",
+        &[
+            (COMPONENT_TYPE_FLOAT, None),
+            (COMPONENT_TYPE_UNSIGNED_BYTE, Some(true)),
+            (COMPONENT_TYPE_UNSIGNED_SHORT, Some(true)),
+        ],
+        "opacity",
+    )?;
+
+    // Spherical harmonics: every present `SH_DEGREE_l_COEF_n` attribute is
+    // a VEC3 of floats.
+    for name in prim.attributes.keys() {
+        if name.starts_with("KHR_gaussian_splatting:SH_DEGREE_") {
+            check(
+                name,
+                "VEC3",
+                &[(COMPONENT_TYPE_FLOAT, None)],
+                "spherical-harmonics coefficient",
+            )?;
+        }
+    }
+
+    // §"Spherical Harmonics Attributes" — degree-completeness. For each
+    // degree `l` in 1..=3 that is referenced by ANY present coefficient,
+    // every coefficient `0..=2l` of that degree AND of all lower degrees
+    // MUST be present.
+    let present = |l: u32, n: u32| -> bool {
+        prim.attributes
+            .contains_key(&format!("KHR_gaussian_splatting:SH_DEGREE_{l}_COEF_{n}"))
+    };
+    // Highest degree any coefficient references.
+    let mut max_degree = 0u32;
+    for name in prim.attributes.keys() {
+        if let Some(rest) = name.strip_prefix("KHR_gaussian_splatting:SH_DEGREE_") {
+            if let Some((deg_str, _)) = rest.split_once("_COEF_") {
+                if let Ok(l) = deg_str.parse::<u32>() {
+                    max_degree = max_degree.max(l);
+                }
+            }
+        }
+    }
+    for l in 0..=max_degree {
+        for n in 0..=(2 * l) {
+            if !present(l, n) {
+                return Err(invalid(format!(
+                    "ExtensionStackGaussianSplattingSHIncomplete: \
+                     meshes[{mi}].primitives[{pi}] references spherical \
+                     harmonics up to degree {max_degree} but is missing \
+                     KHR_gaussian_splatting:SH_DEGREE_{l}_COEF_{n} — each \
+                     used degree and all lower degrees MUST be fully \
+                     defined (§\"Spherical Harmonics Attributes\")"
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Spec §3.12: `extensionsRequired` MUST be a subset of `extensionsUsed`.
 ///
 /// In addition, any extension whose object actually appears in the
@@ -1476,6 +1668,14 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
                          §\"Ellipse Kernel\" §\"Dependencies on glTF\")"
                     )));
                 }
+                // §"Ellipse Kernel" §"Attributes" — the ellipse kernel
+                // defines an exact per-attribute storage contract for the
+                // splat-field semantics carried on the primitive. Validate
+                // the accessor type + component-type + normalized layout of
+                // every kernel-defined attribute that is present, the
+                // presence of every required attribute, and the
+                // spherical-harmonics degree-completeness rule.
+                validate_gaussian_splatting_attributes(root, prim, mi, pi)?;
             }
         }
     }

@@ -506,8 +506,28 @@ framework but usable standalone.
   attribute semantics (`KHR_gaussian_splatting:ROTATION` / `:SCALE`
   / `:OPACITY` / `:SH_DEGREE_l_COEF_n` per §"Ellipse Kernel"
   §"Attributes") flow through the standard accessor pipeline as raw
-  attributes — this round delivers the descriptor handshake; the
-  typed splat-field decode + the spherical-harmonics evaluator from
+  attributes. For the base `"ellipse"` kernel the validator now also
+  enforces the full §"Ellipse Kernel" §"Attributes" storage contract:
+  the five required semantics MUST all be present (`POSITION` +
+  `:ROTATION` + `:SCALE` + `:OPACITY` + `:SH_DEGREE_0_COEF_0`,
+  `ExtensionStackGaussianSplattingMissingAttribute`); each present
+  splat attribute's accessor MUST carry the spec-mandated `type`
+  (`ExtensionStackGaussianSplattingAttributeType` — ROTATION = VEC4,
+  SCALE = VEC3, OPACITY = SCALAR, every SH coefficient = VEC3) and a
+  spec-allowed component-type + normalized form
+  (`ExtensionStackGaussianSplattingAttributeComponent` — ROTATION is
+  float / signed-byte-normalized / signed-short-normalized; SCALE is
+  float / unsigned-byte(-normalized) / unsigned-short(-normalized);
+  OPACITY is float / unsigned-byte-normalized /
+  unsigned-short-normalized; SH coefficients are float only); and the
+  spherical-harmonics degrees MUST be complete per §"Spherical
+  Harmonics Attributes" — for any used degree `l` in 1..=3 every
+  `COEF_0..2l` of that degree AND all lower degrees MUST be defined
+  (`ExtensionStackGaussianSplattingSHIncomplete`). A vendor-prefixed
+  kernel defers this entire attribute contract to the kernel-defining
+  extension and skips the checks. This round delivers the descriptor
+  handshake + the ellipse-kernel attribute conformance pass; the typed
+  splat-field decode + the spherical-harmonics evaluator from
   §"Lighting" remain for a follow-up
 - KHR_draco_mesh_compression extension (Khronos ratified) — the
   per-primitive descriptor that redirects a mesh primitive's

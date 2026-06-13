@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 287)
+
+- `KHR_gaussian_splatting` ellipse-kernel attribute-conformance
+  validation per `docs/3d/gltf/extensions/KHR_gaussian_splatting.md`
+  §"Ellipse Kernel" §"Attributes" + §"Spherical Harmonics Attributes".
+  A new `validate_gaussian_splatting_attributes` pass in
+  `src/validation.rs` runs for every primitive whose descriptor carries
+  the base `"ellipse"` kernel and rejects: a missing required semantic
+  (`POSITION` / `:ROTATION` / `:SCALE` / `:OPACITY` /
+  `:SH_DEGREE_0_COEF_0`) with
+  `ExtensionStackGaussianSplattingMissingAttribute`; an accessor whose
+  `type` does not match the kernel table (ROTATION = VEC4, SCALE = VEC3,
+  OPACITY = SCALAR, SH coefficients = VEC3) with
+  `ExtensionStackGaussianSplattingAttributeType`; an accessor whose
+  component-type + normalized form is outside the per-attribute allowed
+  set with `ExtensionStackGaussianSplattingAttributeComponent`; and a
+  partially-defined spherical-harmonics cascade (any used degree `l` in
+  1..=3 missing a `COEF_0..2l`, or a skipped lower degree) with
+  `ExtensionStackGaussianSplattingSHIncomplete`. Vendor-prefixed kernels
+  defer the contract to the kernel-defining extension and skip the pass.
+  11 new tests in `tests/khr_gaussian_splatting.rs`.
+
 ### Added (round 277)
 
 - Camera property validation per core spec §5.12 + §5.13 + §5.14. A
