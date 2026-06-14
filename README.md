@@ -426,7 +426,12 @@ framework but usable standalone.
   extension name in both arrays). The §3.6.2.4-style "texture
   must have a source" rule expands to cover the new spec-allowed
   shape: a texture is invalid only when it carries neither base
-  `source` nor the extension indirection
+  `source` nor the extension indirection. r294 adds the
+  target-image mimeType rule (§Overview + §"glTF Schema
+  Updates"): when the image referenced by
+  `KHR_texture_basisu.source` declares a `mimeType` it MUST be
+  `image/ktx2`, else `ExtensionStackTextureBasisuMimeType`; a
+  uri-only target image with no `mimeType` stays accepted
 - KHR_meshopt_compression extension (Khronos Release Candidate,
   ratified registry entry) — per-bufferView compression
   descriptors + per-buffer `{ "fallback": true }` placeholder

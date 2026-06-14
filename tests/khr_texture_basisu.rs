@@ -450,3 +450,83 @@ fn embedded_ktx2_data_uri_decodes_into_scene_extras() {
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0].as_u64(), Some(0));
 }
+
+/// Validation rule 4: when the image referenced by
+/// `KHR_texture_basisu.source` declares a `mimeType`, that value MUST
+/// be `image/ktx2` (spec §Overview + §"glTF Schema Updates": "the
+/// image that points to the KTX v2 resource uses the mimeType value
+/// of image/ktx2"). A target image carrying `image/png` is rejected
+/// with `ExtensionStackTextureBasisuMimeType`.
+#[test]
+fn basisu_target_image_with_wrong_mimetype_is_rejected() {
+    let json = br#"{
+        "asset": { "version": "2.0" },
+        "extensionsUsed": ["KHR_texture_basisu"],
+        "extensionsRequired": ["KHR_texture_basisu"],
+        "textures": [
+            {
+                "extensions": {
+                    "KHR_texture_basisu": { "source": 0 }
+                }
+            }
+        ],
+        "images": [
+            { "uri": "image.ktx2", "mimeType": "image/png" }
+        ]
+    }"#;
+    let err = GltfDecoder::new().decode(json).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("ExtensionStackTextureBasisuMimeType"),
+        "expected ExtensionStackTextureBasisuMimeType rejection for a \
+         non-image/ktx2 target image, got: {msg}"
+    );
+}
+
+/// The explicit `image/ktx2` mimeType on the target image is the
+/// canonical, accepted shape (spec GLB example). It must validate.
+#[test]
+fn basisu_target_image_with_ktx2_mimetype_is_accepted() {
+    let json = br#"{
+        "asset": { "version": "2.0" },
+        "extensionsUsed": ["KHR_texture_basisu"],
+        "extensionsRequired": ["KHR_texture_basisu"],
+        "textures": [
+            {
+                "extensions": {
+                    "KHR_texture_basisu": { "source": 0 }
+                }
+            }
+        ],
+        "images": [
+            { "uri": "image.ktx2", "mimeType": "image/ktx2" }
+        ]
+    }"#;
+    let scene = GltfDecoder::new().decode(json).unwrap();
+    assert_eq!(scene.textures.len(), 1, "the canonical KTX2 shape decodes");
+}
+
+/// A target image that omits `mimeType` entirely is permitted — the
+/// spec only constrains the value when a mimeType is present (the
+/// uri-only "fallback" example carries no mimeType). Guards against
+/// the validator over-firing on the bare-uri case.
+#[test]
+fn basisu_target_image_without_mimetype_is_accepted() {
+    let json = br#"{
+        "asset": { "version": "2.0" },
+        "extensionsUsed": ["KHR_texture_basisu"],
+        "extensionsRequired": ["KHR_texture_basisu"],
+        "textures": [
+            {
+                "extensions": {
+                    "KHR_texture_basisu": { "source": 0 }
+                }
+            }
+        ],
+        "images": [
+            { "uri": "image.ktx2" }
+        ]
+    }"#;
+    let scene = GltfDecoder::new().decode(json).unwrap();
+    assert_eq!(scene.textures.len(), 1, "uri-only target image decodes");
+}

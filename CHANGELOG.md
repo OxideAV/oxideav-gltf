@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 294)
+
+- `KHR_texture_basisu` target-image mimeType conformance per
+  `docs/3d/gltf/extensions/KHR_texture_basisu.md` §Overview + §"glTF
+  Schema Updates" ("the image that points to the KTX v2 resource uses
+  the mimeType value of image/ktx2"). The per-texture basisu validator
+  in `src/validation.rs` now resolves `KHR_texture_basisu.source` to
+  its `images[]` entry and, when that image declares a `mimeType`,
+  rejects any value other than `image/ktx2` with
+  `ExtensionStackTextureBasisuMimeType`. A target image that omits
+  `mimeType` (the uri-only example) stays accepted — the spec only
+  constrains the value when present. Three tests added to
+  `tests/khr_texture_basisu.rs` (wrong-mime reject, `image/ktx2`
+  accept, no-mime accept).
+
 ### Added (round 287)
 
 - `KHR_gaussian_splatting` ellipse-kernel attribute-conformance

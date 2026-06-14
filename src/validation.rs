@@ -1026,6 +1026,12 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
     //      example shows it in both arrays).
     //   3. The image index in `KHR_texture_basisu.source` MUST
     //      resolve into the document's `images[]` array.
+    //   4. §Overview + §"glTF Schema Updates" — the image referenced
+    //      by `KHR_texture_basisu.source` is a KTX v2 resource. When
+    //      that image declares a `mimeType` it MUST be `image/ktx2`
+    //      ("the image that points to the KTX v2 resource uses the
+    //      mimeType value of image/ktx2"). A non-`image/ktx2`
+    //      `mimeType` on the basisu target image is rejected.
     let mut has_texture_basisu = false;
     let mut basisu_without_fallback = false;
     for (ti, t) in root.textures.iter().enumerate() {
@@ -1046,6 +1052,23 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
                          (images[].len = {})",
                         root.images.len()
                     )));
+                }
+                // Rule 4: when the targeted image declares a mimeType
+                // it MUST be `image/ktx2` (spec §Overview + §"glTF
+                // Schema Updates"). A bare image (uri-only, no mimeType)
+                // is permitted — the spec only constrains the value
+                // *when present*.
+                if let Some(mime) = root.images[src as usize].mime_type.as_deref() {
+                    if mime != "image/ktx2" {
+                        return Err(invalid(format!(
+                            "ExtensionStackTextureBasisuMimeType: texture {ti} \
+                             KHR_texture_basisu.source = {src} targets image \
+                             {src} whose mimeType is {mime:?}, but a KTX v2 \
+                             Basis Universal image MUST declare mimeType \
+                             \"image/ktx2\" when a mimeType is present (spec \
+                             §\"glTF Schema Updates\")"
+                        )));
+                    }
                 }
             }
         }
