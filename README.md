@@ -708,6 +708,16 @@ framework but usable standalone.
   determinant is rejected (`NodeMatrixDecompose`). The conservative
   determinant test leaves the shear/skew sub-case (an Implementation
   Note, not a MUST) accepted when the matrix is still invertible
+- Texture-sampler filter / wrap validation per spec §5.26 — every
+  `samplers[i]` entry is checked before conversion against the closed
+  enum sets in §5.26.1–§5.26.4: `magFilter`, when present, MUST be
+  `9728` NEAREST or `9729` LINEAR (`SamplerMagFilter`); `minFilter`
+  MUST be one of the six filter/mipmap combinations `9728` / `9729` /
+  `9984` / `9985` / `9986` / `9987` (`SamplerMinFilter`); `wrapS`
+  (`SamplerWrapS`) and `wrapT` (`SamplerWrapT`) MUST be `33071`
+  CLAMP_TO_EDGE, `33648` MIRRORED_REPEAT, or `10497` REPEAT. Absent
+  properties stay valid (wrapS/wrapT default to REPEAT; filters are
+  implementation choice) — only an out-of-set integer is rejected
 - `extras` round-trip on root, scenes, nodes, materials, primitives
 
 ## Extension roadmap (next-round work)

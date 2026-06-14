@@ -38,8 +38,8 @@ use crate::validation::{
     check_asset_version, validate_accessor_fits_bufferview, validate_alignment,
     validate_animation_channels, validate_attribute_counts, validate_bufferview_fits_buffer,
     validate_cameras, validate_color0_range, validate_extension_stack, validate_index_no_restart,
-    validate_nodes, validate_sparse_indices_buffer_views, validate_sparse_values_buffer_views,
-    validate_tangent_w,
+    validate_nodes, validate_samplers, validate_sparse_indices_buffer_views,
+    validate_sparse_values_buffer_views, validate_tangent_w,
 };
 
 /// Decode a parsed [`GltfRoot`] into a [`Scene3D`], using `glb_bin`
@@ -92,6 +92,12 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
     // zfar > 0 and > znear, znear >= 0; perspective yfov/znear > 0,
     // aspectRatio (when defined) > 0, zfar (when defined) > znear.
     validate_cameras(&root.cameras)?;
+
+    // Spec §5.26 — texture-sampler filter / wrap modes, when present,
+    // MUST hold one of the enumerated WebGL enum constants (magFilter
+    // NEAREST/LINEAR; minFilter the six filter+mipmap combinations;
+    // wrapS/wrapT CLAMP_TO_EDGE / MIRRORED_REPEAT / REPEAT).
+    validate_samplers(&root.samplers)?;
 
     // Spec §3.5.2 + §3.5.3 — the node hierarchy MUST be a set of
     // disjoint strict trees (child indices in range, single parent, no

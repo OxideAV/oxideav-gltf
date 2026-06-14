@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 306)
+
+- Texture-sampler filter / wrap validation per glTF 2.0 spec §5.26
+  (Sampler). A new `validate_samplers` pass in `src/validation.rs`,
+  wired into `convert()` before buffer materialisation, enforces the
+  closed enum sets from §5.26.1–§5.26.4 on every `samplers[i]` entry:
+  `magFilter` ∈ { 9728 NEAREST, 9729 LINEAR } (`SamplerMagFilter`);
+  `minFilter` ∈ { 9728, 9729, 9984, 9985, 9986, 9987 }
+  (`SamplerMinFilter`); `wrapS` / `wrapT` ∈ { 33071 CLAMP_TO_EDGE,
+  33648 MIRRORED_REPEAT, 10497 REPEAT } (`SamplerWrapS` /
+  `SamplerWrapT`). Absent properties remain valid (wrapS/wrapT carry a
+  spec default of REPEAT; the filters have no default) — only an
+  out-of-set integer is rejected. Covered by eight unit tests in
+  `src/validation.rs` plus an end-to-end `tests/sampler_validation.rs`
+  that pins the `convert()` wiring through the public `GltfDecoder`.
+
 ### Added (round 300)
 
 - Node-hierarchy + node-transform validation per glTF 2.0 spec §3.5.2

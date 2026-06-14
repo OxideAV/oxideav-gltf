@@ -84,6 +84,9 @@
 //!   morph target.
 //! * §3.11 — every channel's `sampler` index MUST be in range; every
 //!   sampler's `input` / `output` accessor indices MUST be in range.
+//! * §5.26 — texture-sampler `magFilter` / `minFilter` / `wrapS` /
+//!   `wrapT`, when present, MUST hold one of the spec's enumerated
+//!   WebGL enum constants.
 //!
 //! Fuzz hardening (round 7):
 //!
@@ -2625,6 +2628,84 @@ pub fn validate_cameras(cameras: &[Camera]) -> Result<()> {
     Ok(())
 }
 
+/// Validate texture sampler filter / wrap modes against the glTF 2.0
+/// spec §5.26 (Sampler).
+///
+/// Each of `magFilter`, `minFilter`, `wrapS`, `wrapT` is an OPTIONAL
+/// integer, but when present its value is constrained to a closed set
+/// of WebGL enum constants (Table 25 plus §5.26.1–§5.26.4 "Allowed
+/// values"). The spec lists no other legal values, so any out-of-set
+/// integer is a hard violation:
+///
+/// * §5.26.1 `magFilter` ∈ { 9728 NEAREST, 9729 LINEAR }
+///   (`SamplerMagFilter`).
+/// * §5.26.2 `minFilter` ∈ { 9728 NEAREST, 9729 LINEAR,
+///   9984 NEAREST_MIPMAP_NEAREST, 9985 LINEAR_MIPMAP_NEAREST,
+///   9986 NEAREST_MIPMAP_LINEAR, 9987 LINEAR_MIPMAP_LINEAR }
+///   (`SamplerMinFilter`).
+/// * §5.26.3 `wrapS` ∈ { 33071 CLAMP_TO_EDGE, 33648 MIRRORED_REPEAT,
+///   10497 REPEAT } (`SamplerWrapS`).
+/// * §5.26.4 `wrapT` — same set as `wrapS` (`SamplerWrapT`).
+///
+/// Absent properties are not policed here: `wrapS`/`wrapT` carry a
+/// spec default of 10497 (applied at read time / left to the consumer),
+/// and `magFilter`/`minFilter` have no default — an absent filter means
+/// "implementation choice", which is conformant.
+pub fn validate_samplers(samplers: &[crate::json_model::Sampler]) -> Result<()> {
+    use crate::json_model::{
+        MAG_FILTER_LINEAR, MAG_FILTER_NEAREST, MIN_FILTER_LINEAR, MIN_FILTER_LINEAR_MIPMAP_LINEAR,
+        MIN_FILTER_LINEAR_MIPMAP_NEAREST, MIN_FILTER_NEAREST, MIN_FILTER_NEAREST_MIPMAP_LINEAR,
+        MIN_FILTER_NEAREST_MIPMAP_NEAREST, WRAP_CLAMP_TO_EDGE, WRAP_MIRRORED_REPEAT, WRAP_REPEAT,
+    };
+    for (si, s) in samplers.iter().enumerate() {
+        if let Some(v) = s.mag_filter {
+            if !matches!(v, MAG_FILTER_NEAREST | MAG_FILTER_LINEAR) {
+                return Err(invalid(format!(
+                    "SamplerMagFilter: samplers[{si}].magFilter = {v} — MUST be one of \
+                     9728 (NEAREST) or 9729 (LINEAR) (spec §5.26.1)"
+                )));
+            }
+        }
+        if let Some(v) = s.min_filter {
+            if !matches!(
+                v,
+                MIN_FILTER_NEAREST
+                    | MIN_FILTER_LINEAR
+                    | MIN_FILTER_NEAREST_MIPMAP_NEAREST
+                    | MIN_FILTER_LINEAR_MIPMAP_NEAREST
+                    | MIN_FILTER_NEAREST_MIPMAP_LINEAR
+                    | MIN_FILTER_LINEAR_MIPMAP_LINEAR
+            ) {
+                return Err(invalid(format!(
+                    "SamplerMinFilter: samplers[{si}].minFilter = {v} — MUST be one of \
+                     9728 (NEAREST), 9729 (LINEAR), 9984 (NEAREST_MIPMAP_NEAREST), \
+                     9985 (LINEAR_MIPMAP_NEAREST), 9986 (NEAREST_MIPMAP_LINEAR), or \
+                     9987 (LINEAR_MIPMAP_LINEAR) (spec §5.26.2)"
+                )));
+            }
+        }
+        if let Some(v) = s.wrap_s {
+            if !matches!(v, WRAP_CLAMP_TO_EDGE | WRAP_MIRRORED_REPEAT | WRAP_REPEAT) {
+                return Err(invalid(format!(
+                    "SamplerWrapS: samplers[{si}].wrapS = {v} — MUST be one of \
+                     33071 (CLAMP_TO_EDGE), 33648 (MIRRORED_REPEAT), or 10497 (REPEAT) \
+                     (spec §5.26.3)"
+                )));
+            }
+        }
+        if let Some(v) = s.wrap_t {
+            if !matches!(v, WRAP_CLAMP_TO_EDGE | WRAP_MIRRORED_REPEAT | WRAP_REPEAT) {
+                return Err(invalid(format!(
+                    "SamplerWrapT: samplers[{si}].wrapT = {v} — MUST be one of \
+                     33071 (CLAMP_TO_EDGE), 33648 (MIRRORED_REPEAT), or 10497 (REPEAT) \
+                     (spec §5.26.4)"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Validate the node graph + per-node transforms against the
 /// glTF 2.0 spec §3.5.2 (node hierarchy) and §3.5.3 (transformations).
 ///
@@ -4796,5 +4877,98 @@ mod tests {
             Node::default(),
         ];
         assert!(validate_nodes(&n, &[]).is_ok());
+    }
+
+    // --- §5.26 sampler filter / wrap mode validation ---
+
+    use crate::json_model::{
+        Sampler, MAG_FILTER_LINEAR, MAG_FILTER_NEAREST, MIN_FILTER_LINEAR_MIPMAP_LINEAR,
+        WRAP_CLAMP_TO_EDGE, WRAP_MIRRORED_REPEAT, WRAP_REPEAT,
+    };
+
+    #[test]
+    fn samplers_accept_all_legal_enum_values() {
+        // Every enumerated combination from §5.26.1–§5.26.4 is valid.
+        let s = vec![
+            Sampler {
+                mag_filter: Some(MAG_FILTER_NEAREST),
+                min_filter: Some(MIN_FILTER_LINEAR_MIPMAP_LINEAR),
+                wrap_s: Some(WRAP_CLAMP_TO_EDGE),
+                wrap_t: Some(WRAP_MIRRORED_REPEAT),
+                name: None,
+            },
+            Sampler {
+                mag_filter: Some(MAG_FILTER_LINEAR),
+                min_filter: Some(9984), // NEAREST_MIPMAP_NEAREST
+                wrap_s: Some(WRAP_REPEAT),
+                wrap_t: Some(WRAP_REPEAT),
+                name: None,
+            },
+        ];
+        assert!(validate_samplers(&s).is_ok());
+    }
+
+    #[test]
+    fn samplers_accept_all_absent_properties() {
+        // A sampler with no filter/wrap properties is conformant — wrapS/
+        // wrapT default to REPEAT, filters are implementation choice.
+        let s = vec![Sampler::default()];
+        assert!(validate_samplers(&s).is_ok());
+    }
+
+    #[test]
+    fn samplers_reject_bad_mag_filter() {
+        let s = vec![Sampler {
+            mag_filter: Some(9987), // a minFilter-only mipmap value
+            ..Default::default()
+        }];
+        let err = validate_samplers(&s).unwrap_err();
+        assert!(format!("{err}").contains("SamplerMagFilter"));
+    }
+
+    #[test]
+    fn samplers_reject_bad_min_filter() {
+        let s = vec![Sampler {
+            min_filter: Some(9999),
+            ..Default::default()
+        }];
+        let err = validate_samplers(&s).unwrap_err();
+        assert!(format!("{err}").contains("SamplerMinFilter"));
+    }
+
+    #[test]
+    fn samplers_reject_bad_wrap_s() {
+        let s = vec![Sampler {
+            wrap_s: Some(0),
+            ..Default::default()
+        }];
+        let err = validate_samplers(&s).unwrap_err();
+        assert!(format!("{err}").contains("SamplerWrapS"));
+    }
+
+    #[test]
+    fn samplers_reject_bad_wrap_t() {
+        let s = vec![Sampler {
+            wrap_t: Some(33072), // off-by-one from CLAMP_TO_EDGE
+            ..Default::default()
+        }];
+        let err = validate_samplers(&s).unwrap_err();
+        assert!(format!("{err}").contains("SamplerWrapT"));
+    }
+
+    #[test]
+    fn samplers_reject_mag_filter_mipmap_value() {
+        // §5.26.1: magFilter has only NEAREST / LINEAR — the mipmap
+        // combinations are minFilter-only and MUST be rejected here.
+        for v in [9984u32, 9985, 9986, 9987] {
+            let s = vec![Sampler {
+                mag_filter: Some(v),
+                ..Default::default()
+            }];
+            assert!(
+                validate_samplers(&s).is_err(),
+                "magFilter {v} should be rejected"
+            );
+        }
     }
 }
