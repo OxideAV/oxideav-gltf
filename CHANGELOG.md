@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 300)
+
+- Node-hierarchy + node-transform validation per glTF 2.0 spec §3.5.2
+  (node hierarchy) and §3.5.3 (transformations). A new `validate_nodes`
+  pass in `src/validation.rs`, wired into `convert()` before buffer
+  materialisation, enforces every hard MUST in those two sections:
+  - §3.5.2 "The node hierarchy MUST be a set of disjoint strict trees …
+    MUST NOT contain cycles and each node MUST have zero or one parent
+    node" — child indices MUST resolve into `nodes[]`
+    (`NodeChildIndex`); a node MUST NOT appear in two parents'
+    `children` (`NodeMultipleParents`); the parent-link walk MUST NOT
+    close a cycle, which also catches a node listing itself as a child
+    (`NodeHierarchyCycle`).
+  - §3.5.3 `matrix` ⊥ TRS (`NodeMatrixTRSExclusive`); an
+    animation-targeted node MUST use TRS only, never `matrix`
+    (`NodeAnimatedMatrix`); `rotation` MUST be a finite unit quaternion
+    (`NodeRotationUnitQuaternion`, ~2e-3 length tolerance absorbing
+    normalized-integer round-trip); `translation` / `scale` / `matrix`
+    components MUST be finite (`NodeTranslationFinite` /
+    `NodeScaleFinite` / `NodeMatrixFinite`); and a `matrix` MUST be
+    decomposable to TRS — a zero/non-finite upper-left-3×3 determinant
+    is rejected (`NodeMatrixDecompose`), conservatively leaving the
+    shear/skew SHOULD-NOT sub-case (an Implementation Note) accepted.
+  - 15 end-to-end tests in `tests/node_hierarchy_validation.rs` plus 4
+    unit tests in `src/validation.rs` (invertible-shear accept,
+    long-chain cycle, non-finite translation, deep strict tree).
+
 ### Added (round 294)
 
 - `KHR_texture_basisu` target-image mimeType conformance per

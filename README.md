@@ -689,6 +689,25 @@ framework but usable standalone.
   (non-negative magnification, `yfov < π`) is deliberately NOT
   enforced, and an undefined perspective `zfar` (infinite
   projection) stays valid
+- Node-hierarchy + node-transform validation per spec §3.5.2 + §3.5.3
+  — the decoder rejects malformed node graphs and transforms with
+  stable `Node…`-prefixed errors. §3.5.2 "the node hierarchy MUST be a
+  set of disjoint strict trees": every `children[]` index MUST resolve
+  into `nodes[]` (`NodeChildIndex`), a node MUST have zero or one parent
+  (`NodeMultipleParents`), and the hierarchy MUST NOT contain cycles —
+  including a node listing itself as a child (`NodeHierarchyCycle`).
+  §3.5.3 transforms: `matrix` is mutually exclusive with the TRS
+  properties (`NodeMatrixTRSExclusive`); a node targeted by an
+  animation channel MUST use TRS only and MUST NOT carry `matrix`
+  (`NodeAnimatedMatrix`); `rotation` MUST be a finite unit quaternion
+  (`NodeRotationUnitQuaternion`, with a tolerance that absorbs
+  normalized-integer round-trip error); `translation` / `scale` /
+  `matrix` components MUST be finite (`NodeTranslationFinite` /
+  `NodeScaleFinite` / `NodeMatrixFinite`); and a `matrix` MUST be
+  decomposable to TRS, so a zero / non-finite upper-left 3×3
+  determinant is rejected (`NodeMatrixDecompose`). The conservative
+  determinant test leaves the shear/skew sub-case (an Implementation
+  Note, not a MUST) accepted when the matrix is still invertible
 - `extras` round-trip on root, scenes, nodes, materials, primitives
 
 ## Extension roadmap (next-round work)

@@ -38,7 +38,8 @@ use crate::validation::{
     check_asset_version, validate_accessor_fits_bufferview, validate_alignment,
     validate_animation_channels, validate_attribute_counts, validate_bufferview_fits_buffer,
     validate_cameras, validate_color0_range, validate_extension_stack, validate_index_no_restart,
-    validate_sparse_indices_buffer_views, validate_sparse_values_buffer_views, validate_tangent_w,
+    validate_nodes, validate_sparse_indices_buffer_views, validate_sparse_values_buffer_views,
+    validate_tangent_w,
 };
 
 /// Decode a parsed [`GltfRoot`] into a [`Scene3D`], using `glb_bin`
@@ -91,6 +92,14 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
     // zfar > 0 and > znear, znear >= 0; perspective yfov/znear > 0,
     // aspectRatio (when defined) > 0, zfar (when defined) > znear.
     validate_cameras(&root.cameras)?;
+
+    // Spec §3.5.2 + §3.5.3 — the node hierarchy MUST be a set of
+    // disjoint strict trees (child indices in range, single parent, no
+    // cycles); per-node transforms MUST keep `matrix` mutually
+    // exclusive with TRS, MUST use TRS only on animated nodes, MUST
+    // carry a unit-quaternion `rotation`, MUST be finite, and a
+    // `matrix` MUST be decomposable to TRS (non-zero determinant).
+    validate_nodes(&root.nodes, &root.animations)?;
 
     let buffers = resolve_buffers(root, glb_bin)?;
     let mut scene = Scene3D::new();

@@ -2625,6 +2625,202 @@ pub fn validate_cameras(cameras: &[Camera]) -> Result<()> {
     Ok(())
 }
 
+/// Validate the node graph + per-node transforms against the
+/// glTF 2.0 spec §3.5.2 (node hierarchy) and §3.5.3 (transformations).
+///
+/// The rules enforced are all hard MUST constraints:
+///
+/// * §3.5.2 "The node hierarchy MUST be a set of disjoint strict
+///   trees. That is node hierarchy MUST NOT contain cycles and each
+///   node MUST have zero or one parent node." We police this in three
+///   parts: every `children[]` index MUST resolve into `nodes[]`
+///   (`NodeChildIndex`); a node MUST NOT appear in the `children` of
+///   more than one node (`NodeMultipleParents`); and following the
+///   parent links MUST NOT close a cycle (`NodeHierarchyCycle`,
+///   which also catches a node listing itself as a child).
+/// * §3.5.3 "Any node MAY define a local space transform either by
+///   supplying a `matrix` property, or any of `translation`,
+///   `rotation`, and `scale` properties." The "either … or" wording
+///   (mirrored by the JSON schema's `not`/`required` clauses) makes
+///   `matrix` mutually exclusive with every TRS property
+///   (`NodeMatrixTRSExclusive`).
+/// * §3.5.3 "When a node is targeted for animation (referenced by an
+///   `animation.channel.target`), only TRS properties MAY be present;
+///   `matrix` MUST NOT be present." (`NodeAnimatedMatrix`).
+/// * §3.5.3 "`rotation` is a unit quaternion value" — a present
+///   `rotation` MUST be finite and (approximately) normalized
+///   (`NodeRotationUnitQuaternion`).
+/// * §3.5.3 "When `matrix` is defined, it MUST be decomposable to TRS
+///   properties." A matrix with a zero or non-finite determinant
+///   cannot be decomposed into a `T * R * S` product (the rotation /
+///   scale factorisation requires an invertible upper-left 3×3), so
+///   it is rejected (`NodeMatrixDecompose`). The conservative
+///   determinant test avoids false positives on the shear/skew
+///   sub-case (an Implementation Note, not a MUST).
+/// * All transform components MUST be finite numbers
+///   (`NodeMatrixFinite` / `NodeTranslationFinite` / `NodeScaleFinite`);
+///   the rotation finiteness is folded into the unit-quaternion check.
+pub fn validate_nodes(nodes: &[crate::json_model::Node], animations: &[Animation]) -> Result<()> {
+    let n = nodes.len();
+
+    // --- §3.5.2 hierarchy: child-index range + single parent ---
+    // `parent_of[child]` records the first parent that claimed `child`;
+    // a second claim is the "more than one parent" violation.
+    let mut parent_of: Vec<Option<usize>> = vec![None; n];
+    for (pi, node) in nodes.iter().enumerate() {
+        for &c in &node.children {
+            let ci = c as usize;
+            if ci >= n {
+                return Err(invalid(format!(
+                    "NodeChildIndex: nodes[{pi}].children references node {c}, out of range \
+                     (document has {n} nodes) (spec §3.5.2)"
+                )));
+            }
+            if let Some(existing) = parent_of[ci] {
+                return Err(invalid(format!(
+                    "NodeMultipleParents: node {ci} appears in the children of both nodes \
+                     {existing} and {pi} — each node MUST have zero or one parent (spec §3.5.2)"
+                )));
+            }
+            parent_of[ci] = Some(pi);
+        }
+    }
+
+    // --- §3.5.2 hierarchy: no cycles ---
+    // With single-parent already enforced, a cycle is detectable by
+    // walking parent links upward from every node; a strict tree
+    // terminates at a root (parent None). Any node whose upward walk
+    // revisits its own start has closed a cycle (this also catches a
+    // node that lists itself as a child, which makes it its own parent).
+    for start in 0..n {
+        let mut steps = 0usize;
+        let mut cur = parent_of[start];
+        while let Some(p) = cur {
+            if p == start {
+                return Err(invalid(format!(
+                    "NodeHierarchyCycle: following parent links from node {start} returns to \
+                     itself — the node hierarchy MUST NOT contain cycles (spec §3.5.2)"
+                )));
+            }
+            steps += 1;
+            if steps > n {
+                // Defensive: with single-parent enforced this cannot
+                // exceed n without revisiting `start` first, but bound
+                // the walk so a malformed graph can never loop forever.
+                return Err(invalid(format!(
+                    "NodeHierarchyCycle: parent-link walk from node {start} exceeded {n} steps \
+                     — the node hierarchy MUST NOT contain cycles (spec §3.5.2)"
+                )));
+            }
+            cur = parent_of[p];
+        }
+    }
+
+    // --- §3.5.3 per-node transform rules ---
+    // A node is "targeted for animation" when any animation channel's
+    // target.node points at it.
+    let mut animated = vec![false; n];
+    for anim in animations {
+        for ch in &anim.channels {
+            if let Some(ni) = ch.target.node {
+                if (ni as usize) < n {
+                    animated[ni as usize] = true;
+                }
+            }
+        }
+    }
+
+    for (i, node) in nodes.iter().enumerate() {
+        let has_trs = node.translation.is_some() || node.rotation.is_some() || node.scale.is_some();
+
+        if let Some(m) = &node.matrix {
+            // matrix ⊥ TRS.
+            if has_trs {
+                return Err(invalid(format!(
+                    "NodeMatrixTRSExclusive: nodes[{i}] defines BOTH `matrix` and one or more \
+                     TRS properties — they are mutually exclusive (spec §3.5.3)"
+                )));
+            }
+            // Animated nodes MUST NOT carry matrix.
+            if animated[i] {
+                return Err(invalid(format!(
+                    "NodeAnimatedMatrix: nodes[{i}] is targeted by an animation channel but \
+                     defines `matrix` — animated nodes MUST use TRS only (spec §3.5.3)"
+                )));
+            }
+            // All 16 components finite.
+            if let Some(bad) = m.iter().position(|v| !v.is_finite()) {
+                return Err(invalid(format!(
+                    "NodeMatrixFinite: nodes[{i}].matrix[{bad}] = {} is not finite \
+                     (spec §3.5.3)",
+                    m[bad]
+                )));
+            }
+            // Must be decomposable to TRS → upper-left 3×3 invertible
+            // (non-zero, finite determinant). The matrix is stored
+            // column-major (spec §3.5.2.1), so column k spans
+            // m[4k..4k+4]; the upper-left 3×3 takes rows 0..3 of the
+            // first three columns.
+            let c0 = [m[0], m[1], m[2]];
+            let c1 = [m[4], m[5], m[6]];
+            let c2 = [m[8], m[9], m[10]];
+            let det = c0[0] * (c1[1] * c2[2] - c1[2] * c2[1])
+                - c1[0] * (c0[1] * c2[2] - c0[2] * c2[1])
+                + c2[0] * (c0[1] * c1[2] - c0[2] * c1[1]);
+            if !det.is_finite() || det == 0.0 {
+                return Err(invalid(format!(
+                    "NodeMatrixDecompose: nodes[{i}].matrix has a {} upper-left 3×3 \
+                     determinant ({det}) and is not decomposable to TRS (spec §3.5.3)",
+                    if det == 0.0 { "zero" } else { "non-finite" }
+                )));
+            }
+        }
+
+        if let Some(t) = &node.translation {
+            if let Some(bad) = t.iter().position(|v| !v.is_finite()) {
+                return Err(invalid(format!(
+                    "NodeTranslationFinite: nodes[{i}].translation[{bad}] = {} is not finite \
+                     (spec §3.5.3)",
+                    t[bad]
+                )));
+            }
+        }
+
+        if let Some(s) = &node.scale {
+            if let Some(bad) = s.iter().position(|v| !v.is_finite()) {
+                return Err(invalid(format!(
+                    "NodeScaleFinite: nodes[{i}].scale[{bad}] = {} is not finite (spec §3.5.3)",
+                    s[bad]
+                )));
+            }
+        }
+
+        if let Some(q) = &node.rotation {
+            if let Some(bad) = q.iter().position(|v| !v.is_finite()) {
+                return Err(invalid(format!(
+                    "NodeRotationUnitQuaternion: nodes[{i}].rotation[{bad}] = {} is not finite \
+                     — `rotation` MUST be a unit quaternion (spec §3.5.3)",
+                    q[bad]
+                )));
+            }
+            let len2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+            // Unit length within a tolerance that comfortably absorbs
+            // f32 round-trip error from normalized-integer storage
+            // (the §3.6.2.2 quantisation grid is no coarser than
+            // 1/32767, so a unit quaternion stays within ~1e-3 of
+            // length 1 after a normalize/round-trip).
+            if (len2 - 1.0).abs() > 2e-3 {
+                return Err(invalid(format!(
+                    "NodeRotationUnitQuaternion: nodes[{i}].rotation has squared length {len2} \
+                     (expected ≈ 1.0) — `rotation` MUST be a unit quaternion (spec §3.5.3)"
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4526,5 +4722,79 @@ mod tests {
         // NaN yfov must not slip through the comparisons.
         let err = validate_cameras(&[persp(None, f32::NAN, 0.1, None)]).unwrap_err();
         assert!(format!("{err}").contains("CameraPerspectiveYfov"));
+    }
+
+    fn node_with_matrix(m: [f32; 16]) -> Node {
+        Node {
+            matrix: Some(m),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn nodes_accept_invertible_shear_matrix() {
+        // §3.5.3 — the determinant test rejects only non-invertible
+        // matrices. A shear (off-diagonal upper-left term) is an
+        // Implementation Note "SHOULD NOT", not a MUST, so an
+        // invertible shear matrix is accepted.
+        let mut m = [0.0f32; 16];
+        // identity …
+        m[0] = 1.0;
+        m[5] = 1.0;
+        m[10] = 1.0;
+        m[15] = 1.0;
+        // … plus a shear term in column 1 / row 0 (non-zero det = 1).
+        m[4] = 0.5;
+        assert!(validate_nodes(&[node_with_matrix(m)], &[]).is_ok());
+    }
+
+    #[test]
+    fn nodes_reject_long_parent_chain_cycle() {
+        // §3.5.2 — a 4-node cycle 0->1->2->3->0. The closing edge gives
+        // node 0 a second parent, so the multiple-parents guard fires
+        // first; either way it must be rejected.
+        let chain = |child: u32| Node {
+            children: vec![child],
+            ..Default::default()
+        };
+        let nodes = vec![chain(1), chain(2), chain(3), chain(0)];
+        let err = validate_nodes(&nodes, &[]).unwrap_err();
+        let m = format!("{err}");
+        assert!(
+            m.contains("NodeHierarchyCycle") || m.contains("NodeMultipleParents"),
+            "{m}"
+        );
+    }
+
+    #[test]
+    fn nodes_reject_non_finite_translation() {
+        // §3.5.3 — transform components MUST be finite.
+        let node = Node {
+            translation: Some([f32::INFINITY, 0.0, 0.0]),
+            ..Default::default()
+        };
+        let err = validate_nodes(&[node], &[]).unwrap_err();
+        assert!(format!("{err}").contains("NodeTranslationFinite"));
+    }
+
+    #[test]
+    fn nodes_accept_deep_strict_tree() {
+        // A 4-level linear chain (0->1->2->3) is a valid strict tree.
+        let n = vec![
+            Node {
+                children: vec![1],
+                ..Default::default()
+            },
+            Node {
+                children: vec![2],
+                ..Default::default()
+            },
+            Node {
+                children: vec![3],
+                ..Default::default()
+            },
+            Node::default(),
+        ];
+        assert!(validate_nodes(&n, &[]).is_ok());
     }
 }
