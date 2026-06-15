@@ -426,9 +426,9 @@ framework but usable standalone.
   extension name in both arrays). The §3.6.2.4-style "texture
   must have a source" rule expands to cover the new spec-allowed
   shape: a texture is invalid only when it carries neither base
-  `source` nor the extension indirection. r294 adds the
+  `source` nor the extension indirection. The
   target-image mimeType rule (§Overview + §"glTF Schema
-  Updates"): when the image referenced by
+  Updates") is also enforced — when the image referenced by
   `KHR_texture_basisu.source` declares a `mimeType` it MUST be
   `image/ktx2`, else `ExtensionStackTextureBasisuMimeType`; a
   uri-only target image with no `mimeType` stays accepted
@@ -736,9 +736,10 @@ The KHR extension registry is now staged under
 is implementation, not docs:
 
 - KHR_animation_pointer `int` Object-Model branch + core property
-  table — r269 lands the pointer-template registry
+  table — the pointer-template registry
   (`object_model.rs`) and the `bool` branch (componentType MUST be
-  UNSIGNED_BYTE, `0` → false, else true, STEP-only samplers), seeded
+  UNSIGNED_BYTE, `0` → false, else true, STEP-only samplers) are in
+  place, seeded
   from the staged extension specs' §"Extending glTF 2.0 Asset Object
   Model" tables. The `int` branch (componentType MUST be a
   non-normalised integer, values used as-is, STEP-only) is wired the
@@ -749,8 +750,8 @@ is implementation, not docs:
   would also unlock spec-aware pointer-resolution validation
   (accessor-type vs data-type compatibility per the §Operation table
   for core properties)
-- KHR_texture_basisu transcode lane — round 233 lands the per-
-  texture indirection round-trip (sidecar + §3.12 validation) as
+- KHR_texture_basisu transcode lane — the per-texture
+  indirection round-trip (sidecar + §3.12 validation) is in place as
   a pass-through; an actual KTX2 / Basis Universal transcode lane
   that turns the opaque bytes into a sampled `ImageData::Embedded`
   is the next iteration, conditional on a `docs/image/ktx2/`
