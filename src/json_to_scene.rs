@@ -113,7 +113,17 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
     // `matrix` MUST be decomposable to TRS (non-zero determinant).
     validate_nodes(&root.nodes, &root.animations)?;
 
-    let buffers = resolve_buffers(root, glb_bin)?;
+    let mut buffers = resolve_buffers(root, glb_bin)?;
+    // `KHR_meshopt_compression` inflate pass — per
+    // `docs/3d/gltf/extensions/KHR_meshopt_compression.md` Appendix A /
+    // B. Each compressed bufferView's descriptor sources opaque
+    // compressed bytes from its own `buffer` / `byteOffset` /
+    // `byteLength`; the decompressed bytes are written into the *parent*
+    // bufferView's buffer at its `byteOffset` (per §"Fallback buffers":
+    // "encoders should use the decompressed data to populate the
+    // fallback buffer view"). After this pass the standard accessor
+    // pipeline reads the real attribute / index data unchanged.
+    inflate_meshopt_buffer_views(root, &mut buffers)?;
     let mut scene = Scene3D::new();
 
     // `KHR_meshopt_compression` sidecar — per
@@ -1160,6 +1170,96 @@ fn resolve_buffers(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Vec<Arc<Ve
         out.push(Arc::new(bytes));
     }
     Ok(out)
+}
+
+/// Inflate every `KHR_meshopt_compression`-compressed bufferView in
+/// place, writing the decompressed bytes into the parent bufferView's
+/// region of its backing buffer, per
+/// `docs/3d/gltf/extensions/KHR_meshopt_compression.md` Appendix A / B.
+///
+/// The descriptor's `buffer` / `byteOffset` / `byteLength` locate the
+/// compressed source; the meshopt decoder turns it into
+/// `byteStride * count` decompressed bytes, which are copied into the
+/// parent bufferView's `buffer` at the parent `byteOffset`. The parent
+/// `byteLength` MUST be large enough to hold the decompressed result.
+fn inflate_meshopt_buffer_views(
+    root: &GltfRoot,
+    buffers: &mut [std::sync::Arc<Vec<u8>>],
+) -> Result<()> {
+    for (bvi, bv) in root.buffer_views.iter().enumerate() {
+        let Some(mc) = bv
+            .extensions
+            .as_ref()
+            .and_then(|e| e.khr_meshopt_compression.as_ref())
+        else {
+            continue;
+        };
+
+        let mode = crate::meshopt::Mode::parse(&mc.mode)?;
+        let filter = crate::meshopt::Filter::parse(mc.filter.as_deref())?;
+        let count = mc.count as usize;
+        let byte_stride = mc.byte_stride as usize;
+
+        // Compressed source range (descriptor `buffer`).
+        let src_buf = buffers.get(mc.buffer as usize).ok_or_else(|| {
+            invalid(format!(
+                "KHR_meshopt_compression: bufferView[{bvi}] descriptor buffer {} out of range",
+                mc.buffer
+            ))
+        })?;
+        let src_off = mc.byte_offset.unwrap_or(0) as usize;
+        let src_len = mc.byte_length as usize;
+        let src_end = src_off.checked_add(src_len).ok_or_else(|| {
+            invalid(format!(
+                "KHR_meshopt_compression: bufferView[{bvi}] compressed range overflows"
+            ))
+        })?;
+        if src_end > src_buf.len() {
+            return Err(invalid(format!(
+                "KHR_meshopt_compression: bufferView[{bvi}] compressed range [{src_off}, {src_end}) \
+                 overruns descriptor buffer {} of {} bytes",
+                mc.buffer,
+                src_buf.len()
+            )));
+        }
+        let compressed = src_buf[src_off..src_end].to_vec();
+
+        let decompressed = crate::meshopt::decode(&compressed, mode, filter, count, byte_stride)?;
+
+        // Destination: the parent bufferView's buffer + offset.
+        let dst_off = bv.byte_offset.unwrap_or(0) as usize;
+        let need = byte_stride
+            .checked_mul(count)
+            .ok_or_else(|| invalid("KHR_meshopt_compression: byteStride * count overflows"))?;
+        if (bv.byte_length as usize) < need {
+            return Err(invalid(format!(
+                "KHR_meshopt_compression: bufferView[{bvi}].byteLength {} < decompressed size {need}",
+                bv.byte_length
+            )));
+        }
+        let dst_buf = buffers.get_mut(bv.buffer as usize).ok_or_else(|| {
+            invalid(format!(
+                "KHR_meshopt_compression: bufferView[{bvi}] parent buffer {} out of range",
+                bv.buffer
+            ))
+        })?;
+        let dst = std::sync::Arc::get_mut(dst_buf).ok_or_else(|| {
+            invalid("KHR_meshopt_compression: parent buffer is shared and cannot be inflated")
+        })?;
+        let dst_end = dst_off.checked_add(decompressed.len()).ok_or_else(|| {
+            invalid("KHR_meshopt_compression: parent destination range overflows")
+        })?;
+        if dst_end > dst.len() {
+            return Err(invalid(format!(
+                "KHR_meshopt_compression: bufferView[{bvi}] decompressed bytes do not fit in \
+                 parent buffer {} ({} bytes, need [{dst_off}, {dst_end}))",
+                bv.buffer,
+                dst.len()
+            )));
+        }
+        dst[dst_off..dst_end].copy_from_slice(&decompressed);
+    }
+    Ok(())
 }
 
 /// Decode a `data:[<mediatype>][;base64],<data>` URI. We only support

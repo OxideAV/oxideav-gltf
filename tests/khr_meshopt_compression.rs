@@ -3,19 +3,21 @@
 //! markers per
 //! `docs/3d/gltf/extensions/KHR_meshopt_compression.md`.
 //!
-//! The crate is a pass-through engine: the meshopt bitstream decoder
-//! (Appendix A) is not implemented yet, so the extension is handled
-//! at the JSON descriptor level:
+//! The meshopt Appendix A (Bitstream) + Appendix B (Filters) decoder
+//! is implemented in `meshopt.rs`; the extension is handled at both the
+//! JSON descriptor level and the bitstream level:
 //!
 //! * **Decode**: every bufferView carrying
 //!   `extensions.KHR_meshopt_compression` is captured under
 //!   `Scene3D::extras["KHR_meshopt_compression"].bufferViews["<bvi>"]`
-//!   as the full extension JSON object. Every buffer marked with
-//!   `extensions.KHR_meshopt_compression.fallback = true` is captured
-//!   under `…fallbackBuffers` as an array of buffer indices. A
-//!   fallback buffer that has no URI and is not the GLB binary chunk
-//!   is materialised as a zero-filled byte vector of the declared
-//!   `byteLength` so downstream bufferView slicing remains safe.
+//!   as the full extension JSON object, AND its compressed source range
+//!   is inflated into the parent bufferView's region so the standard
+//!   accessor pipeline reads the real attribute / index data. Every
+//!   buffer marked with `extensions.KHR_meshopt_compression.fallback =
+//!   true` is captured under `…fallbackBuffers` as an array of buffer
+//!   indices. A fallback buffer that has no URI and is not the GLB
+//!   binary chunk is materialised as a zero-filled byte vector of the
+//!   declared `byteLength` and then overwritten by the inflated bytes.
 //!
 //! * **Encode**: the encoder builds fresh bufferViews against an
 //!   uncompressed packed BIN, so the descriptors are NOT round-tripped
@@ -56,21 +58,53 @@
 //!   * extension's own `buffer` is itself a fallback buffer
 //!     (`ExtensionStackMeshoptFallbackSource`)
 
+use base64::Engine;
 use oxideav_gltf::{GltfDecoder, GltfEncoder};
 use oxideav_mesh3d::{Mesh3DDecoder, Mesh3DEncoder, Scene3D};
 use serde_json::Value;
 
-/// Build a tiny meshopt-tagged glTF JSON document. The decompressed
-/// `bufferView[0]` would hold POSITION VEC3 floats; the source buffer
-/// (index 1) carries a placeholder compressed payload (its bytes are
-/// not exercised by us since the bitstream decoder is not wired).
-/// Buffer 0 is the GLB-style fallback (`fallback: true`, no URI).
-fn meshopt_doc_with_fallback(mode: &str, filter: Option<&str>) -> Vec<u8> {
+fn b64(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// A valid v0 ATTRIBUTES stream of `count` elements, `byte_stride`-wide,
+/// in which every byte delta is zero — so every decoded element equals
+/// the `baseline` carried in the tail block. Layout per
+/// `docs/3d/gltf/extensions/KHR_meshopt_compression.md` §"Mode 0":
+/// header `0xa0`, then for each byte position one header byte selecting
+/// delta-encoding-mode 0 (all-zero, no data bytes) for the single group,
+/// then the `byte_stride`-byte baseline tail.
+fn meshopt_attr_v0_constant(count: usize, byte_stride: usize, baseline: &[u8]) -> Vec<u8> {
+    assert_eq!(baseline.len(), byte_stride);
+    let group_count = count.div_ceil(16);
+    let header_bytes = group_count.div_ceil(4);
+    let mut s = vec![0xa0u8];
+    for _ in 0..byte_stride {
+        // header bits: all groups hb=0 → v0 delta-mode 0 (all-zero).
+        s.extend(std::iter::repeat(0u8).take(header_bytes));
+    }
+    s.extend_from_slice(baseline);
+    s
+}
+
+/// Build a tiny meshopt-tagged glTF JSON document. `bufferView[0]`
+/// decompresses to `count` elements of `byte_stride` bytes; the source
+/// buffer (index 1) carries the supplied `compressed` payload. Buffer 0
+/// is the GLB-style fallback (`fallback: true`, no URI).
+fn meshopt_doc_with_payload(
+    mode: &str,
+    filter: Option<&str>,
+    count: usize,
+    byte_stride: usize,
+    compressed: &[u8],
+) -> Vec<u8> {
     let filter_field = match filter {
         Some(f) => format!(r#", "filter": "{f}""#),
         None => String::new(),
     };
-    // 4 elements × 12 byte stride = 48 bytes uncompressed view.
+    let uncompressed_len = count * byte_stride;
+    let comp_len = compressed.len();
+    let comp_b64 = b64(compressed);
     let json = format!(
         r#"{{
             "asset": {{ "version": "2.0" }},
@@ -78,29 +112,29 @@ fn meshopt_doc_with_fallback(mode: &str, filter: Option<&str>) -> Vec<u8> {
             "extensionsRequired": ["KHR_meshopt_compression"],
             "buffers": [
                 {{
-                    "byteLength": 48,
+                    "byteLength": {uncompressed_len},
                     "extensions": {{
                         "KHR_meshopt_compression": {{ "fallback": true }}
                     }}
                 }},
                 {{
-                    "uri": "data:application/octet-stream;base64,AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4v",
-                    "byteLength": 48
+                    "uri": "data:application/octet-stream;base64,{comp_b64}",
+                    "byteLength": {comp_len}
                 }}
             ],
             "bufferViews": [
                 {{
                     "buffer": 0,
                     "byteOffset": 0,
-                    "byteLength": 48,
-                    "byteStride": 12,
+                    "byteLength": {uncompressed_len},
+                    "byteStride": {byte_stride},
                     "extensions": {{
                         "KHR_meshopt_compression": {{
                             "buffer": 1,
                             "byteOffset": 0,
-                            "byteLength": 24,
-                            "byteStride": 12,
-                            "count": 4,
+                            "byteLength": {comp_len},
+                            "byteStride": {byte_stride},
+                            "count": {count},
                             "mode": "{mode}"{filter_field}
                         }}
                     }}
@@ -109,6 +143,14 @@ fn meshopt_doc_with_fallback(mode: &str, filter: Option<&str>) -> Vec<u8> {
         }}"#
     );
     json.into_bytes()
+}
+
+/// Convenience: the legacy "ATTRIBUTES, byteStride 12, count 4" doc with
+/// a valid all-zero v0 payload (baseline = ascending bytes).
+fn meshopt_doc_with_fallback(mode: &str, filter: Option<&str>) -> Vec<u8> {
+    let baseline: Vec<u8> = (0u8..12).collect();
+    let comp = meshopt_attr_v0_constant(4, 12, &baseline);
+    meshopt_doc_with_payload(mode, filter, 4, 12, &comp)
 }
 
 // --- decode + side-channel capture ----------------------------------
@@ -130,7 +172,6 @@ fn meshopt_descriptor_lifts_into_extras() {
         .expect("bufferViews map present");
     let descriptor = bvs.get("0").expect("bufferView[0] descriptor present");
     assert_eq!(descriptor["buffer"].as_u64(), Some(1));
-    assert_eq!(descriptor["byteLength"].as_u64(), Some(24));
     assert_eq!(descriptor["byteStride"].as_u64(), Some(12));
     assert_eq!(descriptor["count"].as_u64(), Some(4));
     assert_eq!(descriptor["mode"].as_str(), Some("ATTRIBUTES"));
@@ -153,31 +194,20 @@ fn meshopt_descriptor_carries_filter_when_present() {
 
 #[test]
 fn meshopt_descriptor_carries_octahedral_filter_with_valid_stride() {
-    // Re-spin the doc with a byteStride of 8 (which OCTAHEDRAL allows).
-    let json = r#"{
-        "asset": { "version": "2.0" },
-        "extensionsUsed": ["KHR_meshopt_compression"],
-        "extensionsRequired": ["KHR_meshopt_compression"],
-        "buffers": [
-            { "byteLength": 32, "extensions": { "KHR_meshopt_compression": { "fallback": true } } },
-            { "uri": "data:application/octet-stream;base64,AAECAwQFBgcICQoLDA0ODw==", "byteLength": 16 }
-        ],
-        "bufferViews": [
-            {
-                "buffer": 0, "byteOffset": 0, "byteLength": 32, "byteStride": 8,
-                "extensions": {
-                    "KHR_meshopt_compression": {
-                        "buffer": 1, "byteOffset": 0, "byteLength": 16,
-                        "byteStride": 8, "count": 4, "mode": "ATTRIBUTES", "filter": "OCTAHEDRAL"
-                    }
-                }
-            }
-        ]
-    }"#;
+    // byteStride 8 (which OCTAHEDRAL allows): four i16 components per
+    // element. Baseline encodes one valid octahedral vector: x=0, y=0,
+    // input[2]=32767 (K=16 representation of 1.0), w=0. All-zero deltas
+    // replicate it across all 4 elements. Per §"Filter 1: octahedral"
+    // this decodes to the +Z unit vector (0, 0, 32767).
+    let mut baseline = Vec::new();
+    baseline.extend_from_slice(&0i16.to_le_bytes()); // x
+    baseline.extend_from_slice(&0i16.to_le_bytes()); // y
+    baseline.extend_from_slice(&32767i16.to_le_bytes()); // input[2] = 1.0
+    baseline.extend_from_slice(&0i16.to_le_bytes()); // w (passthrough)
+    let comp = meshopt_attr_v0_constant(4, 8, &baseline);
+    let doc = meshopt_doc_with_payload("ATTRIBUTES", Some("OCTAHEDRAL"), 4, 8, &comp);
     let mut dec = GltfDecoder::new();
-    let scene = dec
-        .decode(json.as_bytes())
-        .expect("OCTAHEDRAL byteStride=8 is valid");
+    let scene = dec.decode(&doc).expect("OCTAHEDRAL byteStride=8 is valid");
     let v = scene.extras.get("KHR_meshopt_compression").unwrap();
     let bv0 = &v["bufferViews"]["0"];
     assert_eq!(bv0["filter"].as_str(), Some("OCTAHEDRAL"));
@@ -192,6 +222,116 @@ fn fallback_buffer_materialises_as_zero_padding() {
     let _scene = dec
         .decode(&meshopt_doc_with_fallback("ATTRIBUTES", None))
         .expect("uri-less fallback buffer must be materialised by decode");
+}
+
+// --- end-to-end bitstream inflation (Appendix A / B) ----------------
+
+#[test]
+fn attributes_inflate_feeds_position_accessor() {
+    // A POSITION VEC3 FLOAT accessor (byteStride 12, count 3) backed by
+    // an ATTRIBUTES-compressed bufferView. The v0 stream carries
+    // all-zero deltas and a baseline of three f32s, so every vertex
+    // decodes to the same position. Per
+    // `docs/3d/gltf/extensions/KHR_meshopt_compression.md` §"Mode 0"
+    // the inflated bytes flow through the normal accessor pipeline.
+    let mut baseline = Vec::new();
+    baseline.extend_from_slice(&1.5f32.to_le_bytes());
+    baseline.extend_from_slice(&(-2.0f32).to_le_bytes());
+    baseline.extend_from_slice(&3.25f32.to_le_bytes());
+    let comp = meshopt_attr_v0_constant(3, 12, &baseline);
+    let comp_b64 = b64(&comp);
+    let comp_len = comp.len();
+    let json = format!(
+        r#"{{
+            "asset": {{ "version": "2.0" }},
+            "extensionsUsed": ["KHR_meshopt_compression"],
+            "extensionsRequired": ["KHR_meshopt_compression"],
+            "buffers": [
+                {{ "byteLength": 36, "extensions": {{ "KHR_meshopt_compression": {{ "fallback": true }} }} }},
+                {{ "uri": "data:application/octet-stream;base64,{comp_b64}", "byteLength": {comp_len} }}
+            ],
+            "bufferViews": [
+                {{
+                    "buffer": 0, "byteOffset": 0, "byteLength": 36, "byteStride": 12,
+                    "extensions": {{ "KHR_meshopt_compression": {{
+                        "buffer": 1, "byteOffset": 0, "byteLength": {comp_len},
+                        "byteStride": 12, "count": 3, "mode": "ATTRIBUTES" }} }}
+                }}
+            ],
+            "accessors": [
+                {{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }}
+            ],
+            "meshes": [ {{ "primitives": [ {{ "attributes": {{ "POSITION": 0 }} }} ] }} ],
+            "nodes": [ {{ "mesh": 0 }} ],
+            "scenes": [ {{ "nodes": [0] }} ],
+            "scene": 0
+        }}"#
+    );
+    let mut dec = GltfDecoder::new();
+    let scene = dec.decode(json.as_bytes()).expect("inflate + decode");
+    let p = &scene.meshes[0].primitives[0];
+    assert_eq!(p.positions.len(), 3);
+    for v in &p.positions {
+        assert_eq!(*v, [1.5, -2.0, 3.25]);
+    }
+}
+
+#[test]
+fn indices_inflate_feeds_index_accessor() {
+    // A SCALAR UNSIGNED_SHORT index accessor backed by an
+    // INDICES-compressed bufferView producing [0, 1, 2] (a single
+    // triangle). Per §"Mode 2: indices": header 0xd1, three varint
+    // deltas (baseline bit 0, +0 / +1 / +1), 4-byte tail padding.
+    let mut comp = vec![0xd1u8];
+    comp.push(0x00); // index 0
+    comp.push(0x04); // +1 → 1
+    comp.push(0x04); // +1 → 2
+    comp.extend_from_slice(&[0, 0, 0, 0]); // tail padding
+    let comp_b64 = b64(&comp);
+    let comp_len = comp.len();
+    // POSITION needs at least one valid accessor for a renderable
+    // primitive; reuse a trivial inline buffer for positions.
+    let pos: Vec<u8> = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    let pos_b64 = b64(&pos);
+    let json = format!(
+        r#"{{
+            "asset": {{ "version": "2.0" }},
+            "extensionsUsed": ["KHR_meshopt_compression"],
+            "extensionsRequired": ["KHR_meshopt_compression"],
+            "buffers": [
+                {{ "byteLength": 6, "extensions": {{ "KHR_meshopt_compression": {{ "fallback": true }} }} }},
+                {{ "uri": "data:application/octet-stream;base64,{comp_b64}", "byteLength": {comp_len} }},
+                {{ "uri": "data:application/octet-stream;base64,{pos_b64}", "byteLength": 36 }}
+            ],
+            "bufferViews": [
+                {{
+                    "buffer": 0, "byteOffset": 0, "byteLength": 6,
+                    "extensions": {{ "KHR_meshopt_compression": {{
+                        "buffer": 1, "byteOffset": 0, "byteLength": {comp_len},
+                        "byteStride": 2, "count": 3, "mode": "INDICES" }} }}
+                }},
+                {{ "buffer": 2, "byteOffset": 0, "byteLength": 36 }}
+            ],
+            "accessors": [
+                {{ "bufferView": 0, "componentType": 5123, "count": 3, "type": "SCALAR" }},
+                {{ "bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3" }}
+            ],
+            "meshes": [ {{ "primitives": [ {{ "attributes": {{ "POSITION": 1 }}, "indices": 0 }} ] }} ],
+            "nodes": [ {{ "mesh": 0 }} ],
+            "scenes": [ {{ "nodes": [0] }} ],
+            "scene": 0
+        }}"#
+    );
+    let mut dec = GltfDecoder::new();
+    let scene = dec
+        .decode(json.as_bytes())
+        .expect("inflate INDICES + decode");
+    let p = &scene.meshes[0].primitives[0];
+    let tris = p.triangle_indices();
+    assert_eq!(tris, vec![[0, 1, 2]]);
 }
 
 // --- encode strips sidecar (pass-through) ---------------------------

@@ -436,23 +436,41 @@ framework but usable standalone.
   ratified registry entry) — per-bufferView compression
   descriptors + per-buffer `{ "fallback": true }` placeholder
   markers from
-  `docs/3d/gltf/extensions/KHR_meshopt_compression.md`. The
-  crate is a pass-through engine (the meshopt bitstream decoder
-  in Appendix A is not implemented yet), so the extension is
-  handled at the JSON descriptor level: every bufferView's
-  `extensions.KHR_meshopt_compression` block (the full descriptor
-  with `buffer` / `byteOffset` / `byteLength` / `byteStride` /
-  `count` / `mode` / optional `filter`) is captured into
+  `docs/3d/gltf/extensions/KHR_meshopt_compression.md`, with a
+  full Appendix A (Bitstream) + Appendix B (Filters) decoder. On
+  decode every compressed bufferView is **inflated** through
+  `meshopt.rs`: the descriptor's `buffer` / `byteOffset` /
+  `byteLength` source range is decompressed into the parent
+  bufferView's region (per §"Fallback buffers" "encoders should
+  use the decompressed data to populate the fallback buffer
+  view"), after which the standard accessor pipeline reads the
+  real attribute / index data unchanged. All three Appendix A
+  modes are covered: **ATTRIBUTES** mode 0 (byte-deinterleaved
+  per-channel delta coding) for both the v0 stream (`0xa0`,
+  identical to `EXT_meshopt_compression`) and the v1 stream
+  (`0xa1`, with the four control modes + the three channel modes —
+  byte / 2-byte zigzag deltas and 4-byte rotated XOR deltas);
+  **TRIANGLES** mode 1 (edge/vertex-FIFO + `codeaux` triangle-list
+  index compression with varint-7 / zigzag index deltas); and
+  **INDICES** mode 2 (two-baseline generic index delta coding).
+  All four Appendix B filters are applied post-decompression:
+  OCTAHEDRAL (byteStride 4/8 octahedral unit-vector decode),
+  QUATERNION (byteStride 8 largest-omitted quaternion decode),
+  EXPONENTIAL (`2^e * m` per-lane float decode), and COLOR
+  (YCoCg → RGBA). The decoder is panic-free on malformed input —
+  bad header bytes, truncated streams, out-of-range FIFO reads,
+  and leftover-before-tail bytes all surface as `Err`. The full
+  JSON descriptor (`buffer` / `byteOffset` / `byteLength` /
+  `byteStride` / `count` / `mode` / optional `filter`) is still
+  captured into
   `Scene3D::extras["KHR_meshopt_compression"].bufferViews["<bvi>"]`
-  on decode, and every buffer marked
+  so the sidecar round-trips, and every buffer marked
   `extensions.KHR_meshopt_compression.fallback = true` is recorded
   under `…fallbackBuffers` as an array of buffer indices. A
   uri-less fallback buffer (the spec's "Fallback buffers" shape)
   is materialised as a zero-filled byte vector of the declared
-  `byteLength` so downstream bufferView slicing remains safe;
-  consumers that wire up a meshopt decoder lane later can inflate
-  the real bytes into that region from the descriptor's compressed
-  source range. On encode the sidecar is stripped from
+  `byteLength` and then overwritten by the inflated bytes. On
+  encode the sidecar is stripped from
   `scene.extras` and the descriptors are NOT re-emitted onto the
   freshly-built uncompressed bufferViews — documents written by
   this crate are always uncompressed (the compression is a

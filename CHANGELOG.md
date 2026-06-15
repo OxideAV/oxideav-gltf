@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- KHR_meshopt_compression bitstream decoder (Appendix A + B) — full
+  inflate of compressed bufferViews (ATTRIBUTES v0/v1, TRIANGLES,
+  INDICES + OCTAHEDRAL/QUATERNION/EXPONENTIAL/COLOR filters), wired
+  into the buffer-materialisation path so meshopt documents decode end
+  to end (round 316)
+
 ## [0.0.3](https://github.com/OxideAV/oxideav-gltf/compare/v0.0.2...v0.0.3) - 2026-06-15
 
 ### Added
