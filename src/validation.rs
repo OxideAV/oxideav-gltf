@@ -165,7 +165,8 @@
 use crate::error::{invalid, Result};
 use crate::json_model::{
     component_size, type_components, Accessor, Animation, Buffer, BufferView, Camera, GltfRoot,
-    Mesh, COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_INT, COMPONENT_TYPE_UNSIGNED_SHORT,
+    Mesh, COMPONENT_TYPE_FLOAT, COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_INT,
+    COMPONENT_TYPE_UNSIGNED_SHORT,
 };
 use crate::object_model::{pointer_data_type, ObjectModelDataType};
 use std::collections::HashMap;
@@ -2540,6 +2541,92 @@ pub fn validate_sparse_values_buffer_views(
 ///
 /// Non-finite values (NaN / ±∞) are rejected by the same rules — a NaN
 /// `znear` would otherwise slip through every comparison.
+/// Validate core accessor properties against the glTF 2.0 spec §3.6.2
+/// (Accessor Data) + §5.1 (Accessor) — the document-level MUSTs that
+/// apply to every `accessors[i]` entry independent of which bufferView
+/// it references (the bufferView-fit / sparse-bufferView restrictions
+/// already live in `validate_accessor_fits_bufferview` /
+/// `validate_sparse_*_buffer_views`).
+///
+/// Three hard rules are policed, each with a stable `Accessor…` error
+/// prefix so callers can grep the specific sub-rule:
+///
+/// * **§5.1 (`accessor.count`, "Minimum: >= 1")** — `count` MUST be at
+///   least 1 (`AccessorCount`). A zero-element accessor is meaningless
+///   and the JSON schema pins the minimum at 1.
+/// * **§5.1.6 / §3.6.2.1 (`accessor.normalized`)** — "This property
+///   MUST NOT be set to `true` for accessors with `FLOAT` or
+///   `UNSIGNED_INT` component type" (`AccessorNormalizedComponentType`).
+///   Normalization is the integer→[0,1]/[-1,1] decode, which is
+///   undefined for a float (already real-valued) and for a 32-bit
+///   unsigned int (no §3.6.2.2 dequantisation row exists for it).
+/// * **§3.6.2.5 (Accessor Bounds)** — "The length of these arrays MUST
+///   be equal to the number of accessor's components." Both `min` and
+///   `max`, when present, MUST carry exactly `type_components(type)`
+///   entries (`AccessorMinMaxLength`). The length set is therefore one
+///   of 1/2/3/4/9/16, matching the `type` value.
+///
+/// `componentType` / `type` enum-membership itself is checked lazily by
+/// the bufferView-fit pass (`AccessorFitComponentType` /
+/// `AccessorFitElementType`); here we resolve `type` only to obtain the
+/// component count for the bounds-length rule and skip the bounds check
+/// when the `type` string is unknown (the fit pass surfaces that error).
+pub fn validate_accessors(accessors: &[Accessor]) -> Result<()> {
+    for (ai, acc) in accessors.iter().enumerate() {
+        // §5.1 — count Minimum: >= 1.
+        if acc.count == 0 {
+            return Err(invalid(format!(
+                "AccessorCount: accessors[{ai}].count = 0 — MUST be >= 1 \
+                 (spec §5.1, JSON schema Minimum: >= 1)"
+            )));
+        }
+
+        // §5.1.6 / §3.6.2.1 — normalized MUST NOT be true for FLOAT or
+        // UNSIGNED_INT component types.
+        if acc.normalized
+            && (acc.component_type == COMPONENT_TYPE_FLOAT
+                || acc.component_type == COMPONENT_TYPE_UNSIGNED_INT)
+        {
+            return Err(invalid(format!(
+                "AccessorNormalizedComponentType: accessors[{ai}].normalized = true with \
+                 componentType = {} — MUST NOT be set to true for FLOAT (5126) or \
+                 UNSIGNED_INT (5125) component type (spec §5.1.6 / §3.6.2.1)",
+                acc.component_type
+            )));
+        }
+
+        // §3.6.2.5 — min / max array length MUST equal the component
+        // count derived from `type`. Skip when `type` is unknown (the
+        // bufferView-fit pass rejects that separately).
+        if let Some(components) = type_components(&acc.kind) {
+            let components = components as usize;
+            if let Some(min) = &acc.min {
+                if min.len() != components {
+                    return Err(invalid(format!(
+                        "AccessorMinMaxLength: accessors[{ai}].min has {} entries but type {} \
+                         has {} components — the arrays MUST be equal length (spec §3.6.2.5)",
+                        min.len(),
+                        acc.kind,
+                        components
+                    )));
+                }
+            }
+            if let Some(max) = &acc.max {
+                if max.len() != components {
+                    return Err(invalid(format!(
+                        "AccessorMinMaxLength: accessors[{ai}].max has {} entries but type {} \
+                         has {} components — the arrays MUST be equal length (spec §3.6.2.5)",
+                        max.len(),
+                        acc.kind,
+                        components
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_cameras(cameras: &[Camera]) -> Result<()> {
     for (ci, cam) in cameras.iter().enumerate() {
         if cam.perspective.is_some() && cam.orthographic.is_some() {
@@ -4970,5 +5057,96 @@ mod tests {
                 "magFilter {v} should be rejected"
             );
         }
+    }
+
+    // --- Core accessor property validation (round r311) -------------
+
+    fn bare_accessor(component_type: u32, count: u32, kind: &str) -> Accessor {
+        Accessor {
+            buffer_view: Some(0),
+            byte_offset: Some(0),
+            component_type,
+            count,
+            kind: kind.to_owned(),
+            normalized: false,
+            min: None,
+            max: None,
+            name: None,
+            sparse: None,
+        }
+    }
+
+    #[test]
+    fn accessors_accept_conformant_entries() {
+        let mut a = bare_accessor(COMPONENT_TYPE_FLOAT, 3, "VEC3");
+        a.min = Some(vec![0.0, 0.0, 0.0]);
+        a.max = Some(vec![1.0, 1.0, 1.0]);
+        // Normalized signed byte is allowed (only FLOAT / UINT are barred).
+        let mut b = bare_accessor(crate::json_model::COMPONENT_TYPE_BYTE, 4, "VEC4");
+        b.normalized = true;
+        // UNSIGNED_INT left un-normalized.
+        let c = bare_accessor(COMPONENT_TYPE_UNSIGNED_INT, 6, "SCALAR");
+        validate_accessors(&[a, b, c]).unwrap();
+    }
+
+    #[test]
+    fn accessors_reject_zero_count() {
+        let a = bare_accessor(COMPONENT_TYPE_FLOAT, 0, "VEC3");
+        let err = validate_accessors(&[a]).unwrap_err();
+        assert!(format!("{err}").contains("AccessorCount"));
+    }
+
+    #[test]
+    fn accessors_reject_normalized_float() {
+        let mut a = bare_accessor(COMPONENT_TYPE_FLOAT, 3, "VEC3");
+        a.normalized = true;
+        let err = validate_accessors(&[a]).unwrap_err();
+        assert!(format!("{err}").contains("AccessorNormalizedComponentType"));
+    }
+
+    #[test]
+    fn accessors_reject_normalized_unsigned_int() {
+        let mut a = bare_accessor(COMPONENT_TYPE_UNSIGNED_INT, 3, "SCALAR");
+        a.normalized = true;
+        let err = validate_accessors(&[a]).unwrap_err();
+        assert!(format!("{err}").contains("AccessorNormalizedComponentType"));
+    }
+
+    #[test]
+    fn accessors_reject_short_min_array() {
+        let mut a = bare_accessor(COMPONENT_TYPE_FLOAT, 3, "VEC3");
+        a.min = Some(vec![0.0, 0.0]); // 2 != 3 components
+        let err = validate_accessors(&[a]).unwrap_err();
+        assert!(format!("{err}").contains("AccessorMinMaxLength"));
+    }
+
+    #[test]
+    fn accessors_reject_long_max_array() {
+        let mut a = bare_accessor(COMPONENT_TYPE_FLOAT, 3, "VEC3");
+        a.max = Some(vec![1.0, 1.0, 1.0, 1.0]); // 4 != 3 components
+        let err = validate_accessors(&[a]).unwrap_err();
+        assert!(format!("{err}").contains("AccessorMinMaxLength"));
+    }
+
+    #[test]
+    fn accessors_mat4_bounds_length_is_sixteen() {
+        // §3.6.2.5 component count for MAT4 is 16, not 4.
+        let mut a = bare_accessor(COMPONENT_TYPE_FLOAT, 1, "MAT4");
+        a.min = Some(vec![0.0; 16]);
+        a.max = Some(vec![1.0; 16]);
+        validate_accessors(std::slice::from_ref(&a)).unwrap();
+        // A 4-entry bounds array for MAT4 is wrong.
+        a.min = Some(vec![0.0; 4]);
+        let err = validate_accessors(&[a]).unwrap_err();
+        assert!(format!("{err}").contains("AccessorMinMaxLength"));
+    }
+
+    #[test]
+    fn accessors_skip_bounds_check_for_unknown_type() {
+        // Unknown `type` defers to the bufferView-fit pass; the bounds
+        // rule does not fire (no component count to compare against).
+        let mut a = bare_accessor(COMPONENT_TYPE_FLOAT, 1, "WEIRD");
+        a.min = Some(vec![0.0, 0.0]);
+        validate_accessors(&[a]).unwrap();
     }
 }

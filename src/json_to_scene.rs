@@ -35,7 +35,7 @@ use crate::error::{invalid, unsupported, Error, Result};
 use crate::json_model::{self as gj, GltfRoot};
 use crate::quantization::{self, ATTR_QUANT_KEY, EXTENSION_NAME};
 use crate::validation::{
-    check_asset_version, validate_accessor_fits_bufferview, validate_alignment,
+    check_asset_version, validate_accessor_fits_bufferview, validate_accessors, validate_alignment,
     validate_animation_channels, validate_attribute_counts, validate_bufferview_fits_buffer,
     validate_cameras, validate_color0_range, validate_extension_stack, validate_index_no_restart,
     validate_nodes, validate_samplers, validate_sparse_indices_buffer_views,
@@ -87,6 +87,12 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
     // block is tightly-packed per §5.4 "The elements are tightly
     // packed", same shape as the §5.3.1 sparse-indices rule above).
     validate_sparse_values_buffer_views(&root.accessors, &root.buffer_views)?;
+    // Spec §3.6.2 + §5.1 — core per-accessor property MUSTs independent
+    // of the bufferView: count >= 1 (§5.1), `normalized` MUST NOT be true
+    // for FLOAT / UNSIGNED_INT componentType (§5.1.6 / §3.6.2.1), and
+    // `min` / `max` array length MUST equal the accessor's component
+    // count (§3.6.2.5).
+    validate_accessors(&root.accessors)?;
     // Spec §5.12 + §5.13 + §5.14 — camera projection blocks are
     // mutually exclusive; orthographic xmag/ymag MUST NOT be zero,
     // zfar > 0 and > znear, znear >= 0; perspective yfov/znear > 0,

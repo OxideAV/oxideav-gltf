@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (round 311)
+
+- Core accessor property validation per glTF 2.0 spec §3.6.2 (Accessor
+  Data) + §5.1 (Accessor). A new `validate_accessors` pass in
+  `src/validation.rs`, wired into `convert()` after the bufferView-fit /
+  sparse-bufferView checks and before camera validation, enforces three
+  document-level MUSTs on every `accessors[i]` entry (referenced or not):
+  - §5.1 `accessor.count` "Minimum: >= 1" — a zero-element accessor is
+    rejected with `AccessorCount`.
+  - §5.1.6 / §3.6.2.1 `accessor.normalized` "MUST NOT be set to `true`
+    for accessors with `FLOAT` or `UNSIGNED_INT` component type" —
+    rejected with `AccessorNormalizedComponentType` (normalization is the
+    integer→[0,1]/[-1,1] decode, undefined for a float and lacking a
+    §3.6.2.2 dequantisation row for 32-bit unsigned int).
+  - §3.6.2.5 (Accessor Bounds) "The length of these arrays MUST be equal
+    to the number of accessor's components" — `min` / `max`, when present,
+    MUST carry exactly `type_components(type)` entries (one of
+    1/2/3/4/9/16); a mismatch is rejected with `AccessorMinMaxLength`.
+    The check defers to the bufferView-fit pass for an unknown `type`
+    string (no component count to compare against).
+  - 7 end-to-end tests in `tests/accessor_property_validation.rs` (driven
+    through the public `GltfDecoder`) plus 8 unit tests in
+    `src/validation.rs` (conformant spread accept, zero-count,
+    normalized-FLOAT, normalized-UNSIGNED_INT, short-min, long-max,
+    MAT4 16-component bounds, unknown-type skip).
+
 ### Added (round 306)
 
 - Texture-sampler filter / wrap validation per glTF 2.0 spec §5.26

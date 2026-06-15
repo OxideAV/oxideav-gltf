@@ -718,6 +718,15 @@ framework but usable standalone.
   CLAMP_TO_EDGE, `33648` MIRRORED_REPEAT, or `10497` REPEAT. Absent
   properties stay valid (wrapS/wrapT default to REPEAT; filters are
   implementation choice) — only an out-of-set integer is rejected
+- Core accessor property validation per spec §3.6.2 + §5.1 — a
+  `validate_accessors` pass checks every `accessors[i]` entry (referenced
+  or not): `count` MUST be `>= 1` (`AccessorCount`, §5.1 schema minimum);
+  `normalized` MUST NOT be `true` for FLOAT (5126) or UNSIGNED_INT (5125)
+  componentType (`AccessorNormalizedComponentType`, §5.1.6 / §3.6.2.1 —
+  no integer→[0,1]/[-1,1] decode is defined for those); and `min` / `max`
+  array length MUST equal the accessor's component count (1/2/3/4/9/16 per
+  `type`) when present (`AccessorMinMaxLength`, §3.6.2.5). An unknown
+  `type` string defers to the bufferView-fit pass's element-type rejection
 - `extras` round-trip on root, scenes, nodes, materials, primitives
 
 ## Extension roadmap (next-round work)
