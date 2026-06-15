@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3](https://github.com/OxideAV/oxideav-gltf/compare/v0.0.2...v0.0.3) - 2026-06-15
+
+### Added
+
+- KHR_node_visibility extension (round 199)
+
+### Other
+
+- relocate validate_accessors below validate_cameras so doc comments attribute correctly
+- core accessor property validation (§3.6.2 + §5.1) — count >= 1, normalized componentType, min/max length
+- texture-sampler filter/wrap validation per spec §5.26
+- node hierarchy + transform rules per spec §3.5.2 / §3.5.3
+- KHR_texture_basisu target-image mimeType conformance validator
+- KHR_gaussian_splatting ellipse-kernel attribute conformance validation
+- camera property validation per core spec §5.12–§5.14
+- round 269: KHR_animation_pointer Object-Model pointer-template registry + bool output lane
+- KHR_animation_pointer non-FLOAT output accessor lanes
+- accessor.sparse.values.bufferView §5.4.1 validator
+- KHR_draco_mesh_compression byteStride MUST-NOT validator
+- drop release-plz.toml — use release-plz defaults across the workspace
+- KHR_draco_mesh_compression per-primitive descriptor parser + validators
+- KHR_gaussian_splatting per-primitive descriptor parser
+- KHR_meshopt_compression descriptor parser + validators
+- KHR_texture_basisu extension (per-texture KTX2 indirection)
+- KHR_mesh_quantization morph-target decode + encode
+- KHR_mesh_quantization encoder (re-quantise base attrs + declare required)
+- KHR_animation_pointer (decode + encode + §3.12 + 10 tests)
+- KHR_xmp_json_ld extension (decode + encode + §3.12 validation)
+- KHR_materials_variants extension (decode + encode + §3.12 validation)
+
 ### Added (round 311)
 
 - Core accessor property validation per glTF 2.0 spec §3.6.2 (Accessor
