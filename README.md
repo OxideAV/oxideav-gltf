@@ -22,7 +22,9 @@ framework but usable standalone.
   (UNSIGNED_BYTE / UNSIGNED_SHORT / UNSIGNED_INT) — encoder picks the
   narrowest representable
 - Cameras: perspective + orthographic
-- KHR_lights_punctual extension (directional / point / spot)
+- KHR_lights_punctual extension (directional / point / spot) with
+  per-light spec validation (type enum, cone-angle ordering, range
+  rules, light-index bounds)
 - KHR_materials_unlit extension (Khronos ratified) — per-material
   Boolean shading-model flag from
   `docs/3d/gltf/extensions/KHR_materials_unlit.md`. The decoder lifts
@@ -647,6 +649,21 @@ framework but usable standalone.
   per-node) or a `KHR_materials_unlit` data block (per material)
   without declaring the extension in `extensionsUsed`
   (`ExtensionStackUsedNotDeclared`)
+- KHR_lights_punctual per-light property validation per
+  `docs/3d/gltf/extensions/KHR_lights_punctual.md` §"Light Types" /
+  §"Range Property" / §"Spot": each light's `type` must be one of
+  `directional` / `point` / `spot` (`ExtensionStackLightType`); `color`
+  components and `intensity` (≥ 0) must be finite
+  (`ExtensionStackLightColorFinite` / `ExtensionStackLightIntensity`);
+  `range` is point/spot-only and must be `> 0`
+  (`ExtensionStackLightRange`); the `spot` property is required on spot
+  lights and forbidden elsewhere (`ExtensionStackLightSpotRequired` /
+  `ExtensionStackLightSpotMisplaced`); `innerConeAngle` ≥ 0,
+  `outerConeAngle` ≤ `PI / 2`, and inner < outer
+  (`ExtensionStackLightInnerCone` / `ExtensionStackLightOuterCone` /
+  `ExtensionStackLightConeOrder`); and every node's
+  `KHR_lights_punctual.light` index must reference a declared light
+  (`ExtensionStackLightRef`)
 - Animation channel target-path validation per spec §3.11 — every
   channel `target.path` must be one of `translation` / `rotation` /
   `scale` / `weights` (`AnimationChannelPath`); sampler index +

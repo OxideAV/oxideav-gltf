@@ -605,6 +605,165 @@ fn validate_gaussian_splatting_attributes(
     Ok(())
 }
 
+/// `KHR_lights_punctual` per-light property + reference validation.
+///
+/// Enforces the constraints stated in
+/// `docs/3d/gltf/extensions/KHR_lights_punctual.md`:
+///
+/// * §"Light Types": every light's `type` MUST be one of `directional`,
+///   `point`, or `spot`. `color` (default `[1,1,1]`) and `intensity`
+///   (default `1.0`) MUST be finite; `intensity` MUST be `>= 0`.
+/// * §"Range Property": `range` is "allowed only on point and spot
+///   lights" and "Must be > 0"; it is also finite. A `range` on a
+///   `directional` light is rejected.
+/// * §"Spot": when `type == "spot"` the `spot` property "is required".
+///   `innerConeAngle` MUST be `>= 0` and `< outerConeAngle`;
+///   `outerConeAngle` MUST be `> innerConeAngle` and `<= PI / 2.0`
+///   (defaults: inner `0`, outer `PI / 4.0`). The `spot` property MUST
+///   NOT appear on `directional` / `point` lights.
+/// * Each node's `KHR_lights_punctual.light` index MUST be in range of
+///   the root `lights[]` array.
+pub fn validate_khr_lights_punctual(root: &GltfRoot) -> Result<()> {
+    use std::f32::consts::PI;
+
+    let lights = root
+        .extensions
+        .as_ref()
+        .and_then(|e| e.khr_lights_punctual.as_ref())
+        .map(|r| r.lights.as_slice())
+        .unwrap_or(&[]);
+
+    for (li, light) in lights.iter().enumerate() {
+        let kind = light.kind.as_str();
+        if !matches!(kind, "directional" | "point" | "spot") {
+            return Err(invalid(format!(
+                "ExtensionStackLightType: extensions.KHR_lights_punctual \
+                 .lights[{li}].type = {:?} is not one of \"directional\", \
+                 \"point\", \"spot\" (KHR_lights_punctual §Light Types)",
+                light.kind
+            )));
+        }
+
+        if let Some(c) = light.color {
+            if let Some(bad) = c.iter().find(|v| !v.is_finite()) {
+                return Err(invalid(format!(
+                    "ExtensionStackLightColorFinite: extensions \
+                     .KHR_lights_punctual.lights[{li}].color contains a \
+                     non-finite component {bad} (KHR_lights_punctual §Light \
+                     Types)"
+                )));
+            }
+        }
+
+        if let Some(i) = light.intensity {
+            if !(i.is_finite() && i >= 0.0) {
+                return Err(invalid(format!(
+                    "ExtensionStackLightIntensity: extensions \
+                     .KHR_lights_punctual.lights[{li}].intensity = {i} must be \
+                     finite and >= 0 (KHR_lights_punctual §Light Types)"
+                )));
+            }
+        }
+
+        // `range` is allowed only on point/spot lights and MUST be > 0.
+        if let Some(r) = light.range {
+            if kind == "directional" {
+                return Err(invalid(format!(
+                    "ExtensionStackLightRange: extensions.KHR_lights_punctual \
+                     .lights[{li}].range is set on a \"directional\" light but \
+                     range is supported only for \"point\" and \"spot\" lights \
+                     (KHR_lights_punctual §Range Property)"
+                )));
+            }
+            if !(r.is_finite() && r > 0.0) {
+                return Err(invalid(format!(
+                    "ExtensionStackLightRange: extensions.KHR_lights_punctual \
+                     .lights[{li}].range = {r} must be finite and > 0 \
+                     (KHR_lights_punctual §Range Property)"
+                )));
+            }
+        }
+
+        match kind {
+            "spot" => {
+                // The `spot` property is required for spot lights.
+                let Some(spot) = light.spot.as_ref() else {
+                    return Err(invalid(format!(
+                        "ExtensionStackLightSpotRequired: extensions \
+                         .KHR_lights_punctual.lights[{li}] has type \"spot\" \
+                         but the required `spot` property is missing \
+                         (KHR_lights_punctual §Spot)"
+                    )));
+                };
+                // Defaults per the §Spot table: inner 0, outer PI / 4.
+                let inner = spot.inner_cone_angle.unwrap_or(0.0);
+                let outer = spot.outer_cone_angle.unwrap_or(PI / 4.0);
+                if !(inner.is_finite() && inner >= 0.0) {
+                    return Err(invalid(format!(
+                        "ExtensionStackLightInnerCone: extensions \
+                         .KHR_lights_punctual.lights[{li}].spot.innerConeAngle \
+                         = {inner} must be finite and >= 0 \
+                         (KHR_lights_punctual §Spot)"
+                    )));
+                }
+                if !(outer.is_finite() && outer <= PI / 2.0) {
+                    return Err(invalid(format!(
+                        "ExtensionStackLightOuterCone: extensions \
+                         .KHR_lights_punctual.lights[{li}].spot.outerConeAngle \
+                         = {outer} must be finite and <= PI / 2 \
+                         (KHR_lights_punctual §Spot)"
+                    )));
+                }
+                // Both angles are finite (checked above), so a `>=` test
+                // is well-defined and equivalent to `!(inner < outer)`.
+                if inner >= outer {
+                    return Err(invalid(format!(
+                        "ExtensionStackLightConeOrder: extensions \
+                         .KHR_lights_punctual.lights[{li}].spot.innerConeAngle \
+                         ({inner}) must be strictly less than outerConeAngle \
+                         ({outer}) (KHR_lights_punctual §Spot)"
+                    )));
+                }
+            }
+            _ => {
+                // `spot` only applies to spot lights.
+                if light.spot.is_some() {
+                    return Err(invalid(format!(
+                        "ExtensionStackLightSpotMisplaced: extensions \
+                         .KHR_lights_punctual.lights[{li}] has type {:?} but \
+                         carries a `spot` property, which applies only to \
+                         \"spot\" lights (KHR_lights_punctual §Spot)",
+                        light.kind
+                    )));
+                }
+            }
+        }
+    }
+
+    // Every node's light reference MUST index a declared light.
+    for (ni, node) in root.nodes.iter().enumerate() {
+        let Some(reference) = node
+            .extensions
+            .as_ref()
+            .and_then(|e| e.khr_lights_punctual.as_ref())
+        else {
+            continue;
+        };
+        if reference.light as usize >= lights.len() {
+            return Err(invalid(format!(
+                "ExtensionStackLightRef: nodes[{ni}].extensions \
+                 .KHR_lights_punctual.light = {} is out of range of the {} \
+                 declared lights (KHR_lights_punctual §Adding Light Instances \
+                 to Nodes)",
+                reference.light,
+                lights.len()
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Spec §3.12: `extensionsRequired` MUST be a subset of `extensionsUsed`.
 ///
 /// In addition, any extension whose object actually appears in the
@@ -644,6 +803,10 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
              but the extension is not listed in extensionsUsed (spec §3.12)",
         ));
     }
+    // Per-light property + node-reference constraints (light type, range,
+    // spot cone angles, light-index bounds) per
+    // `docs/3d/gltf/extensions/KHR_lights_punctual.md`.
+    validate_khr_lights_punctual(root)?;
 
     // KHR_materials_unlit — per-material extension. Same §3.12 rule:
     // the extension MUST be declared in `extensionsUsed` if any
