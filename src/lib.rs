@@ -51,6 +51,7 @@ pub mod meshopt;
 pub mod object_model;
 pub mod quantization;
 pub mod scene_to_json;
+pub mod splatting;
 pub mod validation;
 
 pub use asset_source::BufferViewAsset;

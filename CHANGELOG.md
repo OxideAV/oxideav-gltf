@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- KHR_gaussian_splatting spherical-harmonics colour evaluator
+  (`splatting.rs`) — `diffuse_color` (degree-0 reconstruction
+  `SH_{0,0} · 0.2820947917738781 + 0.5`), `evaluate` (full
+  view-dependent colour from up to 45 coefficients, degrees 0..=3,
+  using the exact §"Appendix A: Table of Constants" basis constants
+  with the Condon–Shortley `(-1)^m` phase and the `0.5` bias), and
+  `color_0_fallback` (the §"Fallback Behavior" `COLOR_0` RGBA derived
+  from the degree-0 diffuse colour, clamped to `[0, 1]`, sRGB-decoded
+  to linear for `srgb_rec709_display`, opacity in alpha) (round 324)
 - KHR_meshopt_compression bitstream decoder (Appendix A + B) — full
   inflate of compressed bufferViews (ATTRIBUTES v0/v1, TRIANGLES,
   INDICES + OCTAHEDRAL/QUATERNION/EXPONENTIAL/COLOR filters), wired

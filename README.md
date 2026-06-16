@@ -550,10 +550,24 @@ framework but usable standalone.
   `COEF_0..2l` of that degree AND all lower degrees MUST be defined
   (`ExtensionStackGaussianSplattingSHIncomplete`). A vendor-prefixed
   kernel defers this entire attribute contract to the kernel-defining
-  extension and skips the checks. This round delivers the descriptor
-  handshake + the ellipse-kernel attribute conformance pass; the typed
-  splat-field decode + the spherical-harmonics evaluator from
-  §"Lighting" remain for a follow-up
+  extension and skips the checks. The spherical-harmonics colour
+  evaluator from §"Lighting" / §"Fallback Behavior" ships in
+  `splatting.rs`: `diffuse_color` applies the spec's
+  `Color_diffuse = SH_{0,0} · 0.2820947917738781 + 0.5` degree-0
+  reconstruction; `evaluate` computes the full view-dependent colour
+  from up to 45 coefficients (degrees 0..=3 packed lowest-order to
+  highest within each degree) and a normalised view direction via the
+  exact §"Appendix A: Table of Constants" basis constants (the `0.5`
+  bias applied once to the final sum, the Condon–Shortley `(-1)^m`
+  sign folded into the per-lane multipliers, `degree` auto-capped to
+  the coefficients actually supplied so a short slice can't index out
+  of bounds); `color_0_fallback` derives the §"Fallback Behavior"
+  `COLOR_0` RGBA a non-splat renderer paints onto the sparse point
+  cloud (degree-0 diffuse clamped to `[0, 1]`, sRGB-decoded to linear
+  when `colorSpace == "srgb_rec709_display"` because `COLOR_0` carries
+  linear values per the glTF spec, splat opacity in alpha). The typed
+  splat-field decode (lifting the raw accessor attributes into a
+  structured per-splat record) remains for a follow-up
 - KHR_draco_mesh_compression extension (Khronos ratified) — the
   per-primitive descriptor that redirects a mesh primitive's
   `attributes` + `indices` to a Draco-compressed `bufferView`
