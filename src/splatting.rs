@@ -258,6 +258,226 @@ pub fn evaluate(coeffs: &[Rgb], degree: u8, dir: [f32; 3]) -> Rgb {
     [acc[0] + SH_BIAS, acc[1] + SH_BIAS, acc[2] + SH_BIAS]
 }
 
+/// One 3D Gaussian splat, reconstructed from the per-vertex
+/// `KHR_gaussian_splatting` ellipse-kernel attributes (§"Ellipse Kernel"
+/// §"Attributes").
+///
+/// The base extension stores a splat field as a `POINTS` primitive whose
+/// vertex attributes carry one splat per vertex: `POSITION` (the splat
+/// mean), `KHR_gaussian_splatting:ROTATION` (a unit quaternion),
+/// `KHR_gaussian_splatting:SCALE` (the per-axis Gaussian spread),
+/// `KHR_gaussian_splatting:OPACITY` (linear `[0, 1]` alpha), and the
+/// `KHR_gaussian_splatting:SH_DEGREE_l_COEF_n` spherical-harmonics colour
+/// coefficients. [`SplatField::from_attributes`] gathers those parallel
+/// per-vertex arrays into a `Vec<Splat>` so a renderer above this crate
+/// can iterate splats directly instead of re-deriving the per-vertex
+/// indexing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Splat {
+    /// Splat mean in the primitive's local space (the `POSITION`
+    /// attribute), per §"Ellipse Kernel" §"Attributes".
+    pub position: [f32; 3],
+    /// Unit quaternion `[x, y, z, w]` in the usual glTF order (the
+    /// `KHR_gaussian_splatting:ROTATION` attribute). The spec guarantees
+    /// the stored value is already normalised (§"Ellipse Kernel"
+    /// §"Attributes": "renderers can use quaternion values directly
+    /// without renormalization").
+    pub rotation: [f32; 4],
+    /// Per-axis Gaussian spread (the `KHR_gaussian_splatting:SCALE`
+    /// attribute). Linear, non-negative per §"Ellipse Kernel"
+    /// §"Attributes".
+    pub scale: [f32; 3],
+    /// Linear opacity in `[0, 1]` (the `KHR_gaussian_splatting:OPACITY`
+    /// attribute) per §"Ellipse Kernel" §"Attributes".
+    pub opacity: f32,
+    /// Spherical-harmonics colour coefficients (`VEC3` each) packed
+    /// lowest-order `m` to highest within each degree, degrees ascending
+    /// — exactly the order [`evaluate`] consumes. Index 0 is the
+    /// degree-0 diffuse coefficient; for a degree-`l` field there are
+    /// `coef_count(l)` entries.
+    pub sh: Vec<Rgb>,
+}
+
+impl Splat {
+    /// Highest spherical-harmonics degree this splat carries, derived
+    /// from `self.sh.len()` (`(l + 1)^2` coefficients for degree `l`).
+    /// A splat with only the mandatory degree-0 coefficient returns `0`.
+    #[must_use]
+    pub fn sh_degree(&self) -> u8 {
+        match self.sh.len() {
+            n if n >= 16 => 3,
+            n if n >= 9 => 2,
+            n if n >= 4 => 1,
+            _ => 0,
+        }
+    }
+
+    /// View-independent diffuse colour from the degree-0 coefficient
+    /// (delegates to [`diffuse_color`]). Returns mid-grey when the splat
+    /// somehow carries no SH coefficient.
+    #[must_use]
+    pub fn diffuse(&self) -> Rgb {
+        match self.sh.first() {
+            Some(&sh0) => diffuse_color(sh0),
+            None => [SH_BIAS, SH_BIAS, SH_BIAS],
+        }
+    }
+
+    /// Full view-dependent colour for a normalised view direction
+    /// (delegates to [`evaluate`] over all SH coefficients this splat
+    /// carries).
+    #[must_use]
+    pub fn color(&self, dir: [f32; 3]) -> Rgb {
+        evaluate(&self.sh, self.sh_degree(), dir)
+    }
+
+    /// The `COLOR_0` RGBA fallback for this splat (delegates to
+    /// [`color_0_fallback`] using the splat's degree-0 colour, its
+    /// opacity, and the field's colour space).
+    #[must_use]
+    pub fn color_0_fallback(&self, color_space: ColorSpace) -> Rgba {
+        let sh0 = self.sh.first().copied().unwrap_or([0.0; 3]);
+        color_0_fallback(sh0, self.opacity, color_space)
+    }
+}
+
+/// A decoded 3D Gaussian splat field — the typed counterpart of a
+/// `KHR_gaussian_splatting` ellipse-kernel `POINTS` primitive.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SplatField {
+    /// Per-vertex splats, one per `POSITION` entry.
+    pub splats: Vec<Splat>,
+}
+
+impl SplatField {
+    /// Gather the parallel per-vertex ellipse-kernel attribute arrays
+    /// into one splat per vertex, per §"Ellipse Kernel" §"Attributes".
+    ///
+    /// `sh_coefficients[i]` is the `VEC3` array for the `i`-th SH
+    /// coefficient in `evaluate` order (index 0 = `SH_DEGREE_0_COEF_0`,
+    /// index 1 = `SH_DEGREE_1_COEF_0`, …). Each inner array carries one
+    /// value per vertex. The spec requires the mandatory degree-0
+    /// coefficient and a per-degree completeness contract (validated
+    /// upstream), so callers pass the coefficients already gathered in
+    /// canonical order.
+    ///
+    /// Returns `None` when the parallel arrays disagree on length (any
+    /// of `rotation` / `scale` / `opacity` / each SH coefficient must
+    /// carry exactly one value per `position`); a well-formed,
+    /// spec-validated primitive always has matching counts.
+    #[must_use]
+    pub fn from_attributes(
+        position: &[[f32; 3]],
+        rotation: &[[f32; 4]],
+        scale: &[[f32; 3]],
+        opacity: &[f32],
+        sh_coefficients: &[Vec<Rgb>],
+    ) -> Option<Self> {
+        let n = position.len();
+        if rotation.len() != n || scale.len() != n || opacity.len() != n {
+            return None;
+        }
+        for coef in sh_coefficients {
+            if coef.len() != n {
+                return None;
+            }
+        }
+        let mut splats = Vec::with_capacity(n);
+        for i in 0..n {
+            let sh: Vec<Rgb> = sh_coefficients.iter().map(|c| c[i]).collect();
+            splats.push(Splat {
+                position: position[i],
+                rotation: rotation[i],
+                scale: scale[i],
+                opacity: opacity[i],
+                sh,
+            });
+        }
+        Some(Self { splats })
+    }
+
+    /// Reconstruct a [`SplatField`] from a primitive's `POSITION`
+    /// attribute and the `primitive.extras["__gaussian_splats"]` sidecar
+    /// record the decoder parks for an `"ellipse"`-kernel splat
+    /// primitive.
+    ///
+    /// The sidecar is a JSON object with keys `rotation` (array of
+    /// 4-arrays), `scale` (array of 3-arrays), `opacity` (array of
+    /// numbers), and `sh` (array of per-coefficient arrays of 3-arrays,
+    /// in [`evaluate`] order). `positions` is the primitive's own
+    /// `POSITION` data — it is *not* duplicated in the sidecar.
+    ///
+    /// Returns `None` when the sidecar is malformed or the parallel
+    /// arrays disagree on length.
+    #[must_use]
+    pub fn from_extras(positions: &[[f32; 3]], sidecar: &serde_json::Value) -> Option<Self> {
+        let obj = sidecar.as_object()?;
+        let rotation = read_vec4_array(obj.get("rotation")?)?;
+        let scale = read_vec3_array(obj.get("scale")?)?;
+        let opacity: Vec<f32> = obj
+            .get("opacity")?
+            .as_array()?
+            .iter()
+            .map(|v| v.as_f64().map(|f| f as f32))
+            .collect::<Option<Vec<f32>>>()?;
+        let sh_outer = obj.get("sh")?.as_array()?;
+        let sh: Vec<Vec<Rgb>> = sh_outer
+            .iter()
+            .map(read_vec3_array)
+            .collect::<Option<Vec<Vec<Rgb>>>>()?;
+        Self::from_attributes(positions, &rotation, &scale, &opacity, &sh)
+    }
+
+    /// Number of splats in the field.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.splats.len()
+    }
+
+    /// Whether the field carries no splats.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.splats.is_empty()
+    }
+}
+
+/// Parse a JSON array of 3-element numeric arrays into `Vec<[f32; 3]>`.
+fn read_vec3_array(v: &serde_json::Value) -> Option<Vec<[f32; 3]>> {
+    v.as_array()?
+        .iter()
+        .map(|e| {
+            let a = e.as_array()?;
+            if a.len() != 3 {
+                return None;
+            }
+            Some([
+                a[0].as_f64()? as f32,
+                a[1].as_f64()? as f32,
+                a[2].as_f64()? as f32,
+            ])
+        })
+        .collect()
+}
+
+/// Parse a JSON array of 4-element numeric arrays into `Vec<[f32; 4]>`.
+fn read_vec4_array(v: &serde_json::Value) -> Option<Vec<[f32; 4]>> {
+    v.as_array()?
+        .iter()
+        .map(|e| {
+            let a = e.as_array()?;
+            if a.len() != 4 {
+                return None;
+            }
+            Some([
+                a[0].as_f64()? as f32,
+                a[1].as_f64()? as f32,
+                a[2].as_f64()? as f32,
+                a[3].as_f64()? as f32,
+            ])
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

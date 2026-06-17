@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- KHR_gaussian_splatting typed splat-field decode — for an
+  `"ellipse"`-kernel `POINTS` primitive the decoder now reads the
+  per-vertex `KHR_gaussian_splatting:ROTATION` (VEC4), `:SCALE` (VEC3),
+  `:OPACITY` (SCALAR), and `:SH_DEGREE_l_COEF_n` (VEC3) accessors,
+  applying the spec int→float dequantisation for the allowed
+  normalized-integer storage forms (§"Ellipse Kernel" §"Attributes"),
+  and parks them as parallel typed arrays under
+  `Primitive::extras["__gaussian_splats"]`
+  (`{ count, rotation, scale, opacity, sh }`, SH coefficients in
+  canonical `evaluate` order). New `splatting::{Splat, SplatField}`
+  typed view: `SplatField::from_extras(&positions, sidecar)`
+  reconstructs `Vec<Splat>` with `position` / `rotation` / `scale` /
+  `opacity` / `sh` fields plus `sh_degree()`, `diffuse()`,
+  `color(dir)`, and `color_0_fallback(color_space)` delegating to the
+  SH evaluator. New `quantization::dequantize_scalar` helper handles
+  the normalized-integer OPACITY path. A vendor-prefixed kernel defers
+  the attribute contract and produces no `__gaussian_splats` sidecar
+  (round 329)
 - KHR_gaussian_splatting spherical-harmonics colour evaluator
   (`splatting.rs`) — `diffuse_color` (degree-0 reconstruction
   `SH_{0,0} · 0.2820947917738781 + 0.5`), `evaluate` (full

@@ -904,3 +904,184 @@ fn splatting_vendor_kernel_skips_attribute_checks() {
         .extras
         .contains_key("KHR_gaussian_splatting"));
 }
+
+// ---------------------------------------------------------------------
+// Typed splat-field decode — the ellipse-kernel per-vertex attributes
+// (ROTATION VEC4 / SCALE VEC3 / OPACITY SCALAR / SH_DEGREE_l_COEF_n
+// VEC3) are read into `primitive.extras["__gaussian_splats"]` and
+// reconstructed into a `splatting::SplatField` per
+// `docs/3d/gltf/extensions/KHR_gaussian_splatting.md` §"Ellipse Kernel"
+// §"Attributes".
+// ---------------------------------------------------------------------
+
+/// Build a two-splat `"ellipse"`-kernel POINTS primitive with concrete
+/// float attribute data, degree-1 spherical harmonics. The single tail
+/// buffer is laid out attribute-major (each accessor tightly packed,
+/// 2 elements each) and base64-inlined. Returns the decoded scene.
+fn decode_concrete_splat_field() -> Scene3D {
+    use base64::Engine;
+    // Per-vertex values for 2 splats.
+    let position: [[f32; 3]; 2] = [[1.0, 2.0, 3.0], [-4.0, 5.0, -6.0]];
+    let rotation: [[f32; 4]; 2] = [[0.0, 0.0, 0.0, 1.0], [0.5, 0.5, 0.5, 0.5]];
+    let scale: [[f32; 3]; 2] = [[0.1, 0.2, 0.3], [1.0, 1.0, 1.0]];
+    let opacity: [f32; 2] = [0.25, 0.75];
+    // Degree-1 SH: COEF_0..2 (m=-1,0,+1) plus the mandatory degree-0.
+    let sh0: [[f32; 3]; 2] = [[0.9, -0.1, 0.4], [0.2, 0.2, 0.2]];
+    let sh1_0: [[f32; 3]; 2] = [[0.01, 0.02, 0.03], [0.0, 0.0, 0.0]];
+    let sh1_1: [[f32; 3]; 2] = [[0.04, 0.05, 0.06], [0.1, 0.1, 0.1]];
+    let sh1_2: [[f32; 3]; 2] = [[0.07, 0.08, 0.09], [-0.1, -0.1, -0.1]];
+
+    let mut buf: Vec<u8> = Vec::new();
+    let push3 = |a: &[[f32; 3]; 2], buf: &mut Vec<u8>| {
+        for v in a {
+            for c in v {
+                buf.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+    };
+    // accessor 0: POSITION (offset 0)
+    push3(&position, &mut buf);
+    // accessor 1: ROTATION VEC4 (offset 24)
+    for v in &rotation {
+        for c in v {
+            buf.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    // accessor 2: SCALE VEC3 (offset 56)
+    push3(&scale, &mut buf);
+    // accessor 3: OPACITY SCALAR (offset 80)
+    for f in &opacity {
+        buf.extend_from_slice(&f.to_le_bytes());
+    }
+    // accessors 4..7: SH_DEGREE_0_COEF_0, SH_DEGREE_1_COEF_0..2
+    push3(&sh0, &mut buf); // offset 88
+    push3(&sh1_0, &mut buf); // offset 112
+    push3(&sh1_1, &mut buf); // offset 136
+    push3(&sh1_2, &mut buf); // offset 160 (len 184)
+
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
+    let uri = format!("data:application/octet-stream;base64,{b64}");
+    let byte_len = buf.len();
+
+    let raw = serde_json::to_string(&json!({
+        "asset": { "version": "2.0" },
+        "extensionsUsed": ["KHR_gaussian_splatting"],
+        "buffers": [ { "byteLength": byte_len, "uri": uri } ],
+        "bufferViews": [
+            { "buffer": 0, "byteOffset": 0,   "byteLength": 24, "target": 34962 },
+            { "buffer": 0, "byteOffset": 24,  "byteLength": 32, "target": 34962 },
+            { "buffer": 0, "byteOffset": 56,  "byteLength": 24, "target": 34962 },
+            { "buffer": 0, "byteOffset": 80,  "byteLength": 8,  "target": 34962 },
+            { "buffer": 0, "byteOffset": 88,  "byteLength": 24, "target": 34962 },
+            { "buffer": 0, "byteOffset": 112, "byteLength": 24, "target": 34962 },
+            { "buffer": 0, "byteOffset": 136, "byteLength": 24, "target": 34962 },
+            { "buffer": 0, "byteOffset": 160, "byteLength": 24, "target": 34962 }
+        ],
+        "accessors": [
+            { "bufferView": 0, "componentType": 5126, "count": 2, "type": "VEC3",
+              "min": [-4.0, 2.0, -6.0], "max": [1.0, 5.0, 3.0] },
+            { "bufferView": 1, "componentType": 5126, "count": 2, "type": "VEC4" },
+            { "bufferView": 2, "componentType": 5126, "count": 2, "type": "VEC3" },
+            { "bufferView": 3, "componentType": 5126, "count": 2, "type": "SCALAR" },
+            { "bufferView": 4, "componentType": 5126, "count": 2, "type": "VEC3" },
+            { "bufferView": 5, "componentType": 5126, "count": 2, "type": "VEC3" },
+            { "bufferView": 6, "componentType": 5126, "count": 2, "type": "VEC3" },
+            { "bufferView": 7, "componentType": 5126, "count": 2, "type": "VEC3" }
+        ],
+        "meshes": [ { "primitives": [ {
+            "attributes": {
+                "POSITION": 0,
+                "KHR_gaussian_splatting:ROTATION": 1,
+                "KHR_gaussian_splatting:SCALE": 2,
+                "KHR_gaussian_splatting:OPACITY": 3,
+                "KHR_gaussian_splatting:SH_DEGREE_0_COEF_0": 4,
+                "KHR_gaussian_splatting:SH_DEGREE_1_COEF_0": 5,
+                "KHR_gaussian_splatting:SH_DEGREE_1_COEF_1": 6,
+                "KHR_gaussian_splatting:SH_DEGREE_1_COEF_2": 7
+            },
+            "mode": 0,
+            "extensions": { "KHR_gaussian_splatting": {
+                "kernel": "ellipse",
+                "colorSpace": "lin_rec709_display"
+            } }
+        } ] } ]
+    }))
+    .unwrap();
+    let mut dec = GltfDecoder::new();
+    dec.decode(raw.as_bytes()).expect("concrete splat decode")
+}
+
+#[test]
+fn typed_splat_field_reconstructs_from_sidecar() {
+    use oxideav_gltf::splatting::SplatField;
+    let scene = decode_concrete_splat_field();
+    let prim = &scene.meshes[0].primitives[0];
+    let sidecar = prim
+        .extras
+        .get("__gaussian_splats")
+        .expect("__gaussian_splats sidecar must be present for ellipse kernel");
+    assert_eq!(sidecar["count"], json!(2));
+
+    let field = SplatField::from_extras(&prim.positions, sidecar)
+        .expect("typed reconstruction must succeed");
+    assert_eq!(field.len(), 2);
+    assert!(!field.is_empty());
+
+    let s0 = &field.splats[0];
+    assert_eq!(s0.position, [1.0, 2.0, 3.0]);
+    assert_eq!(s0.rotation, [0.0, 0.0, 0.0, 1.0]);
+    assert_eq!(s0.scale, [0.1, 0.2, 0.3]);
+    assert!((s0.opacity - 0.25).abs() < 1e-6);
+    // Degree-1 → 4 coefficients packed in evaluate order.
+    assert_eq!(s0.sh_degree(), 1);
+    assert_eq!(s0.sh.len(), 4);
+    assert_eq!(s0.sh[0], [0.9, -0.1, 0.4]);
+    assert_eq!(s0.sh[1], [0.01, 0.02, 0.03]);
+    assert_eq!(s0.sh[2], [0.04, 0.05, 0.06]);
+    assert_eq!(s0.sh[3], [0.07, 0.08, 0.09]);
+
+    let s1 = &field.splats[1];
+    assert_eq!(s1.position, [-4.0, 5.0, -6.0]);
+    assert_eq!(s1.rotation, [0.5, 0.5, 0.5, 0.5]);
+    assert!((s1.opacity - 0.75).abs() < 1e-6);
+}
+
+#[test]
+fn typed_splat_colour_matches_evaluator() {
+    use oxideav_gltf::splatting::{self, ColorSpace, SplatField};
+    let scene = decode_concrete_splat_field();
+    let prim = &scene.meshes[0].primitives[0];
+    let sidecar = prim.extras.get("__gaussian_splats").unwrap();
+    let field = SplatField::from_extras(&prim.positions, sidecar).unwrap();
+    let s0 = &field.splats[0];
+
+    // Splat::diffuse delegates to the degree-0 evaluator.
+    assert_eq!(s0.diffuse(), splatting::diffuse_color([0.9, -0.1, 0.4]));
+    // Splat::color over a view direction matches evaluate() on the same
+    // coefficient slice.
+    let dir = [0.0, 0.0, 1.0];
+    assert_eq!(s0.color(dir), splatting::evaluate(&s0.sh, 1, dir));
+    // COLOR_0 fallback for the lin colour space the document declares.
+    assert_eq!(
+        s0.color_0_fallback(ColorSpace::LinRec709Display),
+        splatting::color_0_fallback([0.9, -0.1, 0.4], 0.25, ColorSpace::LinRec709Display)
+    );
+}
+
+#[test]
+fn vendor_kernel_omits_typed_splat_sidecar() {
+    // A non-ellipse (vendor-prefixed) kernel defers the attribute
+    // contract to the kernel-defining extension; we must NOT attempt the
+    // ellipse typed decode, so no `__gaussian_splats` sidecar appears.
+    let scene = decode_descriptor(json!({
+        "kernel": "EXT_vendor_kernel_custom",
+        "colorSpace": "srgb_rec709_display"
+    }))
+    .expect("vendor kernel decodes");
+    let prim = &scene.meshes[0].primitives[0];
+    assert!(prim.extras.contains_key("KHR_gaussian_splatting"));
+    assert!(
+        !prim.extras.contains_key("__gaussian_splats"),
+        "vendor kernel must not produce the ellipse typed splat sidecar"
+    );
+}

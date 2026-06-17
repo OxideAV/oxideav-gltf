@@ -2194,6 +2194,28 @@ fn convert_primitive(
                 "KHR_gaussian_splatting".to_owned(),
                 serde_json::Value::Object(obj),
             );
+
+            // Typed splat-field decode for the base `"ellipse"` kernel.
+            // The base spec defines a per-vertex attribute contract
+            // (§"Ellipse Kernel" §"Attributes") — ROTATION (VEC4),
+            // SCALE (VEC3), OPACITY (SCALAR), and the
+            // `SH_DEGREE_l_COEF_n` colour coefficients (VEC3) — that a
+            // splat-aware renderer above this crate consumes alongside
+            // POSITION. The typed `oxideav_mesh3d::Primitive` has no
+            // splat slot, so we read those raw accessors (the validator
+            // has already proven their type + component-type conformance
+            // for the ellipse kernel) and surface them as parallel typed
+            // arrays under `primitive.extras["__gaussian_splats"]`. The
+            // `splatting::SplatField` typed view is reconstructed from
+            // these arrays. A vendor-prefixed kernel defers the whole
+            // attribute contract to the kernel-defining extension, so we
+            // only decode for the base `"ellipse"` kernel.
+            if splat.kernel == "ellipse" {
+                if let Some(record) = read_gaussian_splat_attributes(root, buffers, &p.attributes)?
+                {
+                    prim.extras.insert("__gaussian_splats".to_owned(), record);
+                }
+            }
         }
         // KHR_draco_mesh_compression — per-primitive extension object
         // per `docs/3d/gltf/extensions/KHR_draco_mesh_compression.md`
@@ -2393,6 +2415,154 @@ fn deltas_to_json<const N: usize>(deltas: &[[f32; N]]) -> serde_json::Value {
         })
         .collect();
     serde_json::Value::Array(arr)
+}
+
+/// Read the `KHR_gaussian_splatting` ellipse-kernel splat attributes
+/// (`docs/3d/gltf/extensions/KHR_gaussian_splatting.md` §"Ellipse Kernel"
+/// §"Attributes") into a structured JSON record:
+///
+/// ```json
+/// { "count": N,
+///   "rotation": [[x,y,z,w], …],   // VEC4 unit quaternions
+///   "scale":    [[x,y,z], …],     // VEC3
+///   "opacity":  [f, …],           // SCALAR, linear [0,1]
+///   "sh":       [[[r,g,b], …], …] }// SH coeffs, evaluate-order outer
+/// ```
+///
+/// The SH coefficients are gathered in the canonical
+/// `splatting::evaluate` order — degree 0 first, then each higher degree
+/// in turn, lowest order `m` to highest within a degree. The validator
+/// has already proven the (type, componentType, normalized) conformance
+/// and the degree-completeness contract for the ellipse kernel, so the
+/// reads here apply the spec int→float dequantisation per attribute.
+///
+/// Returns `Ok(None)` when the required attributes are absent (e.g. a
+/// non-splat primitive that somehow carried the descriptor) — the
+/// caller simply omits the sidecar.
+fn read_gaussian_splat_attributes(
+    root: &GltfRoot,
+    buffers: &[Arc<Vec<u8>>],
+    attributes: &HashMap<String, u32>,
+) -> Result<Option<Value>> {
+    const ROTATION: &str = "KHR_gaussian_splatting:ROTATION";
+    const SCALE: &str = "KHR_gaussian_splatting:SCALE";
+    const OPACITY: &str = "KHR_gaussian_splatting:OPACITY";
+
+    let (Some(&rot_i), Some(&scale_i), Some(&op_i)) = (
+        attributes.get(ROTATION),
+        attributes.get(SCALE),
+        attributes.get(OPACITY),
+    ) else {
+        return Ok(None);
+    };
+
+    // VEC4 rotation — float / signed-byte-normalized / signed-short-
+    // normalized (§"Ellipse Kernel" §"Attributes").
+    let rot_acc = root
+        .accessors
+        .get(rot_i as usize)
+        .ok_or_else(|| invalid(format!("splat ROTATION accessor {rot_i} oob")))?;
+    let rot_bytes = materialise_accessor(rot_acc, &root.buffer_views, buffers)?;
+    let rot_view = view_from_materialised(rot_acc, &rot_bytes)?;
+    let rotation = quantization::dequantize_vec4(rot_acc, &rot_view)?;
+
+    // VEC3 scale — float / unsigned-byte(-normalized) / unsigned-short
+    // (-normalized).
+    let scale_acc = root
+        .accessors
+        .get(scale_i as usize)
+        .ok_or_else(|| invalid(format!("splat SCALE accessor {scale_i} oob")))?;
+    let scale_bytes = materialise_accessor(scale_acc, &root.buffer_views, buffers)?;
+    let scale_view = view_from_materialised(scale_acc, &scale_bytes)?;
+    let scale = quantization::dequantize_vec3(scale_acc, &scale_view)?;
+
+    // SCALAR opacity — float / unsigned-byte-normalized / unsigned-short
+    // -normalized.
+    let op_acc = root
+        .accessors
+        .get(op_i as usize)
+        .ok_or_else(|| invalid(format!("splat OPACITY accessor {op_i} oob")))?;
+    let op_bytes = materialise_accessor(op_acc, &root.buffer_views, buffers)?;
+    let op_view = view_from_materialised(op_acc, &op_bytes)?;
+    let opacity = quantization::dequantize_scalar(op_acc, &op_view)?;
+
+    // Spherical-harmonics coefficients — every present
+    // `SH_DEGREE_l_COEF_n` is a VEC3 of floats. Gather them in canonical
+    // evaluate order (degree ascending, m ascending within a degree).
+    let mut max_degree = 0u32;
+    for name in attributes.keys() {
+        if let Some(rest) = name.strip_prefix("KHR_gaussian_splatting:SH_DEGREE_") {
+            if let Some((deg_str, _)) = rest.split_once("_COEF_") {
+                if let Ok(l) = deg_str.parse::<u32>() {
+                    max_degree = max_degree.max(l);
+                }
+            }
+        }
+    }
+    let mut sh: Vec<Value> = Vec::new();
+    for l in 0..=max_degree {
+        for n in 0..=(2 * l) {
+            let key = format!("KHR_gaussian_splatting:SH_DEGREE_{l}_COEF_{n}");
+            let &idx = attributes
+                .get(&key)
+                .ok_or_else(|| invalid(format!("splat {key} missing (degree-completeness)")))?;
+            let acc = root
+                .accessors
+                .get(idx as usize)
+                .ok_or_else(|| invalid(format!("splat {key} accessor {idx} oob")))?;
+            let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
+            let view = view_from_materialised(acc, &bytes)?;
+            let coef = read_vec_f32::<3>(&view)?;
+            sh.push(vec3_array_to_json(&coef));
+        }
+    }
+
+    let count = rotation.len();
+    let mut obj = serde_json::Map::new();
+    obj.insert("count".into(), Value::from(count as u64));
+    obj.insert("rotation".into(), vec4_array_to_json(&rotation));
+    obj.insert("scale".into(), vec3_array_to_json(&scale));
+    obj.insert(
+        "opacity".into(),
+        Value::Array(
+            opacity
+                .iter()
+                .filter_map(|&f| serde_json::Number::from_f64(f as f64).map(Value::Number))
+                .collect(),
+        ),
+    );
+    obj.insert("sh".into(), Value::Array(sh));
+    Ok(Some(Value::Object(obj)))
+}
+
+/// Serialise a `&[[f32; 3]]` as a JSON array of 3-element arrays.
+fn vec3_array_to_json(data: &[[f32; 3]]) -> Value {
+    Value::Array(
+        data.iter()
+            .map(|v| {
+                Value::Array(
+                    v.iter()
+                        .filter_map(|&c| serde_json::Number::from_f64(c as f64).map(Value::Number))
+                        .collect(),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// Serialise a `&[[f32; 4]]` as a JSON array of 4-element arrays.
+fn vec4_array_to_json(data: &[[f32; 4]]) -> Value {
+    Value::Array(
+        data.iter()
+            .map(|v| {
+                Value::Array(
+                    v.iter()
+                        .filter_map(|&c| serde_json::Number::from_f64(c as f64).map(Value::Number))
+                        .collect(),
+                )
+            })
+            .collect(),
+    )
 }
 
 fn read_attr_vec3(

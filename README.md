@@ -566,8 +566,23 @@ framework but usable standalone.
   cloud (degree-0 diffuse clamped to `[0, 1]`, sRGB-decoded to linear
   when `colorSpace == "srgb_rec709_display"` because `COLOR_0` carries
   linear values per the glTF spec, splat opacity in alpha). The typed
-  splat-field decode (lifting the raw accessor attributes into a
-  structured per-splat record) remains for a follow-up
+  splat-field decode now lands: for an `"ellipse"`-kernel primitive the
+  decoder reads the per-vertex `KHR_gaussian_splatting:ROTATION` (VEC4),
+  `:SCALE` (VEC3), `:OPACITY` (SCALAR), and `:SH_DEGREE_l_COEF_n` (VEC3)
+  accessors — applying the spec int→float dequantisation for the
+  allowed normalized-integer storage forms (ROTATION signed
+  byte/short-normalized; SCALE / OPACITY unsigned byte/short, raw or
+  normalized; SH floats only) — and parks them as parallel typed arrays
+  under `Primitive::extras["__gaussian_splats"]`
+  (`{ count, rotation, scale, opacity, sh }`, the SH coefficients
+  gathered in canonical `evaluate` order). `splatting::SplatField` is
+  the typed view: `SplatField::from_extras(&prim.positions, sidecar)`
+  reconstructs `Vec<Splat>`, each `Splat` exposing `position` /
+  `rotation` / `scale` / `opacity` / `sh` plus `sh_degree()`,
+  `diffuse()`, `color(dir)`, and `color_0_fallback(color_space)`
+  delegating to the SH evaluator. A vendor-prefixed kernel defers the
+  attribute contract to the kernel-defining extension and produces no
+  `__gaussian_splats` sidecar
 - KHR_draco_mesh_compression extension (Khronos ratified) — the
   per-primitive descriptor that redirects a mesh primitive's
   `attributes` + `indices` to a Draco-compressed `bufferView`

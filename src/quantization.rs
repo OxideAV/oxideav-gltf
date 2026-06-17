@@ -191,6 +191,52 @@ pub fn dequantize_vec2(acc: &Accessor, view: &AccessorView<'_>) -> Result<Vec<[f
     Ok(out)
 }
 
+/// Dequantise a SCALAR attribute view. Behaviour mirrors
+/// [`dequantize_vec2`] for a single component: FLOAT passes through,
+/// integer types dequantise via the spec equation when `normalized`,
+/// otherwise cast. Used by the `KHR_gaussian_splatting` ellipse-kernel
+/// `OPACITY` attribute (float / unsigned-byte-normalized /
+/// unsigned-short-normalized per §"Ellipse Kernel" §"Attributes").
+pub fn dequantize_scalar(acc: &Accessor, view: &AccessorView<'_>) -> Result<Vec<f32>> {
+    let ct = acc.component_type;
+    let mut out = Vec::with_capacity(view.count);
+    if ct == COMPONENT_TYPE_FLOAT {
+        if view.element_size != 4 {
+            return Err(invalid(format!(
+                "SCALAR FLOAT element size {} != 4",
+                view.element_size
+            )));
+        }
+        for elem in view.elements() {
+            out.push(read_f32(elem, 0));
+        }
+        return Ok(out);
+    }
+    if !is_quantizable_integer(ct) {
+        return Err(invalid(format!("SCALAR: componentType {ct} not allowed")));
+    }
+    let csize = match ct {
+        COMPONENT_TYPE_BYTE | COMPONENT_TYPE_UNSIGNED_BYTE => 1,
+        COMPONENT_TYPE_SHORT | COMPONENT_TYPE_UNSIGNED_SHORT => 2,
+        _ => unreachable!(),
+    };
+    if view.element_size < csize {
+        return Err(invalid(format!(
+            "SCALAR: element size {} < expected {}",
+            view.element_size, csize
+        )));
+    }
+    for elem in view.elements() {
+        let c0 = read_component(ct, elem, 0);
+        if acc.normalized {
+            out.push(dequantize_normalized(ct, c0)?);
+        } else {
+            out.push(c0 as f32);
+        }
+    }
+    Ok(out)
+}
+
 /// Dequantise a VEC3 attribute view per the extension. Behaviour
 /// mirrors [`dequantize_vec2`]: FLOAT passes through, integer types
 /// dequantise via the spec equation when `normalized`, otherwise cast.
