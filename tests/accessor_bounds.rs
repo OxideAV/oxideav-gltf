@@ -22,11 +22,16 @@ fn scene_with_known_position_extents() -> Scene3D {
     let mut scene = Scene3D::new();
     let mut prim = Primitive::new(Topology::Triangles);
     // Known extents: x ∈ [-2, 5], y ∈ [-1, 4], z ∈ [0, 3].
+    // Six vertices (two triangles) so the indexless TRIANGLES primitive
+    // satisfies the §3.7.2.1 "divisible by 3" vertex-count rule; the two
+    // extra interior points don't change the component-wise extrema.
     prim.positions = vec![
         [-2.0, 4.0, 0.0],
         [5.0, -1.0, 3.0],
         [0.0, 0.0, 1.5],
         [3.0, 2.0, 0.5],
+        [1.0, 1.0, 1.0],
+        [2.0, 3.0, 2.0],
     ];
     let mut mesh = Mesh::new(Some("m".to_owned()));
     mesh.primitives.push(prim);
@@ -70,7 +75,7 @@ fn decoder_accepts_correct_bounds() {
     let scene2 = dec
         .decode(&glb)
         .expect("decoder must accept correct bounds");
-    assert_eq!(scene2.meshes[0].primitives[0].positions.len(), 4);
+    assert_eq!(scene2.meshes[0].primitives[0].positions.len(), 6);
 }
 
 #[test]

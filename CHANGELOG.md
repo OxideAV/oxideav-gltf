@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Primitive topology vertex-count validation per spec §3.7.2.1 — the
+  decoder now rejects primitives whose number of vertex indices is
+  invalid for the topology `mode`: POINTS MUST be non-zero, LINE_LOOP /
+  LINE_STRIP MUST be ≥ 2, TRIANGLE_STRIP / TRIANGLE_FAN MUST be ≥ 3,
+  LINES MUST be divisible by 2 and non-zero, TRIANGLES MUST be divisible
+  by 3 and non-zero (`PrimitiveIndexCount`). The count is the `indices`
+  accessor's `count` when `indices` is defined, otherwise the shared
+  attribute accessors' `count`. The decoder also enforces the companion
+  §3.7.2.1 rule that, when `indices` is defined, every index value MUST
+  be strictly less than the attribute accessors' `count`
+  (`PrimitiveIndexBound`). Both checks are skipped for primitives
+  carrying `KHR_draco_mesh_compression` (the rendered index stream lives
+  inside the opaque compressed payload) or `KHR_gaussian_splatting` (the
+  primitive is a splat field, not a triangle/line/point list — the base
+  ellipse kernel pins `mode` to POINTS via its own validator and a
+  vendor kernel defers geometry semantics to the kernel-defining
+  extension)
 - KHR_gaussian_splatting typed splat-field decode — for an
   `"ellipse"`-kernel `POINTS` primitive the decoder now reads the
   per-vertex `KHR_gaussian_splatting:ROTATION` (VEC4), `:SCALE` (VEC3),

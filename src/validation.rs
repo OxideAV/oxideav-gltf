@@ -381,6 +381,74 @@ pub fn validate_index_no_restart(accessor: &Accessor, indices: &[u32]) -> Result
     Ok(())
 }
 
+/// Spec §3.7.2.1: the number of vertex indices to render MUST be valid
+/// for the topology type used. When `indices` is defined the count is the
+/// `indices` accessor's `count`; otherwise it is the (shared) attribute
+/// accessors' `count`. Per the spec's bulleted list:
+///
+/// * POINTS — MUST be non-zero.
+/// * LINE_LOOP / LINE_STRIP — MUST be 2 or greater.
+/// * TRIANGLE_STRIP / TRIANGLE_FAN — MUST be 3 or greater.
+/// * LINES — MUST be divisible by 2 and non-zero.
+/// * TRIANGLES — MUST be divisible by 3 and non-zero.
+///
+/// `mode` is the raw glTF primitive `mode` enum (defaulting to TRIANGLES
+/// upstream). An unknown `mode` is rejected before this point by
+/// `topology_from_mode`, so it cannot reach here.
+pub fn validate_primitive_index_count(mode: u32, num_indices: u64) -> Result<()> {
+    use crate::json_model::{
+        MODE_LINES, MODE_LINE_LOOP, MODE_LINE_STRIP, MODE_POINTS, MODE_TRIANGLES,
+        MODE_TRIANGLE_FAN, MODE_TRIANGLE_STRIP,
+    };
+
+    // `name` is the spec's topology label; `rule` is the human-readable
+    // MUST text reproduced for the error message.
+    let fail = |name: &str, rule: &str| {
+        Err(invalid(format!(
+            "PrimitiveIndexCount: {name} primitive has {num_indices} vertex indices \
+             (spec §3.7.2.1: for {name}, {rule})"
+        )))
+    };
+
+    match mode {
+        MODE_POINTS if num_indices == 0 => fail("points", "the count MUST be non-zero"),
+        MODE_LINE_LOOP if num_indices < 2 => fail("line loops", "the count MUST be 2 or greater"),
+        MODE_LINE_STRIP if num_indices < 2 => fail("line strips", "the count MUST be 2 or greater"),
+        MODE_TRIANGLE_STRIP if num_indices < 3 => {
+            fail("triangle strips", "the count MUST be 3 or greater")
+        }
+        MODE_TRIANGLE_FAN if num_indices < 3 => {
+            fail("triangle fans", "the count MUST be 3 or greater")
+        }
+        MODE_LINES if num_indices == 0 || num_indices % 2 != 0 => {
+            fail("lines", "the count MUST be divisible by 2 and non-zero")
+        }
+        MODE_TRIANGLES if num_indices == 0 || num_indices % 3 != 0 => {
+            fail("triangles", "the count MUST be divisible by 3 and non-zero")
+        }
+        // All conforming counts, plus any other mode (unreachable in
+        // practice — `topology_from_mode` rejects unknown modes before a
+        // primitive is converted), are accepted.
+        _ => Ok(()),
+    }
+}
+
+/// Spec §3.7.2.1: when the `indices` property is defined, every index
+/// value MUST be less than the attribute accessors' `count` (the index
+/// accessor's range is the *upper exclusive bound* on addressable
+/// vertices). `attr_count` is the shared attribute count established by
+/// [`validate_attribute_counts`].
+pub fn validate_index_value_bound(indices: &[u32], attr_count: u32) -> Result<()> {
+    if let Some(pos) = indices.iter().position(|&i| i >= attr_count) {
+        return Err(invalid(format!(
+            "PrimitiveIndexBound: indices[{pos}] = {} >= attribute count {attr_count} \
+             (spec §3.7.2.1: all index values MUST be less than the attribute accessors' count)",
+            indices[pos]
+        )));
+    }
+    Ok(())
+}
+
 /// Spec §3.7.2.1: each TANGENT element's W component (handedness) MUST
 /// be exactly `+1.0` or `-1.0`. Tolerance allows for f32 round-trip
 /// drift around the two valid values.
@@ -3308,6 +3376,66 @@ mod tests {
     fn color0_rejects_negative() {
         let err = validate_color0_range(&[[0.0, -0.1, 0.5, 1.0]]).unwrap_err();
         assert!(format!("{err}").contains("VertexAttributeColor0Range"));
+    }
+
+    // --- §3.7.2.1 topology vertex-count rules -----------------------
+
+    #[test]
+    fn index_count_points_requires_nonzero() {
+        use crate::json_model::MODE_POINTS;
+        validate_primitive_index_count(MODE_POINTS, 1).unwrap();
+        validate_primitive_index_count(MODE_POINTS, 7).unwrap();
+        let err = validate_primitive_index_count(MODE_POINTS, 0).unwrap_err();
+        assert!(format!("{err}").contains("PrimitiveIndexCount"));
+    }
+
+    #[test]
+    fn index_count_lines_divisible_by_two() {
+        use crate::json_model::MODE_LINES;
+        validate_primitive_index_count(MODE_LINES, 2).unwrap();
+        validate_primitive_index_count(MODE_LINES, 6).unwrap();
+        assert!(validate_primitive_index_count(MODE_LINES, 0).is_err());
+        assert!(validate_primitive_index_count(MODE_LINES, 3).is_err());
+    }
+
+    #[test]
+    fn index_count_line_loop_and_strip_min_two() {
+        use crate::json_model::{MODE_LINE_LOOP, MODE_LINE_STRIP};
+        validate_primitive_index_count(MODE_LINE_LOOP, 2).unwrap();
+        validate_primitive_index_count(MODE_LINE_STRIP, 5).unwrap();
+        assert!(validate_primitive_index_count(MODE_LINE_LOOP, 1).is_err());
+        assert!(validate_primitive_index_count(MODE_LINE_STRIP, 0).is_err());
+    }
+
+    #[test]
+    fn index_count_triangles_divisible_by_three() {
+        use crate::json_model::MODE_TRIANGLES;
+        validate_primitive_index_count(MODE_TRIANGLES, 3).unwrap();
+        validate_primitive_index_count(MODE_TRIANGLES, 9).unwrap();
+        assert!(validate_primitive_index_count(MODE_TRIANGLES, 0).is_err());
+        assert!(validate_primitive_index_count(MODE_TRIANGLES, 4).is_err());
+        assert!(validate_primitive_index_count(MODE_TRIANGLES, 5).is_err());
+    }
+
+    #[test]
+    fn index_count_triangle_strip_and_fan_min_three() {
+        use crate::json_model::{MODE_TRIANGLE_FAN, MODE_TRIANGLE_STRIP};
+        validate_primitive_index_count(MODE_TRIANGLE_STRIP, 3).unwrap();
+        // strips/fans need not be divisible by 3 — only >= 3.
+        validate_primitive_index_count(MODE_TRIANGLE_STRIP, 4).unwrap();
+        validate_primitive_index_count(MODE_TRIANGLE_FAN, 5).unwrap();
+        assert!(validate_primitive_index_count(MODE_TRIANGLE_STRIP, 2).is_err());
+        assert!(validate_primitive_index_count(MODE_TRIANGLE_FAN, 0).is_err());
+    }
+
+    #[test]
+    fn index_value_bound_rejects_out_of_range() {
+        // attribute count 4 → valid indices are 0..=3.
+        validate_index_value_bound(&[0, 1, 2, 3, 0, 2], 4).unwrap();
+        let err = validate_index_value_bound(&[0, 1, 4], 4).unwrap_err();
+        assert!(format!("{err}").contains("PrimitiveIndexBound"));
+        // equal to count is out of range (upper bound is exclusive).
+        assert!(validate_index_value_bound(&[3], 3).is_err());
     }
 
     // --- JSON byte-length cap ---------------------------------------

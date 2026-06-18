@@ -28,7 +28,7 @@ fn build_doc(
         "buffers": [ {{ "byteLength": {total}, "uri": "data:application/octet-stream;base64,{b64}" }} ],
         "bufferViews": [ {buffer_views_json} ],
         "accessors": [ {accessors_json} ],
-        "meshes": [ {{ "primitives": [ {{ "attributes": {attributes_json} }} ] }} ],
+        "meshes": [ {{ "primitives": [ {{ "mode": 0, "attributes": {attributes_json} }} ] }} ],
         "nodes": [ {{ "mesh": 0 }} ],
         "scenes": [ {{ "nodes": [0] }} ], "scene": 0
     }}"#

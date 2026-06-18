@@ -156,14 +156,18 @@ fn tangent_vec4_sparse_round_trip() {
     // when re-decoded). This test pins the contract.
     let mut scene = Scene3D::new();
     let mut prim = Primitive::new(Topology::Triangles);
-    prim.positions = vec![[1.0, 0.0, 0.0]; 4]; // all non-zero so POSITION stays dense
-    prim.normals = Some(vec![[0.0, 1.0, 0.0]; 4]);
+    // Six vertices (two triangles) so the indexless TRIANGLES primitive
+    // satisfies the §3.7.2.1 "divisible by 3" vertex-count rule.
+    prim.positions = vec![[1.0, 0.0, 0.0]; 6]; // all non-zero so POSITION stays dense
+    prim.normals = Some(vec![[0.0, 1.0, 0.0]; 6]);
     // All TANGENT elements carry spec-valid w = ±1.0 even when xyz is
     // (0,0,0); the encoder must NOT try to compress them with a
     // zero-base sparse block.
     let tangents = vec![
         [0.0, 0.0, 0.0, 1.0],
         [1.0, 0.0, 0.0, 1.0],
+        [0.0, 0.0, 0.0, 1.0],
+        [0.0, 0.0, 0.0, 1.0],
         [0.0, 0.0, 0.0, 1.0],
         [0.0, 0.0, 0.0, 1.0],
     ];

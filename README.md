@@ -671,6 +671,23 @@ framework but usable standalone.
   (`VertexAttributeColor0Range`). The encoder also keeps TANGENT
   dense regardless of sparse threshold to honour the same TANGENT.w
   constraint
+- Primitive topology vertex-count validation per spec §3.7.2.1 — the
+  decoder rejects primitives whose number of vertex indices is invalid
+  for the topology `mode`: POINTS MUST be non-zero, LINE_LOOP /
+  LINE_STRIP MUST be ≥ 2, TRIANGLE_STRIP / TRIANGLE_FAN MUST be ≥ 3,
+  LINES MUST be divisible by 2 and non-zero, TRIANGLES MUST be divisible
+  by 3 and non-zero (`PrimitiveIndexCount`). The count is the `indices`
+  accessor's `count` when `indices` is defined, otherwise the shared
+  attribute accessors' `count`. The companion §3.7.2.1 rule is also
+  enforced: when `indices` is defined every index value MUST be strictly
+  less than the attribute accessors' `count` (`PrimitiveIndexBound`).
+  Both checks are skipped for primitives carrying
+  `KHR_draco_mesh_compression` (the rendered index stream lives inside
+  the opaque compressed payload this pass-through engine does not
+  inflate) or `KHR_gaussian_splatting` (a splat field, not a
+  triangle/line/point list — the base ellipse kernel pins `mode` to
+  POINTS through its own validator and a vendor kernel defers geometry
+  semantics to the kernel-defining extension)
 - Extension-stack consistency validation per spec §3.12 — the decoder
   rejects documents whose `extensionsRequired` set is not a subset of
   `extensionsUsed` (`ExtensionStackRequiredNotListed`), and documents

@@ -40,6 +40,7 @@ fn build_doc(
         "bufferViews": [ {buffer_views_json} ],
         "accessors": [ {accessors_json} ],
         "meshes": [ {{ "primitives": [ {{
+            "mode": 0,
             "attributes": {attributes_json}
         }} ] }} ],
         "nodes": [ {{ "mesh": 0 }} ],

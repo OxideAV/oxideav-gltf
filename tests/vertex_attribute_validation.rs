@@ -31,6 +31,7 @@ fn build_doc(
         "bufferViews": [ {buffer_views_json} ],
         "accessors": [ {accessors_json} ],
         "meshes": [ {{ "primitives": [ {{
+            "mode": 0,
             "attributes": {attributes_json},
             "indices": {indices_json}
         }} ] }} ],
@@ -377,4 +378,115 @@ fn round_trip_after_validation_changes() {
     assert_eq!(prim2.normals.as_ref().unwrap().len(), 4);
     assert_eq!(prim2.tangents.as_ref().unwrap()[0][3], 1.0);
     assert_eq!(prim2.colors[0].len(), 4);
+}
+
+// --- §3.7.2.1 topology vertex-count rules (end-to-end) ------------
+
+/// Build a document with an explicit primitive `mode` + optional
+/// `indices`. `bin` is the raw buffer; `accessors_json` /
+/// `buffer_views_json` are the JSON arrays.
+fn build_doc_mode(
+    bin: &[u8],
+    mode: u32,
+    accessors_json: &str,
+    buffer_views_json: &str,
+    attributes_json: &str,
+    indices_json: &str,
+) -> Vec<u8> {
+    let total = bin.len();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(bin);
+    format!(
+        r#"{{
+        "asset": {{ "version": "2.0" }},
+        "buffers": [ {{ "byteLength": {total}, "uri": "data:application/octet-stream;base64,{b64}" }} ],
+        "bufferViews": [ {buffer_views_json} ],
+        "accessors": [ {accessors_json} ],
+        "meshes": [ {{ "primitives": [ {{
+            "mode": {mode},
+            "attributes": {attributes_json},
+            "indices": {indices_json}
+        }} ] }} ],
+        "nodes": [ {{ "mesh": 0 }} ],
+        "scenes": [ {{ "nodes": [0] }} ], "scene": 0
+    }}"#
+    )
+    .into_bytes()
+}
+
+#[test]
+fn rejects_indexless_triangles_count_not_divisible_by_three() {
+    // 4 POSITIONs, mode = TRIANGLES (4), no indices → 4 is not
+    // divisible by 3, so §3.7.2.1 rejects.
+    let (bin, acc) = aligned_positions_bin_4();
+    let doc = build_doc_mode(
+        &bin,
+        4,
+        acc,
+        r#"{"buffer": 0, "byteOffset": 0, "byteLength": 48}"#,
+        r#"{"POSITION": 0}"#,
+        "null",
+    );
+    let mut dec = GltfDecoder::new();
+    let err = dec.decode(&doc).unwrap_err();
+    assert!(
+        format!("{err}").contains("PrimitiveIndexCount"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn accepts_indexless_points_any_nonzero_count() {
+    // 4 POSITIONs, mode = POINTS (0), no indices → any non-zero count
+    // is valid for POINTS.
+    let (bin, acc) = aligned_positions_bin_4();
+    let doc = build_doc_mode(
+        &bin,
+        0,
+        acc,
+        r#"{"buffer": 0, "byteOffset": 0, "byteLength": 48}"#,
+        r#"{"POSITION": 0}"#,
+        "null",
+    );
+    let mut dec = GltfDecoder::new();
+    let scene = dec.decode(&doc).expect("POINTS with 4 verts must pass");
+    assert_eq!(scene.meshes[0].primitives[0].positions.len(), 4);
+}
+
+#[test]
+fn rejects_index_value_at_or_above_attribute_count() {
+    // 4 POSITIONs (valid indices 0..=3), indices [0,1,2,1,2,4] — the
+    // last index 4 == attribute count, which is out of the exclusive
+    // upper bound per §3.7.2.1.
+    let (mut bin, acc) = aligned_positions_bin_4();
+    while bin.len() % 4 != 0 {
+        bin.push(0);
+    }
+    let idx_offset = bin.len();
+    for i in [0u16, 1, 2, 1, 2, 4] {
+        bin.extend_from_slice(&i.to_le_bytes());
+    }
+    let total = bin.len();
+    let idx_len = total - idx_offset;
+    let accessors = format!(
+        r#"{acc},
+           {{"bufferView": 1, "componentType": 5123, "count": 6, "type": "SCALAR"}}"#
+    );
+    let buffer_views = format!(
+        r#"{{"buffer": 0, "byteOffset": 0, "byteLength": 48}},
+           {{"buffer": 0, "byteOffset": {idx_offset}, "byteLength": {idx_len}}}"#
+    );
+    let doc = build_doc_mode(
+        &bin,
+        4,
+        &accessors,
+        &buffer_views,
+        r#"{"POSITION": 0}"#,
+        "1",
+    );
+    let mut dec = GltfDecoder::new();
+    let err = dec.decode(&doc).unwrap_err();
+    assert!(
+        format!("{err}").contains("PrimitiveIndexBound"),
+        "got: {err}"
+    );
 }

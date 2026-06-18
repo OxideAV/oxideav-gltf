@@ -86,7 +86,7 @@ fn sparse_position_overrides_two_of_four() {
             "meshes": [
                 {{
                     "primitives": [
-                        {{ "attributes": {{ "POSITION": 0 }} }}
+                        {{ "mode": 0, "attributes": {{ "POSITION": 0 }} }}
                     ]
                 }}
             ],
@@ -158,7 +158,7 @@ fn sparse_with_no_base_buffer_view_initialises_to_zero() {
                 }}
             ],
             "meshes": [
-                {{ "primitives": [ {{ "attributes": {{ "POSITION": 0 }} }} ] }}
+                {{ "primitives": [ {{ "mode": 0, "attributes": {{ "POSITION": 0 }} }} ] }}
             ],
             "nodes": [ {{ "mesh": 0 }} ],
             "scenes": [ {{ "nodes": [0] }} ],

@@ -38,8 +38,8 @@ use crate::validation::{
     check_asset_version, validate_accessor_fits_bufferview, validate_accessors, validate_alignment,
     validate_animation_channels, validate_attribute_counts, validate_bufferview_fits_buffer,
     validate_cameras, validate_color0_range, validate_extension_stack, validate_index_no_restart,
-    validate_nodes, validate_samplers, validate_sparse_indices_buffer_views,
-    validate_sparse_values_buffer_views, validate_tangent_w,
+    validate_index_value_bound, validate_nodes, validate_primitive_index_count, validate_samplers,
+    validate_sparse_indices_buffer_views, validate_sparse_values_buffer_views, validate_tangent_w,
 };
 
 /// Decode a parsed [`GltfRoot`] into a [`Scene3D`], using `glb_bin`
@@ -2085,6 +2085,25 @@ fn convert_primitive(
         prim.weights = Some(raw);
     }
 
+    // Spec §3.7.2.1 topology vertex-count rules only constrain the
+    // *rendered index count* of a standard mesh primitive. Two extension
+    // families re-define what the parent accessors mean and are exempt:
+    //
+    // * `KHR_draco_mesh_compression` — the index stream lives inside the
+    //   opaque compressed payload (which this pass-through engine does
+    //   not inflate), so the parent attribute `count` is the *vertex*
+    //   count, not the rendered *index* count, and there is no glTF
+    //   `indices` accessor to measure.
+    // * `KHR_gaussian_splatting` — the primitive is a splat field, not a
+    //   triangle/line/point list in the rasterisation sense; the base
+    //   `ellipse` kernel pins `mode` to POINTS (validated by the
+    //   extension), and a vendor kernel defers all geometry semantics to
+    //   the kernel-defining extension. POSITION here is the per-splat
+    //   centre count, not a render-index count.
+    let skip_topology_count = p.extensions.as_ref().is_some_and(|e| {
+        e.khr_draco_mesh_compression.is_some() || e.khr_gaussian_splatting.is_some()
+    });
+
     if let Some(idx_acc) = p.indices {
         let acc = &root.accessors[idx_acc as usize];
         // Spec §3.6.2.4: index accessor byteOffset must be aligned to
@@ -2098,6 +2117,20 @@ fn convert_primitive(
         // Spec §3.7.2.1: index value MUST NOT equal the max value for
         // the chosen componentType (reserved for primitive-restart).
         validate_index_no_restart(acc, &widened)?;
+        if !skip_topology_count {
+            // Spec §3.7.2.1: when `indices` is defined the number of
+            // vertex indices to render is the indices accessor's count,
+            // and it MUST satisfy the per-topology minimum /
+            // divisibility rule.
+            validate_primitive_index_count(
+                p.mode.unwrap_or(gj::MODE_TRIANGLES),
+                widened.len() as u64,
+            )?;
+            // Spec §3.7.2.1: every index value MUST be less than the
+            // shared attribute accessors' count (the upper exclusive
+            // bound).
+            validate_index_value_bound(&widened, prim.positions.len() as u32)?;
+        }
         // Pick the narrowest representable width — this is glTF's
         // own convention (5121 / 5123 / 5125 are all valid).
         let max = widened.iter().copied().max().unwrap_or(0);
@@ -2108,6 +2141,14 @@ fn convert_primitive(
         } else {
             prim.indices = Some(Indices::U32(widened));
         }
+    } else if !skip_topology_count {
+        // Spec §3.7.2.1: when `indices` is NOT defined the number of
+        // vertex indices to render is the attribute accessors' count;
+        // it MUST still satisfy the per-topology rule.
+        validate_primitive_index_count(
+            p.mode.unwrap_or(gj::MODE_TRIANGLES),
+            prim.positions.len() as u64,
+        )?;
     }
 
     if let Some(m) = p.material {
