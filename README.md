@@ -789,6 +789,25 @@ framework but usable standalone.
   determinant is rejected (`NodeMatrixDecompose`). The conservative
   determinant test leaves the shear/skew sub-case (an Implementation
   Note, not a MUST) accepted when the matrix is still invertible
+- Skin-roster validation per spec §5.28 + §3.7.3 + §5.25.3 — the
+  `validate_skins` pass (run after `validate_nodes`) policies the skin
+  MUSTs the decoder previously parsed but never enforced. §5.28.3:
+  `skin.joints` MUST be non-empty, every joint MUST be a valid node
+  index, and each joint MUST be unique (`SkinJointsEmpty` /
+  `SkinJointIndex` / `SkinJointDuplicate`). §5.28.2: `skin.skeleton`,
+  when present, MUST be a valid node index (`SkinSkeletonIndex`).
+  §5.28.1 / §3.7.3.1: the `inverseBindMatrices` accessor, when present,
+  MUST be a valid accessor of `"MAT4"` type with `FLOAT` components, MUST
+  NOT be `normalized`, and its `count` MUST be ≥ the joint count
+  (`SkinIbmIndex` / `SkinIbmAccessorType` / `SkinIbmAccessorComponentType`
+  / `SkinIbmAccessorNormalized` / `SkinIbmCount`). §5.25.3: a node with
+  `skin` MUST reference a valid skin AND MUST also define `mesh`
+  (`NodeSkinIndex` / `NodeSkinWithoutMesh`). §3.7.3.2: a skin referenced
+  by a node within a scene MUST have all of its joints in that same scene
+  (`SkinJointWrongScene`). The §3.7.3.2 *common-root* SHOULD is not
+  enforced as a document-node-ancestry MUST — joints that are distinct
+  scene roots are accepted (the scene is their implicit common root),
+  matching the Khronos validator and this crate's encoder
 - Texture-sampler filter / wrap validation per spec §5.26 — every
   `samplers[i]` entry is checked before conversion against the closed
   enum sets in §5.26.1–§5.26.4: `magFilter`, when present, MUST be

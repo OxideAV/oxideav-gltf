@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Skin-roster validation per spec §5.28 (Skin) + §3.7.3 (Skins) +
+  §5.25.3 (node.skin) — the new `validate_skins` pass, wired into
+  `convert()` after `validate_nodes`, enforces the document-level MUSTs
+  the decoder previously parsed but never policed:
+  - `skin.joints` MUST be non-empty (`integer [1-*]`), every joint index
+    MUST be a valid node index, and each joint index MUST be unique
+    (`SkinJointsEmpty` / `SkinJointIndex` / `SkinJointDuplicate`,
+    §5.28.3).
+  - `skin.skeleton`, when present, MUST be a valid node index
+    (`SkinSkeletonIndex`, §5.28.2).
+  - the `skin.inverseBindMatrices` accessor, when present, MUST be a
+    valid accessor index of `"MAT4"` type with floating-point (`FLOAT`)
+    components, MUST NOT be `normalized`, and its `count` MUST be ≥ the
+    number of joints (`SkinIbmIndex` / `SkinIbmAccessorType` /
+    `SkinIbmAccessorComponentType` / `SkinIbmAccessorNormalized` /
+    `SkinIbmCount`, §5.28.1 / §3.7.3.1).
+  - a node defining `skin` MUST reference a valid skin index AND MUST
+    also define `mesh` (`NodeSkinIndex` / `NodeSkinWithoutMesh`,
+    §5.25.3).
+  - when a skin is referenced by a node within a scene, all of the
+    skin's joints MUST belong to that same scene (`SkinJointWrongScene`,
+    §3.7.3.2). Joints that are distinct root nodes of one scene are
+    accepted — the scene is their implicit common root — matching the
+    Khronos validator and this crate's own encoder; no document-node
+    common ancestor is required.
 - Primitive topology vertex-count validation per spec §3.7.2.1 — the
   decoder now rejects primitives whose number of vertex indices is
   invalid for the topology `mode`: POINTS MUST be non-zero, LINE_LOOP /

@@ -165,8 +165,8 @@
 use crate::error::{invalid, Result};
 use crate::json_model::{
     component_size, type_components, Accessor, Animation, Buffer, BufferView, Camera, GltfRoot,
-    Mesh, COMPONENT_TYPE_FLOAT, COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_INT,
-    COMPONENT_TYPE_UNSIGNED_SHORT,
+    Mesh, Node, Scene, Skin, COMPONENT_TYPE_FLOAT, COMPONENT_TYPE_UNSIGNED_BYTE,
+    COMPONENT_TYPE_UNSIGNED_INT, COMPONENT_TYPE_UNSIGNED_SHORT,
 };
 use crate::object_model::{pointer_data_type, ObjectModelDataType};
 use std::collections::HashMap;
@@ -3220,6 +3220,215 @@ pub fn validate_nodes(nodes: &[crate::json_model::Node], animations: &[Animation
     Ok(())
 }
 
+/// Document-level skin validation per glTF 2.0 §5.28 (Skin), §3.7.3
+/// (Skins) and §5.25.3 (node.skin).
+///
+/// The MUST-level rules enforced here:
+///
+/// * **§5.28.3** — `skin.joints` MUST contain at least one element
+///   (`integer [1-*]`); every joint index MUST be a valid node index
+///   (`>= 0` and within the node array); every joint index MUST be
+///   unique within the array.
+/// * **§5.28.2** — `skin.skeleton`, when present, MUST be a valid node
+///   index.
+/// * **§5.28.1 / §3.7.3.1** — the accessor referenced by
+///   `skin.inverseBindMatrices`, when present, MUST be a valid accessor
+///   index, MUST have `"MAT4"` type with floating-point (`FLOAT`)
+///   components, MUST NOT be `normalized`, and its `count` MUST be
+///   greater than or equal to the number of `joints` elements.
+/// * **§5.25.3** — when a node defines `skin`, the skin index MUST be a
+///   valid skin index AND the node MUST also define `mesh`.
+/// * **§3.7.3.2** — when a skin is referenced by a node within a scene,
+///   all joints used by the skin MUST belong to that same scene (the
+///   common root MUST belong to the same scene). A node belongs to a
+///   scene iff its tree root is one of the scene's listed root nodes.
+///
+/// The §3.7.3.2 *common-root* SHOULD ("each skin's joints MUST have a
+/// common parent node") is intentionally **not** enforced as a
+/// document-node-ancestry MUST: the official Khronos validator (and this
+/// crate's own encoder) accept joints that are distinct root nodes of
+/// the same scene, treating the scene as the implicit common root. The
+/// scene-membership rule above captures the enforceable part. The
+/// deformation-quality SHOULDs (weight-sum renormalisation, "unused
+/// joint values SHOULD be zero") are likewise left to the reader/engine.
+pub fn validate_skins(
+    skins: &[Skin],
+    nodes: &[Node],
+    accessors: &[Accessor],
+    scenes: &[Scene],
+) -> Result<()> {
+    let node_count = nodes.len();
+    let accessor_count = accessors.len();
+
+    // Parent map for the node forest (single-parent already guaranteed
+    // by validate_nodes). `parent_of[child] = Some(parent)`.
+    let mut parent_of: Vec<Option<usize>> = vec![None; node_count];
+    for (pi, node) in nodes.iter().enumerate() {
+        for &c in &node.children {
+            let ci = c as usize;
+            if ci < node_count {
+                parent_of[ci] = Some(pi);
+            }
+        }
+    }
+    // Is `anc` an ancestor-or-self of `node`?
+    let is_ancestor_or_self = |anc: usize, node: usize| -> bool {
+        let mut cur = node;
+        let mut steps = 0usize;
+        loop {
+            if cur == anc {
+                return true;
+            }
+            match parent_of[cur] {
+                Some(p) => {
+                    cur = p;
+                    steps += 1;
+                    if steps > node_count {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
+    };
+
+    for (si, skin) in skins.iter().enumerate() {
+        // §5.28.3 — at least one joint.
+        if skin.joints.is_empty() {
+            return Err(invalid(format!(
+                "SkinJointsEmpty: skins[{si}].joints is empty — `joints` MUST contain at least \
+                 one element (spec §5.28.3)"
+            )));
+        }
+        // §5.28.3 — joint indices in range + unique.
+        let mut seen = std::collections::HashSet::with_capacity(skin.joints.len());
+        for &j in &skin.joints {
+            let ji = j as usize;
+            if ji >= node_count {
+                return Err(invalid(format!(
+                    "SkinJointIndex: skins[{si}].joints references node {j}, out of range \
+                     (document has {node_count} nodes) (spec §5.28.3)"
+                )));
+            }
+            if !seen.insert(j) {
+                return Err(invalid(format!(
+                    "SkinJointDuplicate: skins[{si}].joints lists node {j} more than once — each \
+                     element MUST be unique (spec §5.28.3)"
+                )));
+            }
+        }
+
+        // §5.28.2 — skeleton node index in range.
+        if let Some(sk) = skin.skeleton {
+            if (sk as usize) >= node_count {
+                return Err(invalid(format!(
+                    "SkinSkeletonIndex: skins[{si}].skeleton references node {sk}, out of range \
+                     (document has {node_count} nodes) (spec §5.28.2)"
+                )));
+            }
+        }
+
+        // §5.28.1 / §3.7.3.1 — inverseBindMatrices accessor format.
+        if let Some(ibm) = skin.inverse_bind_matrices {
+            let ai = ibm as usize;
+            if ai >= accessor_count {
+                return Err(invalid(format!(
+                    "SkinIbmIndex: skins[{si}].inverseBindMatrices references accessor {ibm}, out \
+                     of range (document has {accessor_count} accessors) (spec §5.28.1)"
+                )));
+            }
+            let acc = &accessors[ai];
+            if acc.kind != "MAT4" {
+                return Err(invalid(format!(
+                    "SkinIbmAccessorType: skins[{si}].inverseBindMatrices accessor {ibm} has type \
+                     {:?} — an inverse-bind-matrices accessor MUST be \"MAT4\" (spec §3.7.3.1)",
+                    acc.kind
+                )));
+            }
+            if acc.component_type != COMPONENT_TYPE_FLOAT {
+                return Err(invalid(format!(
+                    "SkinIbmAccessorComponentType: skins[{si}].inverseBindMatrices accessor {ibm} \
+                     has componentType {} — inverse-bind matrices MUST have floating-point (FLOAT, \
+                     5126) components (spec §3.7.3.1)",
+                    acc.component_type
+                )));
+            }
+            if acc.normalized {
+                return Err(invalid(format!(
+                    "SkinIbmAccessorNormalized: skins[{si}].inverseBindMatrices accessor {ibm} is \
+                     `normalized` — inverse-bind matrices are floating-point and MUST NOT be \
+                     normalized (spec §3.7.3.1)"
+                )));
+            }
+            if (acc.count as usize) < skin.joints.len() {
+                return Err(invalid(format!(
+                    "SkinIbmCount: skins[{si}].inverseBindMatrices accessor {ibm} has count {} but \
+                     the skin lists {} joints — the accessor count MUST be >= the number of joints \
+                     (spec §5.28.1)",
+                    acc.count,
+                    skin.joints.len()
+                )));
+            }
+        }
+    }
+
+    // §5.25.3 — node.skin coupling.
+    for (ni, node) in nodes.iter().enumerate() {
+        if let Some(s) = node.skin {
+            if (s as usize) >= skins.len() {
+                return Err(invalid(format!(
+                    "NodeSkinIndex: nodes[{ni}].skin references skin {s}, out of range (document \
+                     has {} skins) (spec §5.25.3)",
+                    skins.len()
+                )));
+            }
+            if node.mesh.is_none() {
+                return Err(invalid(format!(
+                    "NodeSkinWithoutMesh: nodes[{ni}] defines `skin` but no `mesh` — when `skin` \
+                     is defined, `mesh` MUST also be defined (spec §5.25.3)"
+                )));
+            }
+            // §3.7.3.2 — when a skin is referenced by a node within a
+            // scene, all joints used by the skin MUST belong to the same
+            // scene (the common root MUST belong to the same scene). A
+            // node belongs to a scene iff its tree root is one of the
+            // scene's root nodes.
+            let skin = &skins[s as usize];
+            // Find the scene(s) that (transitively) contain `ni`.
+            for (sci, scene) in scenes.iter().enumerate() {
+                let mut node_in_scene = false;
+                for &sr in &scene.nodes {
+                    if (sr as usize) < node_count && is_ancestor_or_self(sr as usize, ni) {
+                        node_in_scene = true;
+                        break;
+                    }
+                }
+                if !node_in_scene {
+                    continue;
+                }
+                // The skinned node is in this scene → every joint MUST be
+                // reachable from one of this scene's roots.
+                for &j in &skin.joints {
+                    let ji = j as usize;
+                    let joint_in_scene = scene.nodes.iter().any(|&sr| {
+                        (sr as usize) < node_count && is_ancestor_or_self(sr as usize, ji)
+                    });
+                    if !joint_in_scene {
+                        return Err(invalid(format!(
+                            "SkinJointWrongScene: nodes[{ni}] (in scenes[{sci}]) references \
+                             skins[{s}] whose joint node {j} does not belong to scenes[{sci}] — \
+                             all joints used by a skin referenced within a scene MUST belong to \
+                             that scene (spec §3.7.3.2)"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5439,5 +5648,78 @@ mod tests {
         let mut a = bare_accessor(COMPONENT_TYPE_FLOAT, 1, "WEIRD");
         a.min = Some(vec![0.0, 0.0]);
         validate_accessors(&[a]).unwrap();
+    }
+
+    // --- §5.28 + §3.7.3 + §5.25.3 skin validation ---
+
+    use crate::json_model::{Scene, Skin};
+
+    /// `n` nodes laid out as a single chain 0 -> 1 -> ... -> n-1 (each
+    /// node parents the next), so any subset of them shares root node 0.
+    fn chain_nodes(n: usize) -> Vec<Node> {
+        let mut nodes = vec![Node::default(); n];
+        for (i, node) in nodes.iter_mut().enumerate().take(n.saturating_sub(1)) {
+            node.children = vec![(i + 1) as u32];
+        }
+        nodes
+    }
+
+    fn one_scene(roots: &[u32]) -> Vec<Scene> {
+        vec![Scene {
+            nodes: roots.to_vec(),
+            ..Default::default()
+        }]
+    }
+
+    #[test]
+    fn skin_ibm_normalized_rejected() {
+        // A MAT4 IBM accessor that is `normalized` — defence-in-depth
+        // branch unreachable via the end-to-end path (FLOAT+normalized
+        // is caught earlier), exercised directly here.
+        let nodes = chain_nodes(2);
+        let mut acc = bare_accessor(COMPONENT_TYPE_FLOAT, 2, "MAT4");
+        acc.normalized = true;
+        let skin = Skin {
+            inverse_bind_matrices: Some(0),
+            joints: vec![0, 1],
+            ..Default::default()
+        };
+        let err = validate_skins(&[skin], &nodes, &[acc], &one_scene(&[0])).unwrap_err();
+        assert!(format!("{err}").contains("SkinIbmAccessorNormalized"));
+    }
+
+    #[test]
+    fn skin_well_formed_chain_passes() {
+        let nodes = chain_nodes(3);
+        let acc = bare_accessor(COMPONENT_TYPE_FLOAT, 3, "MAT4");
+        let skin = Skin {
+            inverse_bind_matrices: Some(0),
+            skeleton: Some(0),
+            joints: vec![0, 1, 2],
+            ..Default::default()
+        };
+        validate_skins(&[skin], &nodes, &[acc], &one_scene(&[0])).unwrap();
+    }
+
+    #[test]
+    fn skin_joints_empty_rejected_unit() {
+        let skin = Skin {
+            joints: vec![],
+            ..Default::default()
+        };
+        let err = validate_skins(&[skin], &chain_nodes(1), &[], &one_scene(&[0])).unwrap_err();
+        assert!(format!("{err}").contains("SkinJointsEmpty"));
+    }
+
+    #[test]
+    fn skin_no_ibm_is_optional() {
+        // inverseBindMatrices is OPTIONAL (§5.28.1); a skin without it
+        // and without a skeleton is valid.
+        let nodes = chain_nodes(2);
+        let skin = Skin {
+            joints: vec![0, 1],
+            ..Default::default()
+        };
+        validate_skins(&[skin], &nodes, &[], &one_scene(&[0])).unwrap();
     }
 }
