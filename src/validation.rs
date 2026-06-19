@@ -165,7 +165,7 @@
 use crate::error::{invalid, Result};
 use crate::json_model::{
     component_size, type_components, Accessor, Animation, Buffer, BufferView, Camera, GltfRoot,
-    Mesh, Node, Scene, Skin, COMPONENT_TYPE_FLOAT, COMPONENT_TYPE_UNSIGNED_BYTE,
+    Material, Mesh, Node, Scene, Skin, Texture, COMPONENT_TYPE_FLOAT, COMPONENT_TYPE_UNSIGNED_BYTE,
     COMPONENT_TYPE_UNSIGNED_INT, COMPONENT_TYPE_UNSIGNED_SHORT,
 };
 use crate::object_model::{pointer_data_type, ObjectModelDataType};
@@ -3429,6 +3429,91 @@ pub fn validate_skins(
     Ok(())
 }
 
+/// Document-level texture-reference validation per glTF 2.0 §5.29
+/// (Texture), §5.30 (Texture Info) and §5.22 (Material PBR Metallic
+/// Roughness).
+///
+/// Every index a texture or material carries into another top-level
+/// array MUST resolve to a real entry. The structs already pin the
+/// indices to `u32` (so the `>= 0` minimum is automatic); the missing
+/// MUST is the upper bound. Enforced here:
+///
+/// * **§5.29.1** — `texture.source`, when present, MUST be a valid index
+///   into `images[]` (`TextureSourceIndex`).
+/// * **§5.29.2** — `texture.sampler`, when present, MUST be a valid index
+///   into `samplers[]` (`TextureSamplerIndex`).
+/// * **§5.30.1** — every material `textureInfo.index` (across
+///   `pbrMetallicRoughness.baseColorTexture` /
+///   `metallicRoughnessTexture`, `normalTexture`, `occlusionTexture`,
+///   `emissiveTexture`) MUST be a valid index into `textures[]`
+///   (`MaterialTextureIndex`).
+///
+/// The `KHR_texture_basisu` per-texture `source` indirection has its own
+/// in-range check in `validate_extension_stack`; this pass covers the
+/// core (non-extension) references only.
+pub fn validate_textures(
+    textures: &[Texture],
+    images: &[crate::json_model::Image],
+    samplers: &[crate::json_model::Sampler],
+    materials: &[Material],
+) -> Result<()> {
+    let image_count = images.len();
+    let sampler_count = samplers.len();
+    let texture_count = textures.len();
+
+    for (ti, tex) in textures.iter().enumerate() {
+        if let Some(src) = tex.source {
+            if (src as usize) >= image_count {
+                return Err(invalid(format!(
+                    "TextureSourceIndex: textures[{ti}].source = {src} is out of range (document \
+                     has {image_count} images) (spec §5.29.1)"
+                )));
+            }
+        }
+        if let Some(samp) = tex.sampler {
+            if (samp as usize) >= sampler_count {
+                return Err(invalid(format!(
+                    "TextureSamplerIndex: textures[{ti}].sampler = {samp} is out of range (document \
+                     has {sampler_count} samplers) (spec §5.29.2)"
+                )));
+            }
+        }
+    }
+
+    for (mi, mat) in materials.iter().enumerate() {
+        // Collect every core textureInfo.index this material references,
+        // each with a spec-named slot for the diagnostic.
+        let mut refs: Vec<(&str, u32)> = Vec::new();
+        if let Some(pbr) = &mat.pbr_metallic_roughness {
+            if let Some(ti) = &pbr.base_color_texture {
+                refs.push(("pbrMetallicRoughness.baseColorTexture", ti.index));
+            }
+            if let Some(ti) = &pbr.metallic_roughness_texture {
+                refs.push(("pbrMetallicRoughness.metallicRoughnessTexture", ti.index));
+            }
+        }
+        if let Some(ti) = &mat.normal_texture {
+            refs.push(("normalTexture", ti.index));
+        }
+        if let Some(ti) = &mat.occlusion_texture {
+            refs.push(("occlusionTexture", ti.index));
+        }
+        if let Some(ti) = &mat.emissive_texture {
+            refs.push(("emissiveTexture", ti.index));
+        }
+        for (slot, idx) in refs {
+            if (idx as usize) >= texture_count {
+                return Err(invalid(format!(
+                    "MaterialTextureIndex: materials[{mi}].{slot}.index = {idx} is out of range \
+                     (document has {texture_count} textures) (spec §5.30.1)"
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5721,5 +5806,72 @@ mod tests {
             ..Default::default()
         };
         validate_skins(&[skin], &nodes, &[], &one_scene(&[0])).unwrap();
+    }
+
+    // --- §5.29 + §5.30 texture / material reference validation ---
+
+    use crate::json_model::{Image, PbrMetallicRoughness, Texture as JmTexture};
+
+    #[test]
+    fn texture_source_out_of_range_rejected_unit() {
+        let tex = JmTexture {
+            source: Some(0),
+            ..Default::default()
+        };
+        let err = validate_textures(&[tex], &[], &[], &[]).unwrap_err();
+        assert!(format!("{err}").contains("TextureSourceIndex"));
+    }
+
+    #[test]
+    fn texture_sampler_out_of_range_rejected_unit() {
+        let tex = JmTexture {
+            source: Some(0),
+            sampler: Some(1),
+            ..Default::default()
+        };
+        let images = vec![Image::default()];
+        let err = validate_textures(&[tex], &images, &[], &[]).unwrap_err();
+        assert!(format!("{err}").contains("TextureSamplerIndex"));
+    }
+
+    #[test]
+    fn material_texture_index_out_of_range_rejected_unit() {
+        let mat = Material {
+            pbr_metallic_roughness: Some(PbrMetallicRoughness {
+                base_color_texture: Some(crate::json_model::TextureInfo {
+                    index: 5,
+                    tex_coord: None,
+                    extensions: None,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // No textures declared → index 5 is out of range.
+        let err = validate_textures(&[], &[], &[], &[mat]).unwrap_err();
+        assert!(format!("{err}").contains("MaterialTextureIndex"));
+    }
+
+    #[test]
+    fn well_formed_texture_references_pass_unit() {
+        let images = vec![Image::default()];
+        let samplers = vec![Sampler::default()];
+        let tex = JmTexture {
+            source: Some(0),
+            sampler: Some(0),
+            ..Default::default()
+        };
+        let mat = Material {
+            pbr_metallic_roughness: Some(PbrMetallicRoughness {
+                base_color_texture: Some(crate::json_model::TextureInfo {
+                    index: 0,
+                    tex_coord: None,
+                    extensions: None,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        validate_textures(&[tex], &images, &samplers, &[mat]).unwrap();
     }
 }

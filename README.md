@@ -808,6 +808,19 @@ framework but usable standalone.
   enforced as a document-node-ancestry MUST — joints that are distinct
   scene roots are accepted (the scene is their implicit common root),
   matching the Khronos validator and this crate's encoder
+- Texture / material reference validation per spec §5.29 + §5.30 + §5.22
+  — the `validate_textures` pass (run after `validate_skins`) policies
+  the index-resolution MUSTs the decoder parsed but never enforced. The
+  field types already pin the `>= 0` minimum; the missing rule is the
+  upper bound: `texture.source` MUST resolve into `images[]`
+  (`TextureSourceIndex`, §5.29.1); `texture.sampler` MUST resolve into
+  `samplers[]` (`TextureSamplerIndex`, §5.29.2); and every core material
+  `textureInfo.index` — across `pbrMetallicRoughness.baseColorTexture` /
+  `metallicRoughnessTexture`, `normalTexture`, `occlusionTexture`,
+  `emissiveTexture` — MUST resolve into `textures[]`
+  (`MaterialTextureIndex`, §5.30.1, naming the offending slot). The
+  `KHR_texture_basisu` per-texture `source` indirection keeps its own
+  in-range check in `validate_extension_stack`
 - Texture-sampler filter / wrap validation per spec §5.26 — every
   `samplers[i]` entry is checked before conversion against the closed
   enum sets in §5.26.1–§5.26.4: `magFilter`, when present, MUST be

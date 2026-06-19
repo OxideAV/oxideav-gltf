@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Texture / material reference validation per spec §5.29 (Texture) +
+  §5.30 (Texture Info) + §5.22 (Material PBR Metallic Roughness) — the
+  new `validate_textures` pass (run after `validate_skins`) policies the
+  index-resolution MUSTs the decoder parsed but never enforced. Field
+  types already pin the `>= 0` minimum; the missing rule is the upper
+  bound: `texture.source` MUST resolve into `images[]`
+  (`TextureSourceIndex`, §5.29.1); `texture.sampler` MUST resolve into
+  `samplers[]` (`TextureSamplerIndex`, §5.29.2); and every core material
+  `textureInfo.index` — across `pbrMetallicRoughness.baseColorTexture` /
+  `metallicRoughnessTexture`, `normalTexture`, `occlusionTexture`,
+  `emissiveTexture` — MUST resolve into `textures[]`
+  (`MaterialTextureIndex`, §5.30.1, with the offending slot named in the
+  diagnostic). The `KHR_texture_basisu` per-texture `source` indirection
+  keeps its own in-range check in `validate_extension_stack`.
 - Skin-roster validation per spec §5.28 (Skin) + §3.7.3 (Skins) +
   §5.25.3 (node.skin) — the new `validate_skins` pass, wired into
   `convert()` after `validate_nodes`, enforces the document-level MUSTs

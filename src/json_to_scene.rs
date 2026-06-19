@@ -40,7 +40,7 @@ use crate::validation::{
     validate_cameras, validate_color0_range, validate_extension_stack, validate_index_no_restart,
     validate_index_value_bound, validate_nodes, validate_primitive_index_count, validate_samplers,
     validate_skins, validate_sparse_indices_buffer_views, validate_sparse_values_buffer_views,
-    validate_tangent_w,
+    validate_tangent_w, validate_textures,
 };
 
 /// Decode a parsed [`GltfRoot`] into a [`Scene3D`], using `glb_bin`
@@ -122,6 +122,17 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
     // node.skin references a valid skin AND a mesh-bearing node, and a
     // skin referenced within a scene has all its joints in that scene.
     validate_skins(&root.skins, &root.nodes, &root.accessors, &root.scenes)?;
+
+    // Spec §5.29 + §5.30 — every core texture / material reference into
+    // another top-level array MUST resolve: texture.source → images,
+    // texture.sampler → samplers, and every material textureInfo.index →
+    // textures.
+    validate_textures(
+        &root.textures,
+        &root.images,
+        &root.samplers,
+        &root.materials,
+    )?;
 
     let mut buffers = resolve_buffers(root, glb_bin)?;
     // `KHR_meshopt_compression` inflate pass — per
