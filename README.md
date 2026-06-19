@@ -806,8 +806,9 @@ framework but usable standalone.
   by a node within a scene MUST have all of its joints in that same scene
   (`SkinJointWrongScene`). The §3.7.3.2 *common-root* SHOULD is not
   enforced as a document-node-ancestry MUST — joints that are distinct
-  scene roots are accepted (the scene is their implicit common root),
-  matching the Khronos validator and this crate's encoder
+  scene roots are accepted (the scene is their implicit common root,
+  which the spec explicitly permits to be a node that "may or may not be
+  a joint node itself", and which this crate's encoder emits)
 - Texture / material reference validation per spec §5.29 + §5.30 + §5.22
   — the `validate_textures` pass (run after `validate_skins`) policies
   the index-resolution MUSTs the decoder parsed but never enforced. The

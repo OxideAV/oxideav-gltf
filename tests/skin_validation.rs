@@ -195,9 +195,10 @@ fn ibm_well_formed_passes() {
 #[test]
 fn joints_as_disjoint_scene_roots_pass() {
     // node 0 and node 1 are two disjoint roots, both in scenes[0]. The
-    // official validator (and this crate's encoder) accept joints that
-    // are distinct scene roots — the scene is their implicit common
-    // root. No document-node common ancestor is required.
+    // spec allows the common root to be a node that "may or may not be a
+    // joint node itself", and this crate's encoder emits joints that are
+    // distinct scene roots — the scene is their implicit common root. No
+    // document-node common ancestor is required.
     decode_ok(r#"{ "joints": [0, 1] }"#, r#"{}, {}"#, "", "0, 1");
 }
 

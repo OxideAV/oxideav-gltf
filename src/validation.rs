@@ -3243,14 +3243,16 @@ pub fn validate_nodes(nodes: &[crate::json_model::Node], animations: &[Animation
 ///   common root MUST belong to the same scene). A node belongs to a
 ///   scene iff its tree root is one of the scene's listed root nodes.
 ///
-/// The §3.7.3.2 *common-root* SHOULD ("each skin's joints MUST have a
-/// common parent node") is intentionally **not** enforced as a
-/// document-node-ancestry MUST: the official Khronos validator (and this
-/// crate's own encoder) accept joints that are distinct root nodes of
-/// the same scene, treating the scene as the implicit common root. The
-/// scene-membership rule above captures the enforceable part. The
-/// deformation-quality SHOULDs (weight-sum renormalisation, "unused
-/// joint values SHOULD be zero") are likewise left to the reader/engine.
+/// The §3.7.3.2 *common-root* clause ("each skin's joints MUST have a
+/// common parent node ... which may or may not be a joint node itself")
+/// is intentionally **not** enforced as a document-node-ancestry MUST:
+/// the spec explicitly allows the common root to be a node that "may or
+/// may not be a joint node itself", and this crate's own encoder emits
+/// skins whose joints are distinct scene-root nodes (the scene is their
+/// implicit common root). The enforceable part is the scene-membership
+/// rule above. The deformation-quality SHOULDs (weight-sum
+/// renormalisation, "unused joint values SHOULD be zero") are likewise
+/// left to the reader/engine.
 pub fn validate_skins(
     skins: &[Skin],
     nodes: &[Node],

@@ -45,8 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - when a skin is referenced by a node within a scene, all of the
     skin's joints MUST belong to that same scene (`SkinJointWrongScene`,
     §3.7.3.2). Joints that are distinct root nodes of one scene are
-    accepted — the scene is their implicit common root — matching the
-    Khronos validator and this crate's own encoder; no document-node
+    accepted — the scene is their implicit common root, which the spec
+    explicitly allows to be a node that "may or may not be a joint node
+    itself", and which this crate's own encoder emits; no document-node
     common ancestor is required.
 - Primitive topology vertex-count validation per spec §3.7.2.1 — the
   decoder now rejects primitives whose number of vertex indices is
