@@ -341,6 +341,61 @@ fn transform_nested_in_specular_texture_roundtrips_and_declares_extension() {
 }
 
 #[test]
+fn transform_nested_in_clearcoat_normal_texture_roundtrips() {
+    // clearcoatNormalTexture is a `normalTextureInfo` (it carries an
+    // optional `scale`), so it travels the encoder's
+    // `normal_texture_info_from_value` re-emission path rather than the
+    // plain textureInfo one — exercise that the nested transform AND the
+    // `scale` both survive the glb round-trip and the extension is
+    // declared.
+    let mut scene = Scene3D::new();
+    scene.add_texture(dummy_texture());
+    let mut mat = Material::new();
+    mat.extras.insert(
+        "KHR_materials_clearcoat".to_owned(),
+        serde_json::json!({
+            "clearcoatFactor": 1.0,
+            "clearcoatNormalTexture": {
+                "index": 0,
+                "scale": 0.75,
+                "extensions": {
+                    "KHR_texture_transform": { "scale": [3.0, 3.0] }
+                }
+            }
+        }),
+    );
+    scene.add_material(mat);
+
+    let glb = GltfEncoder::new().encode(&scene).unwrap();
+    let raw_bytes = extract_json_chunk(&glb);
+    let raw = std::str::from_utf8(&raw_bytes).unwrap();
+    assert!(
+        raw.contains("\"KHR_texture_transform\""),
+        "nested transform on clearcoatNormalTexture triggers the declaration, got: {raw}"
+    );
+
+    let decoded = GltfDecoder::new().decode(&glb).unwrap();
+    let cc = decoded.materials[0]
+        .extras
+        .get("KHR_materials_clearcoat")
+        .and_then(|v| v.as_object())
+        .expect("clearcoat block present");
+    let nt = cc
+        .get("clearcoatNormalTexture")
+        .and_then(|v| v.as_object())
+        .expect("clearcoatNormalTexture present");
+    assert!((nt.get("scale").and_then(|v| v.as_f64()).unwrap() - 0.75).abs() < 1e-6);
+    let tt = nt
+        .get("extensions")
+        .and_then(|v| v.get("KHR_texture_transform"))
+        .and_then(|v| v.get("scale"))
+        .and_then(|v| v.as_array())
+        .expect("nested transform scale survives the normalTextureInfo path");
+    assert!((tt[0].as_f64().unwrap() - 3.0).abs() < 1e-6);
+    assert!((tt[1].as_f64().unwrap() - 3.0).abs() < 1e-6);
+}
+
+#[test]
 fn transform_nested_in_extension_slot_without_extensions_used_is_rejected() {
     // KHR_texture_transform appears ONLY inside
     // KHR_materials_clearcoat.clearcoatTexture, and KHR_texture_transform
