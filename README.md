@@ -241,9 +241,34 @@ framework but usable standalone.
   `{}` resolves to the spec defaults `offset = [0, 0]`, `rotation = 0`,
   `scale = [1, 1]` (materialised at use time). The encoder lifts each
   slot's transform back into the typed textureInfo extensions block and
-  appends `KHR_texture_transform` to `extensionsUsed`. The §3.12 stack
-  validator rejects textureInfos carrying the data block without the
-  declaration (`ExtensionStackUsedNotDeclared`)
+  appends `KHR_texture_transform` to `extensionsUsed`. Per the spec the
+  transform "may be defined on `textureInfo` structures" — **any**
+  textureInfo, not just the five core PBR slots — so the transform also
+  rides every textureInfo nested inside a material extension
+  (`KHR_materials_specular.specularTexture` /
+  `specularColorTexture`, `KHR_materials_clearcoat.clearcoatTexture` /
+  `clearcoatRoughnessTexture` / `clearcoatNormalTexture`,
+  `KHR_materials_sheen.sheenColorTexture` / `sheenRoughnessTexture`,
+  `KHR_materials_transmission.transmissionTexture`,
+  `KHR_materials_volume.thicknessTexture`,
+  `KHR_materials_iridescence.iridescenceTexture` /
+  `iridescenceThicknessTexture`,
+  `KHR_materials_anisotropy.anisotropyTexture`,
+  `KHR_materials_diffuse_transmission.diffuseTransmissionTexture` /
+  `diffuseTransmissionColorTexture`) — these ride through verbatim
+  inside the material-extension `extras` object, and the encoder now
+  declares `KHR_texture_transform` in `extensionsUsed` when a nested
+  transform is present (a single exhaustive walk,
+  `material_texture_transforms`, is shared between the decode-side
+  §3.12 validator and the encoder's declaration scan). The §3.12 stack
+  validator rejects any textureInfo — core PBR slot OR material-extension
+  slot — carrying the data block without the declaration
+  (`ExtensionStackUsedNotDeclared`), and enforces the §Overview affine
+  finiteness MUSTs on every transform: a non-finite `rotation`
+  (`ExtensionStackTextureTransformRotationFinite`), `offset` component
+  (`ExtensionStackTextureTransformOffsetFinite`), or `scale` component
+  (`ExtensionStackTextureTransformScaleFinite`) is rejected because it
+  would make the UV `mat3` non-finite
 - KHR_node_visibility extension (Khronos ratified) — per-node Boolean
   `visible` flag from `docs/3d/gltf/extensions/KHR_node_visibility.md`.
   The decoder lifts the JSON `nodes[i].extensions.KHR_node_visibility.visible`

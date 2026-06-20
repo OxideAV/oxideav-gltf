@@ -1188,37 +1188,26 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         }
     }
 
-    // KHR_texture_transform — per-textureInfo extension. Same §3.12 rule:
-    // the extension MUST be declared in `extensionsUsed` if any
-    // textureInfo carries the data block. The block may appear on any of
-    // the five core PBR textureInfo slots (`baseColorTexture`,
-    // `metallicRoughnessTexture`, `normalTexture`, `occlusionTexture`,
-    // `emissiveTexture`) per `docs/3d/gltf/extensions/
-    // KHR_texture_transform.md` §glTF Schema Updates.
-    let has_texture_transform = root.materials.iter().any(|m| {
-        let pbr_hit = m
-            .pbr_metallic_roughness
-            .as_ref()
-            .map(|p| {
-                texture_info_has_transform(p.base_color_texture.as_ref())
-                    || texture_info_has_transform(p.metallic_roughness_texture.as_ref())
-            })
-            .unwrap_or(false);
-        let normal_hit = m
-            .normal_texture
-            .as_ref()
-            .and_then(|t| t.extensions.as_ref())
-            .and_then(|e| e.khr_texture_transform.as_ref())
-            .is_some();
-        let occlusion_hit = m
-            .occlusion_texture
-            .as_ref()
-            .and_then(|t| t.extensions.as_ref())
-            .and_then(|e| e.khr_texture_transform.as_ref())
-            .is_some();
-        let emissive_hit = texture_info_has_transform(m.emissive_texture.as_ref());
-        pbr_hit || normal_hit || occlusion_hit || emissive_hit
-    });
+    // KHR_texture_transform — per-textureInfo extension. Per
+    // `docs/3d/gltf/extensions/KHR_texture_transform.md` §glTF Schema
+    // Updates the extension "may be defined on `textureInfo`
+    // structures" — *any* textureInfo, not just the five core PBR
+    // slots. So the §3.12 rule (the extension MUST be declared in
+    // `extensionsUsed` if any textureInfo carries the data block) and
+    // the finite-value MUSTs apply to the core PBR slots AND every
+    // textureInfo nested inside a material extension
+    // (`KHR_materials_specular.specularTexture`,
+    // `KHR_materials_clearcoat.clearcoatNormalTexture`, …) — see
+    // `material_texture_transforms`.
+    let mut has_texture_transform = false;
+    for (mat_idx, m) in root.materials.iter().enumerate() {
+        for (slot, t) in material_texture_transforms(m) {
+            has_texture_transform = true;
+            // Finite-value MUSTs are slot-local and independent of the
+            // declaration, so check them as we walk.
+            validate_texture_transform(mat_idx, &slot, t)?;
+        }
+    }
     if has_texture_transform && !used("KHR_texture_transform") {
         return Err(invalid(
             "ExtensionStackUsedNotDeclared: KHR_texture_transform data is \
@@ -2273,10 +2262,182 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
     Ok(())
 }
 
-fn texture_info_has_transform(t: Option<&crate::json_model::TextureInfo>) -> bool {
-    t.and_then(|t| t.extensions.as_ref())
+/// Collect every `KHR_texture_transform` block carried by any
+/// `textureInfo` of one material — the five core PBR slots AND every
+/// textureInfo nested inside a material extension
+/// (`KHR_materials_specular.specularTexture`,
+/// `KHR_materials_clearcoat.clearcoatNormalTexture`, …). Each yielded
+/// entry pairs a human-readable slot label (for diagnostics) with a
+/// reference to the parsed transform.
+///
+/// Per `docs/3d/gltf/extensions/KHR_texture_transform.md` §glTF Schema
+/// Updates the extension "may be defined on `textureInfo` structures" —
+/// **any** textureInfo, not just the core PBR ones — so the §3.12
+/// extension-stack rule and the finite-value checks below must reach
+/// the material-extension texture slots too.
+pub(crate) fn material_texture_transforms(
+    m: &crate::json_model::Material,
+) -> Vec<(String, &crate::json_model::TextureTransform)> {
+    use crate::json_model::{NormalTextureInfo, TextureInfo, TextureTransform};
+
+    // A `textureInfo` and a `normalTextureInfo` carry the same
+    // `extensions` block; these free helpers reach the optional
+    // `KHR_texture_transform` on either and label it with its slot.
+    fn ti<'a>(slot: &str, info: Option<&'a TextureInfo>) -> Option<(String, &'a TextureTransform)> {
+        info.and_then(|i| i.extensions.as_ref())
+            .and_then(|e| e.khr_texture_transform.as_ref())
+            .map(|t| (slot.to_owned(), t))
+    }
+    fn nti<'a>(
+        slot: &str,
+        info: Option<&'a NormalTextureInfo>,
+    ) -> Option<(String, &'a TextureTransform)> {
+        info.and_then(|i| i.extensions.as_ref())
+            .and_then(|e| e.khr_texture_transform.as_ref())
+            .map(|t| (slot.to_owned(), t))
+    }
+
+    let mut out: Vec<(String, &TextureTransform)> = Vec::new();
+
+    // Core PBR slots (§3.9 material).
+    if let Some(p) = m.pbr_metallic_roughness.as_ref() {
+        out.extend(ti("baseColorTexture", p.base_color_texture.as_ref()));
+        out.extend(ti(
+            "metallicRoughnessTexture",
+            p.metallic_roughness_texture.as_ref(),
+        ));
+    }
+    out.extend(nti("normalTexture", m.normal_texture.as_ref()));
+    if let Some(t) = m
+        .occlusion_texture
+        .as_ref()
+        .and_then(|t| t.extensions.as_ref())
         .and_then(|e| e.khr_texture_transform.as_ref())
-        .is_some()
+    {
+        out.push(("occlusionTexture".to_owned(), t));
+    }
+    out.extend(ti("emissiveTexture", m.emissive_texture.as_ref()));
+
+    // Material-extension texture slots — per the spec the transform may
+    // ride any of these textureInfos.
+    if let Some(ext) = m.extensions.as_ref() {
+        if let Some(s) = ext.khr_materials_specular.as_ref() {
+            out.extend(ti(
+                "KHR_materials_specular.specularTexture",
+                s.specular_texture.as_ref(),
+            ));
+            out.extend(ti(
+                "KHR_materials_specular.specularColorTexture",
+                s.specular_color_texture.as_ref(),
+            ));
+        }
+        if let Some(c) = ext.khr_materials_clearcoat.as_ref() {
+            out.extend(ti(
+                "KHR_materials_clearcoat.clearcoatTexture",
+                c.clearcoat_texture.as_ref(),
+            ));
+            out.extend(ti(
+                "KHR_materials_clearcoat.clearcoatRoughnessTexture",
+                c.clearcoat_roughness_texture.as_ref(),
+            ));
+            out.extend(nti(
+                "KHR_materials_clearcoat.clearcoatNormalTexture",
+                c.clearcoat_normal_texture.as_ref(),
+            ));
+        }
+        if let Some(s) = ext.khr_materials_sheen.as_ref() {
+            out.extend(ti(
+                "KHR_materials_sheen.sheenColorTexture",
+                s.sheen_color_texture.as_ref(),
+            ));
+            out.extend(ti(
+                "KHR_materials_sheen.sheenRoughnessTexture",
+                s.sheen_roughness_texture.as_ref(),
+            ));
+        }
+        if let Some(t) = ext.khr_materials_transmission.as_ref() {
+            out.extend(ti(
+                "KHR_materials_transmission.transmissionTexture",
+                t.transmission_texture.as_ref(),
+            ));
+        }
+        if let Some(v) = ext.khr_materials_volume.as_ref() {
+            out.extend(ti(
+                "KHR_materials_volume.thicknessTexture",
+                v.thickness_texture.as_ref(),
+            ));
+        }
+        if let Some(i) = ext.khr_materials_iridescence.as_ref() {
+            out.extend(ti(
+                "KHR_materials_iridescence.iridescenceTexture",
+                i.iridescence_texture.as_ref(),
+            ));
+            out.extend(ti(
+                "KHR_materials_iridescence.iridescenceThicknessTexture",
+                i.iridescence_thickness_texture.as_ref(),
+            ));
+        }
+        if let Some(a) = ext.khr_materials_anisotropy.as_ref() {
+            out.extend(ti(
+                "KHR_materials_anisotropy.anisotropyTexture",
+                a.anisotropy_texture.as_ref(),
+            ));
+        }
+        if let Some(d) = ext.khr_materials_diffuse_transmission.as_ref() {
+            out.extend(ti(
+                "KHR_materials_diffuse_transmission.diffuseTransmissionTexture",
+                d.diffuse_transmission_texture.as_ref(),
+            ));
+            out.extend(ti(
+                "KHR_materials_diffuse_transmission.diffuseTransmissionColorTexture",
+                d.diffuse_transmission_color_texture.as_ref(),
+            ));
+        }
+    }
+
+    out
+}
+
+/// Spec validation for one `KHR_texture_transform` block. The schema
+/// fields (`offset` / `scale` as `array[2]`, `texCoord` as a
+/// non-negative integer) are already pinned by their typed
+/// representation, so the only runtime-checkable MUST left is
+/// finiteness: a NaN / ±∞ `rotation`, `offset`, or `scale` would make
+/// the affine UV `mat3` (§Overview) non-finite, mapping every sampled
+/// texel to an undefined coordinate. Reject those.
+fn validate_texture_transform(
+    mat_idx: usize,
+    slot: &str,
+    t: &crate::json_model::TextureTransform,
+) -> Result<()> {
+    if let Some(r) = t.rotation {
+        if !r.is_finite() {
+            return Err(invalid(format!(
+                "ExtensionStackTextureTransformRotationFinite: materials[{mat_idx}] \
+                 {slot} KHR_texture_transform.rotation = {r} is not finite \
+                 (spec §Overview affine UV transform)"
+            )));
+        }
+    }
+    if let Some(o) = t.offset {
+        if !o[0].is_finite() || !o[1].is_finite() {
+            return Err(invalid(format!(
+                "ExtensionStackTextureTransformOffsetFinite: materials[{mat_idx}] \
+                 {slot} KHR_texture_transform.offset = {o:?} has a non-finite \
+                 component (spec §Overview affine UV transform)"
+            )));
+        }
+    }
+    if let Some(s) = t.scale {
+        if !s[0].is_finite() || !s[1].is_finite() {
+            return Err(invalid(format!(
+                "ExtensionStackTextureTransformScaleFinite: materials[{mat_idx}] \
+                 {slot} KHR_texture_transform.scale = {s:?} has a non-finite \
+                 component (spec §Overview affine UV transform)"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Spec §3.11: every animation channel must point at a known
@@ -5875,5 +6036,95 @@ mod tests {
             ..Default::default()
         };
         validate_textures(&[tex], &images, &samplers, &[mat]).unwrap();
+    }
+
+    #[test]
+    fn texture_transform_non_finite_rotation_rejected() {
+        use crate::json_model::TextureTransform;
+        let t = TextureTransform {
+            offset: None,
+            rotation: Some(f32::NAN),
+            scale: None,
+            tex_coord: None,
+        };
+        let err = validate_texture_transform(0, "emissiveTexture", &t).unwrap_err();
+        assert!(
+            format!("{err}").contains("ExtensionStackTextureTransformRotationFinite"),
+            "NaN rotation rejected, got {err}"
+        );
+        let t = TextureTransform {
+            rotation: Some(f32::INFINITY),
+            ..t
+        };
+        let err = validate_texture_transform(0, "emissiveTexture", &t).unwrap_err();
+        assert!(format!("{err}").contains("ExtensionStackTextureTransformRotationFinite"));
+    }
+
+    #[test]
+    fn texture_transform_non_finite_offset_scale_rejected() {
+        use crate::json_model::TextureTransform;
+        let t = TextureTransform {
+            offset: Some([f32::INFINITY, 0.0]),
+            rotation: None,
+            scale: None,
+            tex_coord: None,
+        };
+        let err = validate_texture_transform(2, "KHR_materials_specular.specularTexture", &t)
+            .unwrap_err();
+        assert!(format!("{err}").contains("ExtensionStackTextureTransformOffsetFinite"));
+        let t = TextureTransform {
+            offset: None,
+            scale: Some([0.0, f32::NAN]),
+            ..t
+        };
+        let err = validate_texture_transform(2, "KHR_materials_specular.specularTexture", &t)
+            .unwrap_err();
+        assert!(format!("{err}").contains("ExtensionStackTextureTransformScaleFinite"));
+    }
+
+    #[test]
+    fn texture_transform_finite_values_accepted() {
+        use crate::json_model::TextureTransform;
+        let t = TextureTransform {
+            offset: Some([0.1, 0.2]),
+            rotation: Some(1.0e30),
+            scale: Some([2.0, -1.0]),
+            tex_coord: Some(1),
+        };
+        validate_texture_transform(0, "emissiveTexture", &t).unwrap();
+    }
+
+    #[test]
+    fn material_texture_transforms_walks_extension_slots() {
+        use crate::json_model::{
+            Material, MaterialExtensions, MaterialSpecular, TextureInfo, TextureInfoExtensions,
+            TextureTransform,
+        };
+        let mat = Material {
+            extensions: Some(MaterialExtensions {
+                khr_materials_specular: Some(MaterialSpecular {
+                    specular_factor: None,
+                    specular_texture: Some(TextureInfo {
+                        index: 0,
+                        tex_coord: None,
+                        extensions: Some(TextureInfoExtensions {
+                            khr_texture_transform: Some(TextureTransform {
+                                offset: Some([0.5, 0.5]),
+                                rotation: None,
+                                scale: None,
+                                tex_coord: None,
+                            }),
+                        }),
+                    }),
+                    specular_color_factor: None,
+                    specular_color_texture: None,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let found = material_texture_transforms(&mat);
+        assert_eq!(found.len(), 1, "specularTexture transform discovered");
+        assert_eq!(found[0].0, "KHR_materials_specular.specularTexture");
     }
 }

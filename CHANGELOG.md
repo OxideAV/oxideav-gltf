@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- KHR_texture_transform on material-extension textureInfos — per
+  `docs/3d/gltf/extensions/KHR_texture_transform.md` §glTF Schema
+  Updates the transform "may be defined on `textureInfo` structures"
+  (any textureInfo). The crate previously handled only the five core
+  PBR slots; the transform now rides every textureInfo nested inside a
+  material extension (`KHR_materials_specular` / `_clearcoat` / `_sheen`
+  / `_transmission` / `_volume` / `_iridescence` / `_anisotropy` /
+  `_diffuse_transmission`). A single exhaustive walk
+  (`validation::material_texture_transforms`) is shared between the
+  decode-side §3.12 validator and the encoder's `extensionsUsed`
+  declaration scan, so (a) a document carrying a nested transform now
+  declares `KHR_texture_transform` on encode (previously it emitted the
+  nested block but left the declaration off, producing a §3.12-invalid
+  document), and (b) the decoder now rejects a nested transform whose
+  extension is undeclared (`ExtensionStackUsedNotDeclared` — previously
+  a false negative). The validator additionally enforces the §Overview
+  affine-transform finiteness MUSTs on every transform (core or
+  extension slot): a non-finite `rotation`
+  (`ExtensionStackTextureTransformRotationFinite`), `offset` component
+  (`ExtensionStackTextureTransformOffsetFinite`), or `scale` component
+  (`ExtensionStackTextureTransformScaleFinite`) is rejected.
+
 - Texture / material reference validation per spec §5.29 (Texture) +
   §5.30 (Texture Info) + §5.22 (Material PBR Metallic Roughness) — the
   new `validate_textures` pass (run after `validate_skins`) policies the

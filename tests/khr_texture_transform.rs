@@ -271,6 +271,163 @@ fn transform_on_base_color_slot_roundtrips() {
     assert!((rotation - 0.6).abs() < 1e-5);
 }
 
+// --- KHR_texture_transform on material-EXTENSION texture slots -------
+//
+// Per `docs/3d/gltf/extensions/KHR_texture_transform.md` §glTF Schema
+// Updates the transform "may be defined on `textureInfo` structures" —
+// *any* textureInfo, including the ones nested inside a material
+// extension (e.g. `KHR_materials_specular.specularTexture`). The
+// decoder parks the whole material-extension block in
+// `Material::extras["KHR_materials_<x>"]`, so the nested transform
+// rides through verbatim; the §3.12 stack validator and the encoder's
+// `extensionsUsed` declaration must reach it too.
+
+#[test]
+fn transform_nested_in_specular_texture_roundtrips_and_declares_extension() {
+    // specularTexture carries a KHR_texture_transform; both the
+    // KHR_materials_specular extension AND KHR_texture_transform must be
+    // declared on encode, and the nested transform must survive the
+    // glb round-trip.
+    let mut scene = Scene3D::new();
+    // The on-wire texture index is this texture's position (0 — it is the
+    // only texture in the document).
+    scene.add_texture(dummy_texture());
+    let mut mat = Material::new();
+    mat.extras.insert(
+        "KHR_materials_specular".to_owned(),
+        serde_json::json!({
+            "specularFactor": 1.0,
+            "specularTexture": {
+                "index": 0,
+                "extensions": {
+                    "KHR_texture_transform": { "offset": [0.1, 0.2], "rotation": 0.5 }
+                }
+            }
+        }),
+    );
+    scene.add_material(mat);
+
+    let glb = GltfEncoder::new().encode(&scene).unwrap();
+    let raw_bytes = extract_json_chunk(&glb);
+    let raw = std::str::from_utf8(&raw_bytes).unwrap();
+    assert!(
+        raw.contains("\"KHR_materials_specular\""),
+        "specular extension declared, got: {raw}"
+    );
+    assert!(
+        raw.contains("\"KHR_texture_transform\""),
+        "nested texture-transform must trigger the KHR_texture_transform declaration, got: {raw}"
+    );
+
+    // Re-decode: the document we just wrote must be §3.12-valid (the
+    // decoder runs validate_extension_stack), and the transform must
+    // still be on the specularTexture.
+    let decoded = GltfDecoder::new().decode(&glb).unwrap();
+    let sp = decoded.materials[0]
+        .extras
+        .get("KHR_materials_specular")
+        .and_then(|v| v.as_object())
+        .expect("specular block present");
+    let tt = sp
+        .get("specularTexture")
+        .and_then(|v| v.get("extensions"))
+        .and_then(|v| v.get("KHR_texture_transform"))
+        .and_then(|v| v.as_object())
+        .expect("nested transform survives round-trip");
+    let off = tt.get("offset").and_then(|v| v.as_array()).unwrap();
+    assert!((off[0].as_f64().unwrap() - 0.1).abs() < 1e-6);
+    assert!((off[1].as_f64().unwrap() - 0.2).abs() < 1e-6);
+    assert!((tt.get("rotation").and_then(|v| v.as_f64()).unwrap() - 0.5).abs() < 1e-5);
+}
+
+#[test]
+fn transform_nested_in_extension_slot_without_extensions_used_is_rejected() {
+    // KHR_texture_transform appears ONLY inside
+    // KHR_materials_clearcoat.clearcoatTexture, and KHR_texture_transform
+    // is not in extensionsUsed — spec §3.12 violation. Before this round
+    // the §3.12 scan only looked at the five core PBR slots and let this
+    // slip through.
+    let json = br#"{
+        "asset": { "version": "2.0" },
+        "extensionsUsed": ["KHR_materials_clearcoat"],
+        "textures": [{ "source": 0 }],
+        "images": [{ "uri": "data:image/png;base64,AAAA" }],
+        "materials": [
+            {
+                "extensions": {
+                    "KHR_materials_clearcoat": {
+                        "clearcoatFactor": 1.0,
+                        "clearcoatTexture": {
+                            "index": 0,
+                            "extensions": {
+                                "KHR_texture_transform": { "scale": [2, 2] }
+                            }
+                        }
+                    }
+                }
+            }
+        ]
+    }"#;
+    let err = GltfDecoder::new().decode(json).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("ExtensionStackUsedNotDeclared") && msg.contains("KHR_texture_transform"),
+        "expected ExtensionStackUsedNotDeclared for the nested KHR_texture_transform, got {msg}"
+    );
+}
+
+#[test]
+fn transform_nested_in_extension_slot_with_extensions_used_is_accepted() {
+    // Same as above but with KHR_texture_transform properly declared —
+    // must decode cleanly.
+    let json = br#"{
+        "asset": { "version": "2.0" },
+        "extensionsUsed": ["KHR_materials_clearcoat", "KHR_texture_transform"],
+        "textures": [{ "source": 0 }],
+        "images": [{ "uri": "data:image/png;base64,AAAA" }],
+        "materials": [
+            {
+                "extensions": {
+                    "KHR_materials_clearcoat": {
+                        "clearcoatFactor": 1.0,
+                        "clearcoatTexture": {
+                            "index": 0,
+                            "extensions": {
+                                "KHR_texture_transform": { "scale": [2, 2] }
+                            }
+                        }
+                    }
+                }
+            }
+        ]
+    }"#;
+    let scene = GltfDecoder::new().decode(json).unwrap();
+    assert_eq!(scene.materials.len(), 1);
+}
+
+#[test]
+fn large_finite_rotation_roundtrips() {
+    // A large but finite rotation keeps the affine UV mat3 finite, so it
+    // must pass the §Overview finiteness check and round-trip. (Non-finite
+    // rotation can't be expressed in JSON, so the NaN / ±∞ rejection path
+    // is covered by the validation.rs unit test
+    // `texture_transform_non_finite_rotation_rejected`.)
+    let mut scene = Scene3D::new();
+    let tex_id = scene.add_texture(dummy_texture());
+    let mut mat = Material::new();
+    mat.emissive_texture = Some(TextureRef::new(tex_id));
+    let mut obj = serde_json::Map::new();
+    obj.insert("rotation".to_owned(), Value::from(1.0e30_f64));
+    mat.extras.insert(
+        "KHR_texture_transform:emissive".to_owned(),
+        Value::Object(obj),
+    );
+    scene.add_material(mat);
+    let glb = GltfEncoder::new().encode(&scene).unwrap();
+    let decoded = GltfDecoder::new().decode(&glb).unwrap();
+    assert_eq!(decoded.materials.len(), 1);
+}
+
 #[test]
 fn transform_on_normal_slot_roundtrips_with_scale_too() {
     let mut scene = Scene3D::new();

@@ -2379,50 +2379,16 @@ fn specular_from_value(v: serde_json::Value) -> Option<gj::MaterialSpecular> {
 // carrying a `KHR_texture_transform` block, so the writer knows whether
 // to append the extension to `extensionsUsed` per spec §3.12. See
 // `docs/3d/gltf/extensions/KHR_texture_transform.md` §glTF Schema
-// Updates.
+// Updates. The spec says the transform "may be defined on `textureInfo`
+// structures" — *any* textureInfo — so this scan must reach the
+// textureInfos nested inside material extensions
+// (`KHR_materials_specular.specularTexture`, …) as well as the five
+// core PBR slots; otherwise the encoder would emit a nested transform
+// without declaring the extension and produce a §3.12-invalid document.
+// `crate::validation::material_texture_transforms` is the single
+// exhaustive walk shared with the decode-side validator.
 fn material_carries_texture_transform(m: &gj::Material) -> bool {
-    fn ti_has(t: &gj::TextureInfo) -> bool {
-        t.extensions
-            .as_ref()
-            .and_then(|e| e.khr_texture_transform.as_ref())
-            .is_some()
-    }
-    if let Some(p) = &m.pbr_metallic_roughness {
-        if p.base_color_texture.as_ref().map(ti_has).unwrap_or(false) {
-            return true;
-        }
-        if p.metallic_roughness_texture
-            .as_ref()
-            .map(ti_has)
-            .unwrap_or(false)
-        {
-            return true;
-        }
-    }
-    if let Some(n) = &m.normal_texture {
-        if n.extensions
-            .as_ref()
-            .and_then(|e| e.khr_texture_transform.as_ref())
-            .is_some()
-        {
-            return true;
-        }
-    }
-    if let Some(o) = &m.occlusion_texture {
-        if o.extensions
-            .as_ref()
-            .and_then(|e| e.khr_texture_transform.as_ref())
-            .is_some()
-        {
-            return true;
-        }
-    }
-    if let Some(e) = &m.emissive_texture {
-        if ti_has(e) {
-            return true;
-        }
-    }
-    false
+    !crate::validation::material_texture_transforms(m).is_empty()
 }
 
 fn texture_info_from_value(v: &serde_json::Value) -> Option<gj::TextureInfo> {
