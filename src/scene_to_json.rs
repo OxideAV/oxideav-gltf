@@ -2375,9 +2375,9 @@ fn specular_from_value(v: serde_json::Value) -> Option<gj::MaterialSpecular> {
     })
 }
 
-// Scan a `gj::Material` for any of its five core PBR texture slots
-// carrying a `KHR_texture_transform` block, so the writer knows whether
-// to append the extension to `extensionsUsed` per spec §3.12. See
+// Scan a `gj::Material` for any textureInfo carrying a
+// `KHR_texture_transform` block, so the writer knows whether to append
+// the extension to `extensionsUsed` per spec §3.12. See
 // `docs/3d/gltf/extensions/KHR_texture_transform.md` §glTF Schema
 // Updates. The spec says the transform "may be defined on `textureInfo`
 // structures" — *any* textureInfo — so this scan must reach the
