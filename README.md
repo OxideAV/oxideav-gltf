@@ -866,6 +866,43 @@ framework but usable standalone.
   array length MUST equal the accessor's component count (1/2/3/4/9/16 per
   `type`) when present (`AccessorMinMaxLength`, §3.6.2.5). An unknown
   `type` string defers to the bufferView-fit pass's element-type rejection
+- Top-level index-reference resolution per spec §3.3 + §5.27.1 + §5.25.5
+  + §5.25.1 + §5.24.3 — `validate_index_references` rejects every dangling
+  top-level index edge the field types only bounded from below: the
+  default `scene` index (`DefaultSceneIndex`), a `scene.nodes[]` entry
+  (`SceneNodeIndex`), `node.mesh` (`NodeMeshIndex`), `node.camera`
+  (`NodeCameraIndex`), and `primitive.material` (`PrimitiveMaterialIndex`)
+  MUST each resolve into their referenced root array (node.skin /
+  node.children / textureInfo / animation-target references keep their own
+  dedicated passes)
+- Schema structural minimums per spec §5.10.2 + §5.11.3 + §5.2.1 +
+  §3.6.2.3 — `validate_structural_minimums` enforces the bounds that hold
+  on the declared integers alone: `buffer.byteLength` ≥ 1
+  (`BufferByteLength`), `bufferView.byteLength` ≥ 1
+  (`BufferViewByteLength`), `accessor.sparse.count` ≥ 1 (`SparseCountMin`)
+  and ≤ the base accessor element count (`SparseCountRange`)
+- Animation-sampler structural validation per spec §3.11 + Appendix C —
+  `validate_animation_channels` now also enforces the sampler-accessor
+  MUSTs: the `input` accessor MUST define both `min` and `max`
+  (`AnimationSamplerInputBounds`); `interpolation` MUST be `LINEAR` /
+  `STEP` / `CUBICSPLINE` (`AnimationSamplerInterpolation`); the `output`
+  element count MUST equal `keyframes × per-keyframe` for LINEAR / STEP
+  and `3 × keyframes × per-keyframe` for CUBICSPLINE
+  (`AnimationSamplerOutputCount`), where `per-keyframe` is 1 for TRS /
+  pointer channels and the morph-target count for `weights` channels
+  (§3.11: the morph-weight output accessor's "final size is equal to the
+  number of morph targets times the number of animation frames"); and a
+  CUBICSPLINE sampler MUST have ≥ 2 keyframes
+  (`AnimationSamplerCubicKeyframes`, §C.5)
+- Image-source validation per spec §5.18 — `validate_images` policies
+  every `images[i]` (referenced or not): exactly one source MUST be
+  defined, `uri` XOR `bufferView` (`ImageNoSource` /
+  `ImageSourceExclusive`); a `bufferView`-backed image MUST carry a
+  `mimeType` (`ImageMimeTypeRequired`) and its `bufferView` index MUST
+  resolve (`ImageBufferViewIndex`)
+- Mesh morph-weights length validation per spec §5.23.2 —
+  `validate_morph_weights` enforces that a `mesh.weights` array's length
+  matches the mesh's morph-target count (`MeshWeightsLength`)
 - `extras` round-trip on root, scenes, nodes, materials, primitives
 
 ## Extension roadmap (next-round work)
