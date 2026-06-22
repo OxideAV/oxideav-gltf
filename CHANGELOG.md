@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Image-source validation (`validate_images`) per glTF 2.0 §5.18 — every
+  `images[i]` (referenced or not) MUST define exactly one source:
+  `uri` XOR `bufferView` (`ImageNoSource` / `ImageSourceExclusive`,
+  §5.18.1); a `bufferView`-backed image MUST carry a `mimeType`
+  (`ImageMimeTypeRequired`, §5.18.2) and its `bufferView` index MUST
+  resolve (`ImageBufferViewIndex`, §5.18.3). Previously only images
+  reached by a texture were checked, and only for the "neither source"
+  case.
+- Mesh-morph-weights length validation (`validate_morph_weights`) per
+  glTF 2.0 §5.23.2 — `mesh.weights` array length MUST match the mesh's
+  morph-target count (`MeshWeightsLength`). (`node.weights` carries the
+  same §5.25.9 rule but is not retained in the parsed model, so only the
+  modelled `mesh.weights` is policed.)
+
 - Animation-sampler structural validation per glTF 2.0 §3.11 + Appendix C
   — `validate_animation_channels` now enforces the sampler MUSTs the
   decoder previously parsed but never policed: the `input` accessor MUST

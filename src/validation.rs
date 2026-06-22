@@ -3751,6 +3751,96 @@ pub fn validate_textures(
     Ok(())
 }
 
+/// Validate `mesh.weights` array length per spec §5.23.2 — "The number
+/// of array elements MUST match the number of morph targets." All
+/// primitives in a mesh share the same target count (§3.7.2.2 "All
+/// primitives MUST have the same number of morph targets in the same
+/// order"), so the first primitive's target count is the mesh's target
+/// count. A `mesh.weights` whose length disagrees is rejected with
+/// `MeshWeightsLength`.
+///
+/// (`node.weights` carries the same §5.25.9 rule but is not retained in
+/// this crate's parsed model — it is dropped at decode and re-derived
+/// from the mesh on encode — so only the modelled `mesh.weights` is
+/// policed here.)
+pub fn validate_morph_weights(meshes: &[Mesh]) -> Result<()> {
+    for (mi, mesh) in meshes.iter().enumerate() {
+        let Some(weights) = mesh.weights.as_ref() else {
+            continue;
+        };
+        let target_count = mesh
+            .primitives
+            .first()
+            .map(|p| p.targets.len())
+            .unwrap_or(0);
+        if weights.len() != target_count {
+            return Err(invalid(format!(
+                "MeshWeightsLength: meshes[{mi}].weights has {} element(s) but the mesh \
+                 declares {target_count} morph target(s) — the lengths MUST match \
+                 (spec §5.23.2)",
+                weights.len()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Validate every `images[i]` entry per spec §5.18, independent of
+/// whether a texture references it (an unreferenced image is still a
+/// document object the schema MUSTs apply to). The runtime image-load
+/// path in `json_to_scene` only sees referenced images and only rejects
+/// the "neither source" case; this pass closes the rest.
+///
+/// Rules enforced (§5.18 schema `oneOf` + `dependencies` + per-field):
+///
+/// * §5.18 — an image MUST define exactly one source: `uri` XOR
+///   `bufferView`. Neither is `ImageNoSource`; both is
+///   `ImageSourceExclusive` (§5.18.1 "`uri` MUST NOT be defined when
+///   `bufferView` is defined").
+/// * §5.18.2 — `mimeType` MUST be defined when `bufferView` is defined
+///   (`ImageMimeTypeRequired`).
+/// * §5.18.3 — `bufferView`, when present, MUST resolve into
+///   `bufferViews[]` (`ImageBufferViewIndex`).
+pub fn validate_images(
+    images: &[crate::json_model::Image],
+    buffer_views: &[BufferView],
+) -> Result<()> {
+    let bv_count = buffer_views.len();
+    for (ii, img) in images.iter().enumerate() {
+        match (img.uri.is_some(), img.buffer_view) {
+            (false, None) => {
+                return Err(invalid(format!(
+                    "ImageNoSource: images[{ii}] defines neither `uri` nor `bufferView` — \
+                     an image MUST have exactly one source (spec §5.18)"
+                )));
+            }
+            (true, Some(_)) => {
+                return Err(invalid(format!(
+                    "ImageSourceExclusive: images[{ii}] defines both `uri` and `bufferView` \
+                     — `uri` MUST NOT be defined when `bufferView` is defined (spec §5.18.1)"
+                )));
+            }
+            (_, Some(bv)) => {
+                if img.mime_type.is_none() {
+                    return Err(invalid(format!(
+                        "ImageMimeTypeRequired: images[{ii}] references a bufferView but has \
+                         no `mimeType` — it MUST be defined when `bufferView` is defined \
+                         (spec §5.18.2)"
+                    )));
+                }
+                if (bv as usize) >= bv_count {
+                    return Err(invalid(format!(
+                        "ImageBufferViewIndex: images[{ii}].bufferView = {bv} is out of range \
+                         (document has {bv_count} buffer views) (spec §5.18.3)"
+                    )));
+                }
+            }
+            (true, None) => {}
+        }
+    }
+    Ok(())
+}
+
 /// Validate every top-level index reference that maps one object into a
 /// sibling root array, per the glTF 2.0 schema MUSTs the decoder parsed
 /// but never policed structurally. The field types already pin the
@@ -6621,5 +6711,90 @@ mod tests {
         root.accessors = vec![scalar_accessor(4, Some(sparse_with_count(5)))];
         let err = validate_structural_minimums(&root).unwrap_err();
         assert!(format!("{err}").contains("SparseCountRange"));
+    }
+
+    // ---- validate_images (§5.18) ----
+
+    fn img(uri: Option<&str>, bv: Option<u32>, mime: Option<&str>) -> crate::json_model::Image {
+        crate::json_model::Image {
+            uri: uri.map(str::to_owned),
+            mime_type: mime.map(str::to_owned),
+            buffer_view: bv,
+            name: None,
+        }
+    }
+
+    #[test]
+    fn images_accept_uri_only() {
+        validate_images(&[img(Some("tex.png"), None, None)], &[]).unwrap();
+    }
+
+    #[test]
+    fn images_accept_bufferview_with_mime() {
+        let bvs = vec![bview(64)];
+        validate_images(&[img(None, Some(0), Some("image/png"))], &bvs).unwrap();
+    }
+
+    #[test]
+    fn images_reject_no_source() {
+        let err = validate_images(&[img(None, None, None)], &[]).unwrap_err();
+        assert!(format!("{err}").contains("ImageNoSource"));
+    }
+
+    #[test]
+    fn images_reject_both_sources() {
+        let bvs = vec![bview(64)];
+        let err =
+            validate_images(&[img(Some("tex.png"), Some(0), Some("image/png"))], &bvs).unwrap_err();
+        assert!(format!("{err}").contains("ImageSourceExclusive"));
+    }
+
+    #[test]
+    fn images_reject_bufferview_without_mime() {
+        let bvs = vec![bview(64)];
+        let err = validate_images(&[img(None, Some(0), None)], &bvs).unwrap_err();
+        assert!(format!("{err}").contains("ImageMimeTypeRequired"));
+    }
+
+    #[test]
+    fn images_reject_bufferview_out_of_range() {
+        // no buffer views
+        let err = validate_images(&[img(None, Some(3), Some("image/png"))], &[]).unwrap_err();
+        assert!(format!("{err}").contains("ImageBufferViewIndex"));
+    }
+
+    // ---- validate_morph_weights (§5.23.2) ----
+
+    fn mesh_with(targets: usize, weights: Option<Vec<f32>>) -> Mesh {
+        let mut target_maps = Vec::new();
+        for _ in 0..targets {
+            let mut m = HashMap::new();
+            m.insert("POSITION".to_owned(), 0u32);
+            target_maps.push(m);
+        }
+        Mesh {
+            primitives: vec![Primitive {
+                targets: target_maps,
+                ..Default::default()
+            }],
+            weights,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn morph_weights_accept_matching_length() {
+        validate_morph_weights(&[mesh_with(2, Some(vec![0.0, 1.0]))]).unwrap();
+    }
+
+    #[test]
+    fn morph_weights_accept_absent() {
+        validate_morph_weights(&[mesh_with(2, None)]).unwrap();
+    }
+
+    #[test]
+    fn morph_weights_reject_length_mismatch() {
+        let err = validate_morph_weights(&[mesh_with(2, Some(vec![0.0, 1.0, 0.5]))]).unwrap_err();
+        assert!(format!("{err}").contains("MeshWeightsLength"));
     }
 }
