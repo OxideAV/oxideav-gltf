@@ -147,14 +147,16 @@ fn rejects_animated_node_with_matrix() {
         "samplers": [ { "input": 0, "output": 1 } ]
     }"#;
     // Provide the two accessors the sampler references so the animation
-    // validator passes and the node check is reached.
+    // validator passes and the node check is reached. The input accessor
+    // is a single-keyframe SCALAR with min/max (§3.11 requires both); the
+    // LINEAR output count matches the input count.
     let mut dec = GltfDecoder::new();
     let doc = format!(
         r#"{{
         "asset": {{ "version": "2.0" }},
         "nodes": [ {nodes} ],
         "accessors": [
-            {{ "componentType": 5126, "count": 1, "type": "SCALAR" }},
+            {{ "componentType": 5126, "count": 1, "type": "SCALAR", "min": [0.0], "max": [0.0] }},
             {{ "componentType": 5126, "count": 1, "type": "VEC3" }}
         ],
         "animations": [ {anim} ],

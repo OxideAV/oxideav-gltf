@@ -53,11 +53,17 @@ fn build_glb_or_json_with_animation(
     }
     let morph_byte_len = bin.len() - morph_offset;
 
-    // Two keyframes — `(0.0, 1.0)`. min/max required.
+    // Keyframe times — one per output element so the sampler's LINEAR
+    // input element count equals its output element count (§3.11). The
+    // mesh declares a single morph target, so a weights channel's output
+    // count also equals its keyframe count. min/max required (§3.11).
+    let key_count = output_count.max(1);
     let key_offset = bin.len();
-    bin.extend_from_slice(&0.0f32.to_le_bytes());
-    bin.extend_from_slice(&1.0f32.to_le_bytes());
+    for i in 0..key_count {
+        bin.extend_from_slice(&(i as f32).to_le_bytes());
+    }
     let key_byte_len = bin.len() - key_offset;
+    let key_max = (key_count - 1) as f32;
 
     // Pad to alignment of the integer width.
     while bin.len() % bytes_per_component.max(4) != 0 {
@@ -93,8 +99,8 @@ fn build_glb_or_json_with_animation(
                 "min": [0.0, 0.0, 0.0], "max": [0.0, 0.0, 0.0]
             }},
             {{
-                "bufferView": 2, "componentType": 5126, "count": 2, "type": "SCALAR",
-                "min": [0.0], "max": [1.0]
+                "bufferView": 2, "componentType": 5126, "count": {key_count}, "type": "SCALAR",
+                "min": [0.0], "max": [{key_max:?}]
             }},
             {{
                 "bufferView": 3, "componentType": {component_type},
@@ -128,6 +134,8 @@ fn build_glb_or_json_with_animation(
         morph_byte_len = morph_byte_len,
         key_offset = key_offset,
         key_byte_len = key_byte_len,
+        key_count = key_count,
+        key_max = key_max,
         out_offset = out_offset,
         out_byte_len = out_byte_len,
         output_count = output_count,

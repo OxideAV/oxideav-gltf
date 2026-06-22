@@ -2464,22 +2464,33 @@ pub fn validate_animation_channels(
             ))
         })?;
         // input / output accessor indices in range
-        if accessors.get(sampler.input as usize).is_none() {
-            return Err(invalid(format!(
+        let input_acc = accessors.get(sampler.input as usize).ok_or_else(|| {
+            invalid(format!(
                 "AnimationChannelSamplerInput: animations[{anim_idx}].samplers[{}] \
                  .input = {} out of range (have {} accessors, spec §3.11)",
                 ch.sampler,
                 sampler.input,
                 accessors.len()
-            )));
-        }
-        if accessors.get(sampler.output as usize).is_none() {
-            return Err(invalid(format!(
+            ))
+        })?;
+        let output_acc = accessors.get(sampler.output as usize).ok_or_else(|| {
+            invalid(format!(
                 "AnimationChannelSamplerOutput: animations[{anim_idx}].samplers[{}] \
                  .output = {} out of range (have {} accessors, spec §3.11)",
                 ch.sampler,
                 sampler.output,
                 accessors.len()
+            ))
+        })?;
+
+        // §3.11 — "Animation sampler's input accessor MUST have its min
+        // and max properties defined." (The runtime needs the keyframe
+        // time range to clamp before/after the input range.)
+        if input_acc.min.is_none() || input_acc.max.is_none() {
+            return Err(invalid(format!(
+                "AnimationSamplerInputBounds: animations[{anim_idx}].samplers[{}].input \
+                 accessor {} MUST define both `min` and `max` (spec §3.11)",
+                ch.sampler, sampler.input
             )));
         }
 
@@ -2500,7 +2511,14 @@ pub fn validate_animation_channels(
         }
 
         // weights channels require the target node to have a mesh
-        // declaring morph targets.
+        // declaring morph targets. `per_keyframe_elements` is the number
+        // of output accessor elements per keyframe: 1 for TRS / pointer
+        // channels, and the morph-target count for "weights" channels —
+        // §3.11 "A morph target animation frame is defined by a sequence
+        // of scalars of length equal to the number of targets … the
+        // output accessor … final size is equal to the number of morph
+        // targets times the number of animation frames."
+        let mut per_keyframe_elements: u32 = 1;
         if ch.target.path == "weights" {
             let Some(target_node_idx) = ch.target.node else {
                 // §3.11 — a channel with no node is ignored at decode
@@ -2545,6 +2563,62 @@ pub fn validate_animation_channels(
                      -> node {target_node_idx} -> mesh {mesh_idx} has no morph targets \
                      (spec §3.11: a \"weights\" channel requires the mesh to declare \
                      primitive.targets)"
+                )));
+            }
+            per_keyframe_elements = target_count as u32;
+        }
+
+        // §3.11 / Appendix C — the output element count relates to the
+        // input keyframe count by the interpolation mode and the
+        // per-keyframe element count: LINEAR / STEP require
+        // output.count == keyframes * per_keyframe; CUBICSPLINE requires
+        // output.count == 3 * keyframes * per_keyframe (in-tangent,
+        // value, out-tangent per keyframe) AND at least 2 keyframes
+        // (§C.5). For TRS / pointer channels `per_keyframe` is 1; for
+        // "weights" channels it is the morph-target count resolved above.
+        let interp = sampler.interpolation.as_deref().unwrap_or("LINEAR");
+        let in_count = input_acc.count;
+        let out_count = output_acc.count;
+        let frame_out = in_count.saturating_mul(per_keyframe_elements);
+        match interp {
+            "LINEAR" | "STEP" => {
+                if out_count != frame_out {
+                    return Err(invalid(format!(
+                        "AnimationSamplerOutputCount: animations[{anim_idx}].samplers[{}] \
+                         interpolation {interp:?} requires output element count == {in_count} \
+                         keyframe(s) * {per_keyframe_elements} element(s)/keyframe = \
+                         {frame_out}, but output accessor {} has count {out_count} (spec §3.11)",
+                        ch.sampler, sampler.output
+                    )));
+                }
+            }
+            "CUBICSPLINE" => {
+                if in_count < 2 {
+                    return Err(invalid(format!(
+                        "AnimationSamplerCubicKeyframes: animations[{anim_idx}].samplers[{}] \
+                         uses CUBICSPLINE but its input accessor {} has only {in_count} \
+                         keyframe(s) — MUST have at least 2 (spec §C.5)",
+                        ch.sampler, sampler.input
+                    )));
+                }
+                if out_count != frame_out.saturating_mul(3) {
+                    return Err(invalid(format!(
+                        "AnimationSamplerOutputCount: animations[{anim_idx}].samplers[{}] \
+                         CUBICSPLINE requires output element count == 3 * {in_count} \
+                         keyframe(s) * {per_keyframe_elements} element(s)/keyframe = {}, but \
+                         output accessor {} has count {out_count} (spec §3.11)",
+                        ch.sampler,
+                        frame_out.saturating_mul(3),
+                        sampler.output
+                    )));
+                }
+            }
+            other => {
+                return Err(invalid(format!(
+                    "AnimationSamplerInterpolation: animations[{anim_idx}].samplers[{}] \
+                     .interpolation = {other:?} — MUST be one of \"LINEAR\" / \"STEP\" / \
+                     \"CUBICSPLINE\" (spec §3.11)",
+                    ch.sampler
                 )));
             }
         }
@@ -5032,6 +5106,9 @@ mod tests {
 
     // --- Animation channel target-path validation ------------------
 
+    // A SCALAR float accessor carrying `min` / `max` — valid as an
+    // animation sampler `input` (keyframe times) per spec §3.11, which
+    // requires the input accessor to define both bounds.
     fn float_scalar_accessor(count: u32) -> Accessor {
         Accessor {
             buffer_view: Some(0),
@@ -5040,16 +5117,20 @@ mod tests {
             count,
             kind: "SCALAR".into(),
             normalized: false,
-            min: None,
-            max: None,
+            min: Some(vec![0.0f32]),
+            max: Some(vec![(count.max(1) - 1) as f32]),
             name: None,
             sparse: None,
         }
     }
 
     fn float_vec3_accessor(count: u32) -> Accessor {
+        // Output accessors don't require `min` / `max`, and a 1-element
+        // SCALAR bound would be the wrong length for a VEC3 — drop them.
         Accessor {
             kind: "VEC3".into(),
+            min: None,
+            max: None,
             ..float_scalar_accessor(count)
         }
     }
@@ -5195,6 +5276,80 @@ mod tests {
         let meshes: Vec<Mesh> = vec![];
         let accessors = vec![float_scalar_accessor(2), float_scalar_accessor(2)];
         validate_animation_channels(0, &anim, &nodes, &meshes, &accessors).unwrap();
+    }
+
+    // --- Animation sampler structural MUSTs (§3.11 / Appendix C) -----
+
+    #[test]
+    fn animation_sampler_rejects_input_without_bounds() {
+        let anim = anim_with_path("translation", Some(0), 0, 1);
+        let nodes = vec![Node::default()];
+        let meshes: Vec<Mesh> = vec![];
+        // Input accessor (index 0) lacks min / max.
+        let mut input = float_scalar_accessor(2);
+        input.min = None;
+        input.max = None;
+        let accessors = vec![input, float_vec3_accessor(2)];
+        let err = validate_animation_channels(0, &anim, &nodes, &meshes, &accessors).unwrap_err();
+        assert!(format!("{err}").contains("AnimationSamplerInputBounds"));
+    }
+
+    #[test]
+    fn animation_sampler_rejects_linear_output_count_mismatch() {
+        let anim = anim_with_path("translation", Some(0), 0, 1);
+        let nodes = vec![Node::default()];
+        let meshes: Vec<Mesh> = vec![];
+        // LINEAR (default): input count 3, output count 2 -> mismatch.
+        let accessors = vec![float_scalar_accessor(3), float_vec3_accessor(2)];
+        let err = validate_animation_channels(0, &anim, &nodes, &meshes, &accessors).unwrap_err();
+        assert!(format!("{err}").contains("AnimationSamplerOutputCount"));
+    }
+
+    #[test]
+    fn animation_sampler_accepts_cubicspline_3x_output() {
+        let mut anim = anim_with_path("translation", Some(0), 0, 1);
+        anim.samplers[0].interpolation = Some("CUBICSPLINE".into());
+        let nodes = vec![Node::default()];
+        let meshes: Vec<Mesh> = vec![];
+        // CUBICSPLINE: input count 2, output count 6 (= 3 * 2).
+        let accessors = vec![float_scalar_accessor(2), float_vec3_accessor(6)];
+        validate_animation_channels(0, &anim, &nodes, &meshes, &accessors).unwrap();
+    }
+
+    #[test]
+    fn animation_sampler_rejects_cubicspline_wrong_output_count() {
+        let mut anim = anim_with_path("translation", Some(0), 0, 1);
+        anim.samplers[0].interpolation = Some("CUBICSPLINE".into());
+        let nodes = vec![Node::default()];
+        let meshes: Vec<Mesh> = vec![];
+        // CUBICSPLINE with output count 4 != 3 * 2.
+        let accessors = vec![float_scalar_accessor(2), float_vec3_accessor(4)];
+        let err = validate_animation_channels(0, &anim, &nodes, &meshes, &accessors).unwrap_err();
+        assert!(format!("{err}").contains("AnimationSamplerOutputCount"));
+    }
+
+    #[test]
+    fn animation_sampler_rejects_cubicspline_single_keyframe() {
+        let mut anim = anim_with_path("translation", Some(0), 0, 1);
+        anim.samplers[0].interpolation = Some("CUBICSPLINE".into());
+        let nodes = vec![Node::default()];
+        let meshes: Vec<Mesh> = vec![];
+        // Only 1 keyframe; output count 3 = 3 * 1 passes the count rule
+        // but §C.5 requires >= 2 keyframes.
+        let accessors = vec![float_scalar_accessor(1), float_vec3_accessor(3)];
+        let err = validate_animation_channels(0, &anim, &nodes, &meshes, &accessors).unwrap_err();
+        assert!(format!("{err}").contains("AnimationSamplerCubicKeyframes"));
+    }
+
+    #[test]
+    fn animation_sampler_rejects_unknown_interpolation() {
+        let mut anim = anim_with_path("translation", Some(0), 0, 1);
+        anim.samplers[0].interpolation = Some("BEZIER".into());
+        let nodes = vec![Node::default()];
+        let meshes: Vec<Mesh> = vec![];
+        let accessors = vec![float_scalar_accessor(2), float_vec3_accessor(2)];
+        let err = validate_animation_channels(0, &anim, &nodes, &meshes, &accessors).unwrap_err();
+        assert!(format!("{err}").contains("AnimationSamplerInterpolation"));
     }
 
     // --- Asset version / minVersion ---------------------------------

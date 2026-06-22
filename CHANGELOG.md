@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Animation-sampler structural validation per glTF 2.0 §3.11 + Appendix C
+  — `validate_animation_channels` now enforces the sampler MUSTs the
+  decoder previously parsed but never policed: the `input` accessor MUST
+  define both `min` and `max` (`AnimationSamplerInputBounds`); the
+  `interpolation` value MUST be one of `LINEAR` / `STEP` / `CUBICSPLINE`
+  (`AnimationSamplerInterpolation`); the `output` element count MUST equal
+  `keyframes * per-keyframe-elements` for LINEAR / STEP and
+  `3 * keyframes * per-keyframe-elements` for CUBICSPLINE
+  (`AnimationSamplerOutputCount`), where the per-keyframe element count is
+  1 for translation / rotation / scale / pointer channels and the
+  morph-target count for `weights` channels (§3.11 "the output accessor …
+  final size is equal to the number of morph targets times the number of
+  animation frames"); and a CUBICSPLINE sampler MUST have at least 2
+  keyframes (`AnimationSamplerCubicKeyframes`, §C.5). Six new unit tests
+  plus fixture corrections in `khr_animation_pointer`, `normalized_animation`,
+  and `node_hierarchy_validation` to keep their hand-crafted samplers
+  spec-valid.
 - Top-level index-reference resolution validation (`validate_index_references`)
   per glTF 2.0 §3.3 + §5.27.1 + §5.25.5 + §5.25.1 + §5.24.3 — the decoder
   now rejects documents whose top-level index edges dangle: the default

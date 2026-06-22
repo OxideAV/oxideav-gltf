@@ -426,9 +426,16 @@ fn pointer_doc_with_output(
     count: u32,
 ) -> Vec<u8> {
     let mut bin: Vec<u8> = Vec::new();
-    // Input: 2 keyframes at t=0 and t=1.
-    bin.extend_from_slice(&0.0f32.to_le_bytes());
-    bin.extend_from_slice(&1.0f32.to_le_bytes());
+    // Input: `count` keyframes at t = 0, 1, 2, … so the sampler's input
+    // element count equals its LINEAR output element count per spec §3.11
+    // (the output count is what each test varies; the keyframe times are
+    // incidental).
+    let kf = count.max(1);
+    for i in 0..kf {
+        bin.extend_from_slice(&(i as f32).to_le_bytes());
+    }
+    let input_len = bin.len();
+    let input_max = (kf - 1) as f32;
     let output_offset = bin.len();
     bin.extend_from_slice(output_bytes);
     let total = bin.len();
@@ -441,11 +448,11 @@ fn pointer_doc_with_output(
             "extensionsUsed": ["KHR_animation_pointer"],
             "buffers": [{{ "uri": "{uri}", "byteLength": {total} }}],
             "bufferViews": [
-                {{ "buffer": 0, "byteOffset": 0, "byteLength": 8 }},
+                {{ "buffer": 0, "byteOffset": 0, "byteLength": {input_len} }},
                 {{ "buffer": 0, "byteOffset": {output_offset}, "byteLength": {output_len} }}
             ],
             "accessors": [
-                {{ "bufferView": 0, "componentType": 5126, "count": 2, "type": "SCALAR", "min": [0.0], "max": [1.0] }},
+                {{ "bufferView": 0, "componentType": 5126, "count": {kf}, "type": "SCALAR", "min": [0.0], "max": [{input_max:?}] }},
                 {{ "bufferView": 1, "componentType": {component_type}, "normalized": {normalized_str}, "count": {count}, "type": "{kind}" }}
             ],
             "materials": [
