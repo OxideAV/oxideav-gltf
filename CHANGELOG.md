@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Top-level index-reference resolution validation (`validate_index_references`)
+  per glTF 2.0 §3.3 + §5.27.1 + §5.25.5 + §5.25.1 + §5.24.3 — the decoder
+  now rejects documents whose top-level index edges dangle: the default
+  `scene` index out of range (`DefaultSceneIndex`), a `scene.nodes[]`
+  entry out of range (`SceneNodeIndex`), `node.mesh` out of range
+  (`NodeMeshIndex`), `node.camera` out of range (`NodeCameraIndex`), and
+  `primitive.material` out of range (`PrimitiveMaterialIndex`). The field
+  types already pinned the non-negative minimum; this pass adds the
+  upper-bound MUST. (`node.skin` / `node.children` / textureInfo /
+  animation-target references continue to be policed by their dedicated
+  passes.)
+- Structural-minimum validation (`validate_structural_minimums`) per
+  glTF 2.0 §5.10.2 + §5.11.3 + §5.2.1 + §3.6.2.3 — `buffer.byteLength`
+  and `bufferView.byteLength` MUST be `>= 1` (`BufferByteLength` /
+  `BufferViewByteLength`, schema "Minimum: >= 1"); `accessor.sparse.count`
+  MUST be `>= 1` (`SparseCountMin`) and MUST NOT exceed the base accessor
+  element `count` (`SparseCountRange` — "This number MUST NOT be greater
+  than the number of the base accessor elements"). These hold on the
+  declared integers alone, so a never-materialised accessor / buffer now
+  fails fast rather than slipping through.
 - KHR_texture_transform on material-extension textureInfos — per
   `docs/3d/gltf/extensions/KHR_texture_transform.md` §glTF Schema
   Updates the transform "may be defined on `textureInfo` structures"

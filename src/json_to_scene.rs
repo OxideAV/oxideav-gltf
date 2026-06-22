@@ -38,9 +38,10 @@ use crate::validation::{
     check_asset_version, validate_accessor_fits_bufferview, validate_accessors, validate_alignment,
     validate_animation_channels, validate_attribute_counts, validate_bufferview_fits_buffer,
     validate_cameras, validate_color0_range, validate_extension_stack, validate_index_no_restart,
-    validate_index_value_bound, validate_nodes, validate_primitive_index_count, validate_samplers,
-    validate_skins, validate_sparse_indices_buffer_views, validate_sparse_values_buffer_views,
-    validate_tangent_w, validate_textures,
+    validate_index_references, validate_index_value_bound, validate_nodes,
+    validate_primitive_index_count, validate_samplers, validate_skins,
+    validate_sparse_indices_buffer_views, validate_sparse_values_buffer_views,
+    validate_structural_minimums, validate_tangent_w, validate_textures,
 };
 
 /// Decode a parsed [`GltfRoot`] into a [`Scene3D`], using `glb_bin`
@@ -133,6 +134,20 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
         &root.samplers,
         &root.materials,
     )?;
+
+    // Spec §3.3 + §5.27.1 + §5.25.5 + §5.25.1 + §5.24.3 — every
+    // top-level index reference that maps an object into a sibling root
+    // array MUST resolve: the default `scene` index, every
+    // `scene.nodes[]` entry, `node.mesh`, `node.camera`, and every
+    // `primitive.material`. (node.skin / node.children / textureInfo /
+    // animation-target references are policed by their own passes above.)
+    validate_index_references(root)?;
+
+    // Schema structural minimums independent of buffer materialisation:
+    // §5.10.2 buffer.byteLength >= 1, §5.11.3 bufferView.byteLength >= 1,
+    // §5.2.1 sparse.count >= 1, and §3.6.2.3 sparse.count MUST NOT exceed
+    // the base accessor element count.
+    validate_structural_minimums(root)?;
 
     let mut buffers = resolve_buffers(root, glb_bin)?;
     // `KHR_meshopt_compression` inflate pass — per

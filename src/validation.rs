@@ -3677,6 +3677,160 @@ pub fn validate_textures(
     Ok(())
 }
 
+/// Validate every top-level index reference that maps one object into a
+/// sibling root array, per the glTF 2.0 schema MUSTs the decoder parsed
+/// but never policed structurally. The field types already pin the
+/// non-negative minimum; the missing rule in each case is the upper
+/// bound — an index MUST resolve into the referenced array.
+///
+/// Rules enforced (each citing the spec property table):
+///
+/// * §3.3 / Table "glTF Properties" — the root `scene` (default scene)
+///   index, when present, MUST resolve into `scenes[]`
+///   (`DefaultSceneIndex`).
+/// * §5.27.1 — every `scenes[i].nodes[j]` MUST resolve into `nodes[]`
+///   (`SceneNodeIndex`).
+/// * §5.25.5 — `nodes[i].mesh`, when present, MUST resolve into
+///   `meshes[]` (`NodeMeshIndex`).
+/// * §5.25.1 — `nodes[i].camera`, when present, MUST resolve into
+///   `cameras[]` (`NodeCameraIndex`).
+/// * §5.24.3 — every `meshes[i].primitives[j].material`, when present,
+///   MUST resolve into `materials[]` (`PrimitiveMaterialIndex`).
+///
+/// `node.skin` is policed by `validate_skins` (it also needs the
+/// mesh-bearing co-requisite from §5.25.3); `node.children` are policed
+/// by `validate_nodes` (alongside the no-cycle / single-parent tree
+/// MUSTs); textureInfo / texture references are policed by
+/// `validate_textures`; animation-channel target nodes by
+/// `validate_animation_channels`. This pass covers the remaining
+/// top-level index edges.
+pub fn validate_index_references(root: &GltfRoot) -> Result<()> {
+    let scene_count = root.scenes.len();
+    let node_count = root.nodes.len();
+    let mesh_count = root.meshes.len();
+    let camera_count = root.cameras.len();
+    let material_count = root.materials.len();
+
+    if let Some(scene) = root.scene {
+        if (scene as usize) >= scene_count {
+            return Err(invalid(format!(
+                "DefaultSceneIndex: glTF.scene = {scene} is out of range (document has \
+                 {scene_count} scenes) (spec §3.3)"
+            )));
+        }
+    }
+
+    for (si, scene) in root.scenes.iter().enumerate() {
+        for &n in &scene.nodes {
+            if (n as usize) >= node_count {
+                return Err(invalid(format!(
+                    "SceneNodeIndex: scenes[{si}].nodes references node {n} which is out of \
+                     range (document has {node_count} nodes) (spec §5.27.1)"
+                )));
+            }
+        }
+    }
+
+    for (ni, node) in root.nodes.iter().enumerate() {
+        if let Some(mesh) = node.mesh {
+            if (mesh as usize) >= mesh_count {
+                return Err(invalid(format!(
+                    "NodeMeshIndex: nodes[{ni}].mesh = {mesh} is out of range (document has \
+                     {mesh_count} meshes) (spec §5.25.5)"
+                )));
+            }
+        }
+        if let Some(camera) = node.camera {
+            if (camera as usize) >= camera_count {
+                return Err(invalid(format!(
+                    "NodeCameraIndex: nodes[{ni}].camera = {camera} is out of range (document \
+                     has {camera_count} cameras) (spec §5.25.1)"
+                )));
+            }
+        }
+    }
+
+    for (mi, mesh) in root.meshes.iter().enumerate() {
+        for (pi, prim) in mesh.primitives.iter().enumerate() {
+            if let Some(material) = prim.material {
+                if (material as usize) >= material_count {
+                    return Err(invalid(format!(
+                        "PrimitiveMaterialIndex: meshes[{mi}].primitives[{pi}].material = \
+                         {material} is out of range (document has {material_count} materials) \
+                         (spec §5.24.3)"
+                    )));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate the structural-minimum MUSTs the JSON schema pins on the
+/// buffer / bufferView byte-length and on the `accessor.sparse.count`,
+/// per the glTF 2.0 property tables. These are independent of any
+/// buffer materialisation — they hold on the declared integers alone.
+///
+/// Rules enforced:
+///
+/// * §5.10.2 — `buffers[i].byteLength` MUST be `>= 1`
+///   (`BufferByteLength`, schema "Minimum: >= 1").
+/// * §5.11.3 — `bufferViews[i].byteLength` MUST be `>= 1`
+///   (`BufferViewByteLength`, schema "Minimum: >= 1").
+/// * §5.2.1 — `accessors[i].sparse.count` MUST be `>= 1`
+///   (`SparseCountMin`, schema "Minimum: >= 1").
+/// * §3.6.2.3 / §5.2.1 — `accessors[i].sparse.count` MUST NOT be greater
+///   than the base accessor's element `count` (`SparseCountRange` — "This
+///   number MUST NOT be greater than the number of the base accessor
+///   elements").
+///
+/// The companion value-level sparse MUSTs (the indices MUST form a
+/// strictly increasing sequence and MUST be `< count`) are enforced at
+/// decode time in `accessor::read_sparse_indices` once the index bytes
+/// are read; here we police only the structural bound that needs no
+/// buffer access so a never-materialised accessor still fails fast.
+pub fn validate_structural_minimums(root: &GltfRoot) -> Result<()> {
+    for (bi, buf) in root.buffers.iter().enumerate() {
+        if buf.byte_length < 1 {
+            return Err(invalid(format!(
+                "BufferByteLength: buffers[{bi}].byteLength = {} MUST be >= 1 (spec §5.10.2)",
+                buf.byte_length
+            )));
+        }
+    }
+
+    for (bvi, bv) in root.buffer_views.iter().enumerate() {
+        if bv.byte_length < 1 {
+            return Err(invalid(format!(
+                "BufferViewByteLength: bufferViews[{bvi}].byteLength = {} MUST be >= 1 \
+                 (spec §5.11.3)",
+                bv.byte_length
+            )));
+        }
+    }
+
+    for (ai, acc) in root.accessors.iter().enumerate() {
+        if let Some(sparse) = acc.sparse.as_ref() {
+            if sparse.count < 1 {
+                return Err(invalid(format!(
+                    "SparseCountMin: accessors[{ai}].sparse.count = {} MUST be >= 1 (spec §5.2.1)",
+                    sparse.count
+                )));
+            }
+            if sparse.count > acc.count {
+                return Err(invalid(format!(
+                    "SparseCountRange: accessors[{ai}].sparse.count = {} MUST NOT be greater than \
+                     the base accessor element count {} (spec §3.6.2.3)",
+                    sparse.count, acc.count
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6126,5 +6280,191 @@ mod tests {
         let found = material_texture_transforms(&mat);
         assert_eq!(found.len(), 1, "specularTexture transform discovered");
         assert_eq!(found[0].0, "KHR_materials_specular.specularTexture");
+    }
+
+    // ---- validate_index_references (§3.3 / §5.27.1 / §5.25.5 /
+    //      §5.25.1 / §5.24.3) ----
+
+    fn buf(len: u32) -> Buffer {
+        Buffer {
+            uri: None,
+            byte_length: len,
+            name: None,
+            extensions: None,
+        }
+    }
+
+    fn bview(len: u32) -> BufferView {
+        BufferView {
+            buffer: 0,
+            byte_offset: Some(0),
+            byte_length: len,
+            byte_stride: None,
+            target: None,
+            name: None,
+            extensions: None,
+        }
+    }
+
+    #[test]
+    fn index_refs_pass_when_all_resolve() {
+        use crate::json_model::Scene;
+        let mut root = empty_root();
+        root.scenes = vec![Scene {
+            nodes: vec![0],
+            ..Default::default()
+        }];
+        root.scene = Some(0);
+        root.nodes = vec![Node {
+            mesh: Some(0),
+            camera: Some(0),
+            ..Default::default()
+        }];
+        root.meshes = vec![Mesh {
+            primitives: vec![Primitive {
+                material: Some(0),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        root.cameras = vec![Camera::default()];
+        root.materials = vec![Material::default()];
+        validate_index_references(&root).unwrap();
+    }
+
+    #[test]
+    fn index_refs_reject_default_scene_out_of_range() {
+        let mut root = empty_root();
+        root.scene = Some(2); // no scenes
+        let err = validate_index_references(&root).unwrap_err();
+        assert!(format!("{err}").contains("DefaultSceneIndex"));
+    }
+
+    #[test]
+    fn index_refs_reject_scene_node_out_of_range() {
+        use crate::json_model::Scene;
+        let mut root = empty_root();
+        root.scenes = vec![Scene {
+            nodes: vec![5],
+            ..Default::default()
+        }];
+        // one node only -> index 5 invalid
+        root.nodes = vec![Node::default()];
+        let err = validate_index_references(&root).unwrap_err();
+        assert!(format!("{err}").contains("SceneNodeIndex"));
+    }
+
+    #[test]
+    fn index_refs_reject_node_mesh_out_of_range() {
+        let mut root = empty_root();
+        root.nodes = vec![Node {
+            mesh: Some(0),
+            ..Default::default()
+        }];
+        // no meshes
+        let err = validate_index_references(&root).unwrap_err();
+        assert!(format!("{err}").contains("NodeMeshIndex"));
+    }
+
+    #[test]
+    fn index_refs_reject_node_camera_out_of_range() {
+        let mut root = empty_root();
+        root.nodes = vec![Node {
+            camera: Some(3),
+            ..Default::default()
+        }];
+        let err = validate_index_references(&root).unwrap_err();
+        assert!(format!("{err}").contains("NodeCameraIndex"));
+    }
+
+    #[test]
+    fn index_refs_reject_primitive_material_out_of_range() {
+        let mut root = empty_root();
+        root.meshes = vec![Mesh {
+            primitives: vec![Primitive {
+                material: Some(1),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        // no materials
+        let err = validate_index_references(&root).unwrap_err();
+        assert!(format!("{err}").contains("PrimitiveMaterialIndex"));
+    }
+
+    // ---- validate_structural_minimums (§5.10.2 / §5.11.3 / §5.2.1 /
+    //      §3.6.2.3) ----
+
+    fn scalar_accessor(count: u32, sparse: Option<AccessorSparse>) -> Accessor {
+        Accessor {
+            buffer_view: Some(0),
+            byte_offset: Some(0),
+            component_type: COMPONENT_TYPE_FLOAT,
+            count,
+            kind: "SCALAR".to_owned(),
+            normalized: false,
+            min: None,
+            max: None,
+            name: None,
+            sparse,
+        }
+    }
+
+    fn sparse_with_count(count: u32) -> AccessorSparse {
+        AccessorSparse {
+            count,
+            indices: AccessorSparseIndices {
+                buffer_view: 0,
+                byte_offset: None,
+                component_type: 5123,
+            },
+            values: AccessorSparseValues {
+                buffer_view: 1,
+                byte_offset: None,
+            },
+        }
+    }
+
+    #[test]
+    fn structural_min_passes_when_clean() {
+        let mut root = empty_root();
+        root.buffers = vec![buf(64)];
+        root.buffer_views = vec![bview(64)];
+        root.accessors = vec![scalar_accessor(8, Some(sparse_with_count(3)))];
+        validate_structural_minimums(&root).unwrap();
+    }
+
+    #[test]
+    fn structural_min_rejects_zero_buffer_byte_length() {
+        let mut root = empty_root();
+        root.buffers = vec![buf(0)];
+        let err = validate_structural_minimums(&root).unwrap_err();
+        assert!(format!("{err}").contains("BufferByteLength"));
+    }
+
+    #[test]
+    fn structural_min_rejects_zero_buffer_view_byte_length() {
+        let mut root = empty_root();
+        root.buffers = vec![buf(64)];
+        root.buffer_views = vec![bview(0)];
+        let err = validate_structural_minimums(&root).unwrap_err();
+        assert!(format!("{err}").contains("BufferViewByteLength"));
+    }
+
+    #[test]
+    fn structural_min_rejects_zero_sparse_count() {
+        let mut root = empty_root();
+        root.accessors = vec![scalar_accessor(8, Some(sparse_with_count(0)))];
+        let err = validate_structural_minimums(&root).unwrap_err();
+        assert!(format!("{err}").contains("SparseCountMin"));
+    }
+
+    #[test]
+    fn structural_min_rejects_sparse_count_above_base() {
+        let mut root = empty_root();
+        // base accessor has 4 elements; sparse claims 5 overrides.
+        root.accessors = vec![scalar_accessor(4, Some(sparse_with_count(5)))];
+        let err = validate_structural_minimums(&root).unwrap_err();
+        assert!(format!("{err}").contains("SparseCountRange"));
     }
 }
