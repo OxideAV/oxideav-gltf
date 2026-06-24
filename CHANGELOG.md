@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- bufferView.target enum validation per glTF 2.0 §5.11.5 — a
+  `bufferViews[i].target`, when present, MUST be one of the two closed
+  GPU-binding-hint enums `34962` ARRAY_BUFFER or `34963`
+  ELEMENT_ARRAY_BUFFER; an out-of-set integer is rejected with
+  `BufferViewTargetEnum` inside `validate_structural_minimums`. An absent
+  `target` stays valid (it is a SHOULD-level hint per §5.11). Two tests.
+
 - GLB container robustness per glTF 2.0 §4.4.2 + §3.6.1.2 — the binary
   reader now enforces two length MUSTs it previously accepted silently.
   §4.4.2: the header `length` field is "the total length of the Binary

@@ -166,7 +166,8 @@ use crate::error::{invalid, Result};
 use crate::json_model::{
     component_size, type_components, Accessor, Animation, Buffer, BufferView, Camera, GltfRoot,
     Material, Mesh, Node, Scene, Skin, Texture, COMPONENT_TYPE_FLOAT, COMPONENT_TYPE_UNSIGNED_BYTE,
-    COMPONENT_TYPE_UNSIGNED_INT, COMPONENT_TYPE_UNSIGNED_SHORT,
+    COMPONENT_TYPE_UNSIGNED_INT, COMPONENT_TYPE_UNSIGNED_SHORT, TARGET_ARRAY_BUFFER,
+    TARGET_ELEMENT_ARRAY_BUFFER,
 };
 use crate::object_model::{pointer_data_type, ObjectModelDataType};
 use std::collections::HashMap;
@@ -3942,6 +3943,9 @@ pub fn validate_index_references(root: &GltfRoot) -> Result<()> {
 ///   (`BufferByteLength`, schema "Minimum: >= 1").
 /// * §5.11.3 — `bufferViews[i].byteLength` MUST be `>= 1`
 ///   (`BufferViewByteLength`, schema "Minimum: >= 1").
+/// * §5.11.5 — `bufferViews[i].target`, when present, MUST be one of the
+///   two GPU-binding-hint enums `34962` ARRAY_BUFFER / `34963`
+///   ELEMENT_ARRAY_BUFFER (`BufferViewTargetEnum`).
 /// * §5.2.1 — `accessors[i].sparse.count` MUST be `>= 1`
 ///   (`SparseCountMin`, schema "Minimum: >= 1").
 /// * §3.6.2.3 / §5.2.1 — `accessors[i].sparse.count` MUST NOT be greater
@@ -3971,6 +3975,19 @@ pub fn validate_structural_minimums(root: &GltfRoot) -> Result<()> {
                  (spec §5.11.3)",
                 bv.byte_length
             )));
+        }
+        // Spec §5.11.5 — `bufferView.target`, when present, is a closed
+        // integer enum: 34962 ARRAY_BUFFER or 34963 ELEMENT_ARRAY_BUFFER.
+        // It is only a GPU-binding hint (SHOULD be set on vertex / index
+        // bufferViews per §5.11), so an absent value stays valid, but an
+        // out-of-set integer is a schema violation.
+        if let Some(target) = bv.target {
+            if target != TARGET_ARRAY_BUFFER && target != TARGET_ELEMENT_ARRAY_BUFFER {
+                return Err(invalid(format!(
+                    "BufferViewTargetEnum: bufferViews[{bvi}].target = {target} MUST be \
+                     34962 (ARRAY_BUFFER) or 34963 (ELEMENT_ARRAY_BUFFER) (spec §5.11.5)"
+                )));
+            }
         }
     }
 
@@ -6694,6 +6711,30 @@ mod tests {
         root.buffer_views = vec![bview(0)];
         let err = validate_structural_minimums(&root).unwrap_err();
         assert!(format!("{err}").contains("BufferViewByteLength"));
+    }
+
+    #[test]
+    fn structural_min_accepts_valid_buffer_view_targets() {
+        let mut root = empty_root();
+        root.buffers = vec![buf(64)];
+        let mut bv_array = bview(32);
+        bv_array.target = Some(TARGET_ARRAY_BUFFER);
+        let mut bv_element = bview(32);
+        bv_element.target = Some(TARGET_ELEMENT_ARRAY_BUFFER);
+        root.buffer_views = vec![bv_array, bv_element];
+        validate_structural_minimums(&root).unwrap();
+    }
+
+    #[test]
+    fn structural_min_rejects_unknown_buffer_view_target() {
+        let mut root = empty_root();
+        root.buffers = vec![buf(64)];
+        let mut bv = bview(32);
+        // 34960 is not one of the two allowed GPU-binding hints.
+        bv.target = Some(34960);
+        root.buffer_views = vec![bv];
+        let err = validate_structural_minimums(&root).unwrap_err();
+        assert!(format!("{err}").contains("BufferViewTargetEnum"));
     }
 
     #[test]
