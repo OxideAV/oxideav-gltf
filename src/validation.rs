@@ -2444,9 +2444,11 @@ fn validate_texture_transform(
 /// Spec §3.11: every animation channel must point at a known
 /// `target.path` (`"translation"` / `"rotation"` / `"scale"` /
 /// `"weights"`); each channel's `sampler` index must be in range; each
-/// sampler's input/output accessor indices must be in range; and
+/// sampler's input/output accessor indices must be in range;
 /// `"weights"` channels MUST target a node whose `mesh` declares at
-/// least one morph target.
+/// least one morph target; and within one animation each target (a
+/// combination of node + path) MUST NOT be used more than once
+/// (`AnimationChannelTargetDuplicate`).
 pub fn validate_animation_channels(
     anim_idx: usize,
     anim: &Animation,
@@ -2624,6 +2626,35 @@ pub fn validate_animation_channels(
             }
         }
     }
+
+    // §3.11 — "Within one animation, each target (a combination of a node
+    // and a path) MUST NOT be used more than once." Two channels driving
+    // the same (node, path) pair would feed conflicting values into one
+    // animated property. The `"pointer"` path (KHR_animation_pointer) is
+    // excluded here because it carries no `node` and its own uniqueness is
+    // keyed on the pointer string, policed by `validate_extension_stack`
+    // (`ExtensionStackAnimationPointerDuplicate`).
+    let mut seen_targets: std::collections::HashSet<(u32, &str)> = std::collections::HashSet::new();
+    for (ci, ch) in anim.channels.iter().enumerate() {
+        if ch.target.path == "pointer" {
+            continue;
+        }
+        // A channel whose target node is undefined is ignored at decode
+        // time (§3.11), so it cannot collide with another channel.
+        let Some(node) = ch.target.node else {
+            continue;
+        };
+        if !seen_targets.insert((node, ch.target.path.as_str())) {
+            return Err(invalid(format!(
+                "AnimationChannelTargetDuplicate: animations[{anim_idx}].channels[{ci}] \
+                 reuses target (node {node}, path {:?}) already driven by an earlier channel \
+                 — each (node, path) combination MUST be used at most once within one \
+                 animation (spec §3.11)",
+                ch.target.path
+            )));
+        }
+    }
+
     Ok(())
 }
 
@@ -5242,6 +5273,15 @@ mod tests {
         }
     }
 
+    fn float_vec4_accessor(count: u32) -> Accessor {
+        Accessor {
+            kind: "VEC4".into(),
+            min: None,
+            max: None,
+            ..float_scalar_accessor(count)
+        }
+    }
+
     fn anim_with_path(
         path: &str,
         target_node: Option<u32>,
@@ -5273,6 +5313,54 @@ mod tests {
         let nodes = vec![Node::default()];
         let meshes: Vec<Mesh> = vec![];
         let accessors = vec![float_scalar_accessor(2), float_vec3_accessor(2)];
+        validate_animation_channels(0, &anim, &nodes, &meshes, &accessors).unwrap();
+    }
+
+    #[test]
+    fn animation_channels_rejects_duplicate_target() {
+        // Two channels both driving (node 0, "translation") — a conflict
+        // the spec §3.11 (node, path) uniqueness rule forbids.
+        let mut anim = anim_with_path("translation", Some(0), 0, 1);
+        anim.channels.push(AnimationChannel {
+            sampler: 0,
+            target: AnimationChannelTarget {
+                node: Some(0),
+                path: "translation".into(),
+                extensions: None,
+            },
+        });
+        let nodes = vec![Node::default()];
+        let meshes: Vec<Mesh> = vec![];
+        let accessors = vec![float_scalar_accessor(2), float_vec3_accessor(2)];
+        let err = validate_animation_channels(0, &anim, &nodes, &meshes, &accessors).unwrap_err();
+        assert!(format!("{err}").contains("AnimationChannelTargetDuplicate"));
+    }
+
+    #[test]
+    fn animation_channels_accepts_same_node_different_path() {
+        // (node 0, "translation") and (node 0, "rotation") are distinct
+        // targets, so both channels are allowed.
+        let mut anim = anim_with_path("translation", Some(0), 0, 1);
+        anim.channels.push(AnimationChannel {
+            sampler: 1,
+            target: AnimationChannelTarget {
+                node: Some(0),
+                path: "rotation".into(),
+                extensions: None,
+            },
+        });
+        anim.samplers.push(AnimationSampler {
+            input: 0,
+            output: 2,
+            interpolation: None,
+        });
+        let nodes = vec![Node::default()];
+        let meshes: Vec<Mesh> = vec![];
+        let accessors = vec![
+            float_scalar_accessor(2),
+            float_vec3_accessor(2),
+            float_vec4_accessor(2),
+        ];
         validate_animation_channels(0, &anim, &nodes, &meshes, &accessors).unwrap();
     }
 

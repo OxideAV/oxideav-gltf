@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Animation-channel target-uniqueness validation per glTF 2.0 §3.11 —
+  "within one animation, each target (a combination of a node and a
+  path) MUST NOT be used more than once." `validate_animation_channels`
+  now rejects two channels driving the same `(node, path)` pair with
+  `AnimationChannelTargetDuplicate`. The `"pointer"` path
+  (KHR_animation_pointer) is excluded — it carries no node and its
+  uniqueness is keyed on the pointer string, already policed by
+  `ExtensionStackAnimationPointerDuplicate`. Two tests.
+
 - bufferView.target enum validation per glTF 2.0 §5.11.5 — a
   `bufferViews[i].target`, when present, MUST be one of the two closed
   GPU-binding-hint enums `34962` ARRAY_BUFFER or `34963`
