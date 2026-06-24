@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Morph-target structural validation (`validate_morph_targets`) per
+  glTF 2.0 §3.7.2.2 — the morph MUSTs that hold on declared accessors
+  alone: all primitives in a mesh declare the same number of targets
+  (`MorphTargetPrimitiveCount`); every morphed attribute has a base
+  attribute of the same name (`MorphTargetMissingBase`) and a morph
+  accessor count matching the base accessor count (`MorphTargetCount`);
+  morphed semantics follow the §3.7.2.2 accessor type/componentType
+  table — POSITION/NORMAL/TANGENT VEC3 float, TEXCOORD_n VEC2, COLOR_n
+  VEC3/VEC4, float or the four normalized-integer forms for
+  TEXCOORD/COLOR (`MorphTargetAttributeType` /
+  `MorphTargetAttributeComponent`); a morphed POSITION accessor defines
+  `min`/`max` (`MorphTargetPositionBounds`); out-of-range morph accessor
+  indices (`MorphTargetAccessorIndex`). Application-specific semantics
+  (`_`-prefixed) defer their type contract. Ten unit tests; the
+  `morph_targets.rs` integration fixtures gained the spec-required
+  morphed-POSITION `min`/`max` and a base NORMAL attribute.
+
 - Animation-channel target-uniqueness validation per glTF 2.0 §3.11 —
   "within one animation, each target (a combination of a node and a
   path) MUST NOT be used more than once." `validate_animation_channels`

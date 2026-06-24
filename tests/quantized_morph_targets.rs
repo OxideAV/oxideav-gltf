@@ -77,7 +77,8 @@ fn build_short_normalized_morph_position_doc() -> Vec<u8> {
             }},
             {{
                 "bufferView": 1, "componentType": 5122, "count": 3, "type": "VEC3",
-                "normalized": true
+                "normalized": true,
+                "min": [-32767, -32768, 0], "max": [32767, 16383, 100]
             }}
         ],
         "meshes": [
@@ -255,7 +256,8 @@ fn quantized_morph_position_byte_round_trip_via_glb() {
             }},
             {{
                 "bufferView": 1, "componentType": 5120, "count": 3, "type": "VEC3",
-                "normalized": true
+                "normalized": true,
+                "min": [-127, -127, 0], "max": [127, 64, 32]
             }}
         ],
         "meshes": [
@@ -365,6 +367,20 @@ fn quantized_morph_short_normalized_normal_and_tangent_round_trip() {
         }
         bin.extend_from_slice(&[0u8, 0]);
     }
+    // Base TANGENT (VEC4 float) — §3.7.2.2 requires that each morphed
+    // attribute has an original attribute of the same name in the
+    // primitive; the morph deltas above target NORMAL + TANGENT.
+    let base_tan_off = bin.len();
+    let base_tangents: [[f32; 4]; 3] = [
+        [1.0, 0.0, 0.0, 1.0],
+        [0.0, 1.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0, 1.0],
+    ];
+    for v in base_tangents {
+        for c in v {
+            bin.extend_from_slice(&c.to_le_bytes());
+        }
+    }
     let total = bin.len();
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bin);
     let doc = format!(
@@ -378,7 +394,8 @@ fn quantized_morph_short_normalized_normal_and_tangent_round_trip() {
         "bufferViews": [
             {{ "buffer": 0, "byteOffset": 0, "byteLength": 36 }},
             {{ "buffer": 0, "byteOffset": {nrm_off}, "byteLength": 24, "byteStride": 8 }},
-            {{ "buffer": 0, "byteOffset": {tan_off}, "byteLength": 24, "byteStride": 8 }}
+            {{ "buffer": 0, "byteOffset": {tan_off}, "byteLength": 24, "byteStride": 8 }},
+            {{ "buffer": 0, "byteOffset": {base_tan_off}, "byteLength": 48 }}
         ],
         "accessors": [
             {{
@@ -392,13 +409,19 @@ fn quantized_morph_short_normalized_normal_and_tangent_round_trip() {
             {{
                 "bufferView": 2, "componentType": 5122, "count": 3, "type": "VEC3",
                 "normalized": true
+            }},
+            {{
+                "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"
+            }},
+            {{
+                "bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC4"
             }}
         ],
         "meshes": [
             {{
                 "primitives": [
                     {{
-                        "attributes": {{ "POSITION": 0 }},
+                        "attributes": {{ "POSITION": 0, "NORMAL": 3, "TANGENT": 4 }},
                         "targets": [ {{ "NORMAL": 1, "TANGENT": 2 }} ]
                     }}
                 ]
@@ -475,7 +498,7 @@ fn quantized_morph_rejected_when_extension_not_declared() {
         ],
         "accessors": [
             {{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0] }},
-            {{ "bufferView": 1, "componentType": 5122, "count": 3, "type": "VEC3", "normalized": true }}
+            {{ "bufferView": 1, "componentType": 5122, "count": 3, "type": "VEC3", "normalized": true, "min": [0, 0, 0], "max": [0, 0, 0] }}
         ],
         "meshes": [
             {{ "primitives": [ {{ "attributes": {{ "POSITION": 0 }}, "targets": [ {{ "POSITION": 1 }} ] }} ] }}
@@ -492,8 +515,10 @@ fn quantized_morph_rejected_when_extension_not_declared() {
         .expect_err("decoder must refuse undeclared quantized morph");
     let msg = format!("{err}");
     assert!(
-        msg.contains("KHR_mesh_quantization") || msg.contains("not in extensionsUsed"),
-        "error should call out the missing extension declaration, got: {msg}"
+        msg.contains("KHR_mesh_quantization")
+            || msg.contains("not in extensionsUsed")
+            || msg.contains("MorphTargetAttributeComponent"),
+        "error should call out the undeclared quantized morph storage form, got: {msg}"
     );
 }
 
@@ -532,10 +557,11 @@ fn quantized_morph_texcoord_round_trip() {
         ],
         "accessors": [
             {{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0] }},
-            {{ "bufferView": 1, "componentType": 5120, "count": 3, "type": "VEC2", "normalized": false }}
+            {{ "bufferView": 1, "componentType": 5120, "count": 3, "type": "VEC2", "normalized": false }},
+            {{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC2" }}
         ],
         "meshes": [
-            {{ "primitives": [ {{ "attributes": {{ "POSITION": 0 }}, "targets": [ {{ "TEXCOORD_0": 1 }} ] }} ] }}
+            {{ "primitives": [ {{ "attributes": {{ "POSITION": 0, "TEXCOORD_0": 2 }}, "targets": [ {{ "TEXCOORD_0": 1 }} ] }} ] }}
         ],
         "nodes": [ {{ "mesh": 0 }} ],
         "scenes": [ {{ "nodes": [0] }} ], "scene": 0

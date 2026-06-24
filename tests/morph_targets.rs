@@ -90,16 +90,17 @@ fn build_morph_doc(targets_json: &str, mesh_weights: Option<&str>) -> Vec<u8> {
         ],
         "accessors": [
             {{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0] }},
-            {{ "bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3" }},
-            {{ "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC3" }},
-            {{ "bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC3" }},
-            {{ "bufferView": 4, "componentType": 5126, "count": 3, "type": "VEC3" }}
+            {{ "bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.1, 0.0, 0.0], "max": [0.1, 0.0, 0.0] }},
+            {{ "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.2, 0.0], "max": [0.0, 0.2, 0.0] }},
+            {{ "bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, 0.3], "max": [0.0, 0.0, 0.3] }},
+            {{ "bufferView": 4, "componentType": 5126, "count": 3, "type": "VEC3" }},
+            {{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }}
         ],
         "meshes": [
             {{
                 "primitives": [
                     {{
-                        "attributes": {{ "POSITION": 0 }},
+                        "attributes": {{ "POSITION": 0, "NORMAL": 5 }},
                         "targets": {targets_json}
                     }}
                 ]

@@ -165,9 +165,9 @@
 use crate::error::{invalid, Result};
 use crate::json_model::{
     component_size, type_components, Accessor, Animation, Buffer, BufferView, Camera, GltfRoot,
-    Material, Mesh, Node, Scene, Skin, Texture, COMPONENT_TYPE_FLOAT, COMPONENT_TYPE_UNSIGNED_BYTE,
-    COMPONENT_TYPE_UNSIGNED_INT, COMPONENT_TYPE_UNSIGNED_SHORT, TARGET_ARRAY_BUFFER,
-    TARGET_ELEMENT_ARRAY_BUFFER,
+    Material, Mesh, Node, Scene, Skin, Texture, COMPONENT_TYPE_BYTE, COMPONENT_TYPE_FLOAT,
+    COMPONENT_TYPE_SHORT, COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_INT,
+    COMPONENT_TYPE_UNSIGNED_SHORT, TARGET_ARRAY_BUFFER, TARGET_ELEMENT_ARRAY_BUFFER,
 };
 use crate::object_model::{pointer_data_type, ObjectModelDataType};
 use std::collections::HashMap;
@@ -3817,6 +3817,191 @@ pub fn validate_morph_weights(meshes: &[Mesh]) -> Result<()> {
     Ok(())
 }
 
+/// Validate the per-spec §3.7.2.2 morph-target structural MUSTs that
+/// hold on the declared accessors alone (no buffer materialisation):
+///
+/// * "All primitives MUST have the same number of morph targets in the
+///   same order." — every primitive in one mesh MUST declare the same
+///   `targets.len()` (`MorphTargetPrimitiveCount`). (The "same order"
+///   part is positional: a morphed attribute lives at a fixed index in
+///   the `targets` array; the per-target attribute SETS may differ
+///   because an absent attribute "retains its original values", per the
+///   §3.7.2.2 Implementation Note.)
+/// * "For each morph target attribute, an original attribute MUST be
+///   present in the mesh primitive." — every key in a target map MUST
+///   also be a key of the primitive's base `attributes`
+///   (`MorphTargetMissingBase`).
+/// * "All morph target accessors MUST have the same `count` as the
+///   accessors of the original primitive." — a target attribute's
+///   accessor `count` MUST equal the base attribute's accessor `count`
+///   (`MorphTargetCount`).
+/// * The §3.7.2.2 accessor type/componentType table — each morphed
+///   semantic MUST use the spec-mandated accessor `type` and a
+///   spec-allowed `componentType`. POSITION / NORMAL / TANGENT are VEC3
+///   float (the TANGENT handedness W is omitted on displacements);
+///   TEXCOORD_n is VEC2; COLOR_n is VEC3 or VEC4; for TEXCOORD / COLOR
+///   the float and the four normalized-integer storage forms are
+///   allowed (`MorphTargetAttributeType` / `MorphTargetAttributeComponent`).
+/// * "POSITION accessor MUST have its `min` and `max` properties
+///   defined." — applied to each morphed POSITION accessor
+///   (`MorphTargetPositionBounds`).
+///
+/// When `KHR_mesh_quantization` is declared (`quantization_ext`), the
+/// extra morph-delta storage forms from
+/// `docs/3d/gltf/extensions/KHR_mesh_quantization.md` §"Extending Morph
+/// Target Attributes" are additionally accepted: POSITION VEC3
+/// byte/short (raw or normalized); NORMAL / TANGENT VEC3 byte/short
+/// normalized; TEXCOORD_n VEC2 byte/short (raw).
+///
+/// Out-of-range target accessor indices surface as
+/// `MorphTargetAccessorIndex`. Application-specific morph semantics
+/// (names prefixed with `_`) defer their type contract to the
+/// application and are checked only for base-attribute presence + count.
+pub fn validate_morph_targets(
+    meshes: &[Mesh],
+    accessors: &[Accessor],
+    quantization_ext: bool,
+) -> Result<()> {
+    for (mi, mesh) in meshes.iter().enumerate() {
+        // §3.7.2.2 — all primitives in one mesh MUST declare the same
+        // number of morph targets. The first primitive's count is the
+        // mesh's canonical target count.
+        let mesh_target_count = mesh
+            .primitives
+            .first()
+            .map(|p| p.targets.len())
+            .unwrap_or(0);
+        for (pi, prim) in mesh.primitives.iter().enumerate() {
+            if prim.targets.len() != mesh_target_count {
+                return Err(invalid(format!(
+                    "MorphTargetPrimitiveCount: meshes[{mi}].primitives[{pi}] declares {} morph \
+                     target(s) but primitive 0 declares {mesh_target_count} — all primitives in a \
+                     mesh MUST have the same number of morph targets (spec §3.7.2.2)",
+                    prim.targets.len()
+                )));
+            }
+
+            for (ti, target) in prim.targets.iter().enumerate() {
+                for (sem, &acc_idx) in target {
+                    // The morphed attribute's accessor MUST resolve.
+                    let acc = accessors.get(acc_idx as usize).ok_or_else(|| {
+                        invalid(format!(
+                            "MorphTargetAccessorIndex: meshes[{mi}].primitives[{pi}].targets[{ti}]\
+                             [{sem:?}] = {acc_idx} out of range (have {} accessors, spec §3.7.2.2)",
+                            accessors.len()
+                        ))
+                    })?;
+
+                    // "For each morph target attribute, an original
+                    // attribute MUST be present in the mesh primitive."
+                    let base_idx = prim.attributes.get(sem).copied().ok_or_else(|| {
+                        invalid(format!(
+                            "MorphTargetMissingBase: meshes[{mi}].primitives[{pi}].targets[{ti}] \
+                             morphs attribute {sem:?} but the primitive has no base attribute of \
+                             that name — for each morph target attribute an original attribute \
+                             MUST be present (spec §3.7.2.2)"
+                        ))
+                    })?;
+
+                    // "All morph target accessors MUST have the same
+                    // count as the accessors of the original primitive."
+                    if let Some(base_acc) = accessors.get(base_idx as usize) {
+                        if acc.count != base_acc.count {
+                            return Err(invalid(format!(
+                                "MorphTargetCount: meshes[{mi}].primitives[{pi}].targets[{ti}] \
+                                 {sem:?} accessor {acc_idx} has count {} but the base attribute \
+                                 accessor {base_idx} has count {} — they MUST match \
+                                 (spec §3.7.2.2)",
+                                acc.count, base_acc.count
+                            )));
+                        }
+                    }
+
+                    // Standard semantics carry the §3.7.2.2 type table.
+                    // Application-specific semantics (leading `_`) defer
+                    // their type contract to the application.
+                    morph_attribute_type_ok(mi, pi, ti, sem, acc, quantization_ext)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Check one morphed attribute's accessor `type` + `componentType`
+/// against the §3.7.2.2 table (plus the `KHR_mesh_quantization` extra
+/// forms when `quantization_ext`). Standard semantics only; an
+/// underscore-prefixed application semantic is accepted without a type
+/// contract.
+fn morph_attribute_type_ok(
+    mi: usize,
+    pi: usize,
+    ti: usize,
+    sem: &str,
+    acc: &Accessor,
+    quantization_ext: bool,
+) -> Result<()> {
+    let ct = acc.component_type;
+    let is_float = ct == COMPONENT_TYPE_FLOAT;
+    // Normalized-integer storage forms allowed for TEXCOORD / COLOR
+    // morphed deltas per the §3.7.2.2 base table.
+    let normalized_int_ok = acc.normalized
+        && matches!(
+            ct,
+            COMPONENT_TYPE_BYTE
+                | COMPONENT_TYPE_UNSIGNED_BYTE
+                | COMPONENT_TYPE_SHORT
+                | COMPONENT_TYPE_UNSIGNED_SHORT
+        );
+    // `KHR_mesh_quantization` §"Extending Morph Target Attributes" extra
+    // forms (signed only): POSITION byte/short raw-or-normalized; NORMAL
+    // / TANGENT byte/short normalized; TEXCOORD_n byte/short raw.
+    let signed_int = matches!(ct, COMPONENT_TYPE_BYTE | COMPONENT_TYPE_SHORT);
+    let quant_pos = quantization_ext && signed_int; // raw or normalized
+    let quant_normal_tangent = quantization_ext && signed_int && acc.normalized;
+    let quant_texcoord = quantization_ext && signed_int && !acc.normalized;
+
+    let (expected_types, component_ok): (&[&str], bool) = if sem == "POSITION" {
+        (&["VEC3"], is_float || quant_pos)
+    } else if sem == "NORMAL" || sem == "TANGENT" {
+        // VEC3 float; the handedness W is omitted on TANGENT deltas.
+        (&["VEC3"], is_float || quant_normal_tangent)
+    } else if sem.starts_with("TEXCOORD_") {
+        (&["VEC2"], is_float || normalized_int_ok || quant_texcoord)
+    } else if sem.starts_with("COLOR_") {
+        (&["VEC3", "VEC4"], is_float || normalized_int_ok)
+    } else {
+        // Application-specific semantic — no type contract.
+        return Ok(());
+    };
+
+    if !expected_types.contains(&acc.kind.as_str()) {
+        return Err(invalid(format!(
+            "MorphTargetAttributeType: meshes[{mi}].primitives[{pi}].targets[{ti}] {sem:?} \
+             accessor has type {:?} but the spec §3.7.2.2 table requires one of {expected_types:?}",
+            acc.kind
+        )));
+    }
+    if !component_ok {
+        return Err(invalid(format!(
+            "MorphTargetAttributeComponent: meshes[{mi}].primitives[{pi}].targets[{ti}] {sem:?} \
+             accessor has componentType {} (normalized = {}) outside the §3.7.2.2 allowed set \
+             (integer storage forms additionally require KHR_mesh_quantization)",
+            acc.component_type, acc.normalized
+        )));
+    }
+
+    // "POSITION accessor MUST have its `min` and `max` properties
+    // defined." (applies to the morphed POSITION delta accessor too).
+    if sem == "POSITION" && (acc.min.is_none() || acc.max.is_none()) {
+        return Err(invalid(format!(
+            "MorphTargetPositionBounds: meshes[{mi}].primitives[{pi}].targets[{ti}] POSITION \
+             accessor MUST define both `min` and `max` (spec §3.7.2.2)"
+        )));
+    }
+    Ok(())
+}
+
 /// Validate every `images[i]` entry per spec §5.18, independent of
 /// whether a texture references it (an unreferenced image is still a
 /// document object the schema MUSTs apply to). The runtime image-load
@@ -6925,5 +7110,240 @@ mod tests {
     fn morph_weights_reject_length_mismatch() {
         let err = validate_morph_weights(&[mesh_with(2, Some(vec![0.0, 1.0, 0.5]))]).unwrap_err();
         assert!(format!("{err}").contains("MeshWeightsLength"));
+    }
+
+    // ---- validate_morph_targets (§3.7.2.2) ----
+
+    fn typed_accessor(kind: &str, ct: u32, count: u32, normalized: bool, bounds: bool) -> Accessor {
+        let comps = type_components(kind).unwrap_or(3) as usize;
+        Accessor {
+            buffer_view: Some(0),
+            byte_offset: Some(0),
+            component_type: ct,
+            count,
+            kind: kind.to_owned(),
+            normalized,
+            min: bounds.then(|| vec![0.0; comps]),
+            max: bounds.then(|| vec![1.0; comps]),
+            name: None,
+            sparse: None,
+        }
+    }
+
+    fn morph_prim(base: &[(&str, u32)], targets: &[&[(&str, u32)]]) -> Primitive {
+        let attributes = base
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), *v))
+            .collect::<HashMap<_, _>>();
+        let target_maps = targets
+            .iter()
+            .map(|t| {
+                t.iter()
+                    .map(|(k, v)| ((*k).to_owned(), *v))
+                    .collect::<HashMap<_, _>>()
+            })
+            .collect::<Vec<_>>();
+        Primitive {
+            attributes,
+            targets: target_maps,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn morph_targets_accept_position_normal() {
+        // base POSITION (acc 0) + NORMAL (acc 1); one target morphing
+        // both, POSITION delta (acc 2, with min/max) + NORMAL delta (acc 3).
+        let accessors = vec![
+            typed_accessor("VEC3", COMPONENT_TYPE_FLOAT, 3, false, true),
+            typed_accessor("VEC3", COMPONENT_TYPE_FLOAT, 3, false, false),
+            typed_accessor("VEC3", COMPONENT_TYPE_FLOAT, 3, false, true),
+            typed_accessor("VEC3", COMPONENT_TYPE_FLOAT, 3, false, false),
+        ];
+        let mesh = Mesh {
+            primitives: vec![morph_prim(
+                &[("POSITION", 0), ("NORMAL", 1)],
+                &[&[("POSITION", 2), ("NORMAL", 3)]],
+            )],
+            ..Default::default()
+        };
+        validate_morph_targets(&[mesh], &accessors, false).unwrap();
+    }
+
+    #[test]
+    fn morph_targets_reject_primitive_count_mismatch() {
+        let accessors = vec![
+            typed_accessor("VEC3", COMPONENT_TYPE_FLOAT, 3, false, true),
+            typed_accessor("VEC3", COMPONENT_TYPE_FLOAT, 3, false, true),
+        ];
+        // primitive 0 has one target; primitive 1 has none.
+        let mesh = Mesh {
+            primitives: vec![
+                morph_prim(&[("POSITION", 0)], &[&[("POSITION", 1)]]),
+                morph_prim(&[("POSITION", 0)], &[]),
+            ],
+            ..Default::default()
+        };
+        let err = validate_morph_targets(&[mesh], &accessors, false).unwrap_err();
+        assert!(format!("{err}").contains("MorphTargetPrimitiveCount"));
+    }
+
+    #[test]
+    fn morph_targets_reject_missing_base_attribute() {
+        let accessors = vec![
+            typed_accessor("VEC3", COMPONENT_TYPE_FLOAT, 3, false, true),
+            typed_accessor("VEC3", COMPONENT_TYPE_FLOAT, 3, false, false),
+        ];
+        // morphs NORMAL but the base primitive has no NORMAL.
+        let mesh = Mesh {
+            primitives: vec![morph_prim(&[("POSITION", 0)], &[&[("NORMAL", 1)]])],
+            ..Default::default()
+        };
+        let err = validate_morph_targets(&[mesh], &accessors, false).unwrap_err();
+        assert!(format!("{err}").contains("MorphTargetMissingBase"));
+    }
+
+    #[test]
+    fn morph_targets_reject_count_mismatch() {
+        let accessors = vec![
+            typed_accessor("VEC3", COMPONENT_TYPE_FLOAT, 3, false, true),
+            // delta accessor has 4 elements but base has 3.
+            typed_accessor("VEC3", COMPONENT_TYPE_FLOAT, 4, false, true),
+        ];
+        let mesh = Mesh {
+            primitives: vec![morph_prim(&[("POSITION", 0)], &[&[("POSITION", 1)]])],
+            ..Default::default()
+        };
+        let err = validate_morph_targets(&[mesh], &accessors, false).unwrap_err();
+        assert!(format!("{err}").contains("MorphTargetCount"));
+    }
+
+    #[test]
+    fn morph_targets_reject_position_without_bounds() {
+        let accessors = vec![
+            typed_accessor("VEC3", COMPONENT_TYPE_FLOAT, 3, false, true),
+            // POSITION delta accessor without min/max.
+            typed_accessor("VEC3", COMPONENT_TYPE_FLOAT, 3, false, false),
+        ];
+        let mesh = Mesh {
+            primitives: vec![morph_prim(&[("POSITION", 0)], &[&[("POSITION", 1)]])],
+            ..Default::default()
+        };
+        let err = validate_morph_targets(&[mesh], &accessors, false).unwrap_err();
+        assert!(format!("{err}").contains("MorphTargetPositionBounds"));
+    }
+
+    #[test]
+    fn morph_targets_reject_wrong_position_type() {
+        let accessors = vec![
+            typed_accessor("VEC3", COMPONENT_TYPE_FLOAT, 3, false, true),
+            // POSITION delta declared VEC2 — table requires VEC3.
+            typed_accessor("VEC2", COMPONENT_TYPE_FLOAT, 3, false, true),
+        ];
+        let mesh = Mesh {
+            primitives: vec![morph_prim(&[("POSITION", 0)], &[&[("POSITION", 1)]])],
+            ..Default::default()
+        };
+        let err = validate_morph_targets(&[mesh], &accessors, false).unwrap_err();
+        assert!(format!("{err}").contains("MorphTargetAttributeType"));
+    }
+
+    #[test]
+    fn morph_targets_reject_non_normalized_texcoord_int() {
+        let accessors = vec![
+            typed_accessor("VEC2", COMPONENT_TYPE_FLOAT, 3, false, false),
+            // TEXCOORD_0 delta as unsigned-byte but NOT normalized —
+            // outside the §3.7.2.2 allowed set (only float or normalized
+            // integers permitted).
+            typed_accessor("VEC2", COMPONENT_TYPE_UNSIGNED_BYTE, 3, false, false),
+        ];
+        let mesh = Mesh {
+            primitives: vec![morph_prim(&[("TEXCOORD_0", 0)], &[&[("TEXCOORD_0", 1)]])],
+            ..Default::default()
+        };
+        let err = validate_morph_targets(&[mesh], &accessors, false).unwrap_err();
+        assert!(format!("{err}").contains("MorphTargetAttributeComponent"));
+    }
+
+    #[test]
+    fn morph_targets_accept_normalized_color_short() {
+        let accessors = vec![
+            typed_accessor("VEC4", COMPONENT_TYPE_FLOAT, 3, false, false),
+            // COLOR_0 delta as normalized unsigned-short VEC4 — allowed.
+            typed_accessor("VEC4", COMPONENT_TYPE_UNSIGNED_SHORT, 3, true, false),
+        ];
+        let mesh = Mesh {
+            primitives: vec![morph_prim(&[("COLOR_0", 0)], &[&[("COLOR_0", 1)]])],
+            ..Default::default()
+        };
+        validate_morph_targets(&[mesh], &accessors, false).unwrap();
+    }
+
+    #[test]
+    fn morph_targets_reject_out_of_range_accessor() {
+        let accessors = vec![typed_accessor("VEC3", COMPONENT_TYPE_FLOAT, 3, false, true)];
+        let mesh = Mesh {
+            primitives: vec![morph_prim(&[("POSITION", 0)], &[&[("POSITION", 9)]])],
+            ..Default::default()
+        };
+        let err = validate_morph_targets(&[mesh], &accessors, false).unwrap_err();
+        assert!(format!("{err}").contains("MorphTargetAccessorIndex"));
+    }
+
+    #[test]
+    fn morph_targets_accept_application_semantic() {
+        // An underscore-prefixed application semantic defers its type
+        // contract, but still needs a base attribute + matching count.
+        let accessors = vec![
+            typed_accessor("VEC3", COMPONENT_TYPE_FLOAT, 3, false, true),
+            typed_accessor("SCALAR", COMPONENT_TYPE_UNSIGNED_INT, 3, false, false),
+            typed_accessor("SCALAR", COMPONENT_TYPE_UNSIGNED_INT, 3, false, false),
+        ];
+        let mesh = Mesh {
+            primitives: vec![morph_prim(
+                &[("POSITION", 0), ("_TEMPERATURE", 1)],
+                &[&[("POSITION", 0), ("_TEMPERATURE", 2)]],
+            )],
+            ..Default::default()
+        };
+        validate_morph_targets(&[mesh], &accessors, false).unwrap();
+    }
+
+    #[test]
+    fn morph_targets_quantized_position_requires_extension() {
+        // A signed-short-normalized VEC3 POSITION delta (with min/max) is
+        // a KHR_mesh_quantization extra form: rejected when the extension
+        // is absent, accepted when declared.
+        let accessors = vec![
+            typed_accessor("VEC3", COMPONENT_TYPE_FLOAT, 3, false, true),
+            typed_accessor("VEC3", COMPONENT_TYPE_SHORT, 3, true, true),
+        ];
+        let mesh = morph_prim(&[("POSITION", 0)], &[&[("POSITION", 1)]]);
+        let make = || Mesh {
+            primitives: vec![mesh.clone()],
+            ..Default::default()
+        };
+        let err = validate_morph_targets(&[make()], &accessors, false).unwrap_err();
+        assert!(format!("{err}").contains("MorphTargetAttributeComponent"));
+        validate_morph_targets(&[make()], &accessors, true).unwrap();
+    }
+
+    #[test]
+    fn morph_targets_quantized_texcoord_unnormalized_short() {
+        // KHR_mesh_quantization allows raw (unnormalized) signed short
+        // TEXCOORD_n morph deltas; without the extension only float or
+        // base-table normalized integers are allowed.
+        let accessors = vec![
+            typed_accessor("VEC2", COMPONENT_TYPE_FLOAT, 3, false, false),
+            typed_accessor("VEC2", COMPONENT_TYPE_SHORT, 3, false, false),
+        ];
+        let mesh = morph_prim(&[("TEXCOORD_0", 0)], &[&[("TEXCOORD_0", 1)]]);
+        let make = || Mesh {
+            primitives: vec![mesh.clone()],
+            ..Default::default()
+        };
+        let err = validate_morph_targets(&[make()], &accessors, false).unwrap_err();
+        assert!(format!("{err}").contains("MorphTargetAttributeComponent"));
+        validate_morph_targets(&[make()], &accessors, true).unwrap();
     }
 }

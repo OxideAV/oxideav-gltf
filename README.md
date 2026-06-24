@@ -915,6 +915,28 @@ framework but usable standalone.
 - Mesh morph-weights length validation per spec §5.23.2 —
   `validate_morph_weights` enforces that a `mesh.weights` array's length
   matches the mesh's morph-target count (`MeshWeightsLength`)
+- Morph-target structural validation per spec §3.7.2.2 —
+  `validate_morph_targets` enforces the morph MUSTs that hold on the
+  declared accessors alone: all primitives in a mesh MUST declare the
+  same number of targets (`MorphTargetPrimitiveCount`); every morphed
+  attribute MUST have a base attribute of the same name in the primitive
+  (`MorphTargetMissingBase`) and a morph accessor whose `count` equals
+  the base attribute accessor's `count` (`MorphTargetCount`); each
+  morphed semantic MUST follow the §3.7.2.2 type/componentType table —
+  POSITION / NORMAL / TANGENT are VEC3 float (the TANGENT handedness W
+  is omitted on displacements), TEXCOORD_n is VEC2, COLOR_n is VEC3 or
+  VEC4, with the float and four normalized-integer storage forms allowed
+  for TEXCOORD / COLOR (`MorphTargetAttributeType` /
+  `MorphTargetAttributeComponent`). When `KHR_mesh_quantization` is
+  declared the §"Extending Morph Target Attributes" extra forms are also
+  accepted (POSITION VEC3 byte/short raw-or-normalized; NORMAL / TANGENT
+  VEC3 byte/short normalized; TEXCOORD_n VEC2 byte/short raw). A morphed
+  POSITION accessor MUST define `min` / `max`
+  (`MorphTargetPositionBounds`). Out-of-range morph
+  accessor indices surface as `MorphTargetAccessorIndex`;
+  application-specific semantics (names prefixed with `_`) defer their
+  type contract to the application and are checked only for
+  base-attribute presence + count
 - `extras` round-trip on root, scenes, nodes, materials, primitives
 
 ## Extension roadmap (next-round work)
