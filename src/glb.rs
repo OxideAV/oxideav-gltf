@@ -77,6 +77,32 @@ pub fn parse(bytes: &[u8]) -> Result<GlbPayload<'_>> {
             bytes.len()
         )));
     }
+    // §4.4.2 — `length` is "the total length of the Binary glTF,
+    // including header and all chunks, in bytes". A file whose actual
+    // byte count exceeds the declared `length` carries trailing data
+    // the header does not account for; per the spec the header length
+    // IS the file length, so the surplus is non-conformant rather than
+    // silently-ignorable padding (unlike the per-chunk 4-byte padding,
+    // which is counted inside each `chunkLength`). Reject it so a
+    // smuggled payload appended after a valid asset can't ride along
+    // unnoticed.
+    if length < bytes.len() {
+        return Err(invalid(format!(
+            "GlbHeaderLength: header length {length} < buffer {} \
+             ({} trailing byte(s) after the declared Binary glTF length, spec §4.4.2)",
+            bytes.len(),
+            bytes.len() - length
+        )));
+    }
+    // The header itself MUST fit inside the declared length: §4.4.2
+    // counts the 12-byte header within `length`, so a `length` below 12
+    // is structurally impossible (the loop below would not run and the
+    // missing-JSON error would mask the real cause).
+    if length < 12 {
+        return Err(invalid(format!(
+            "GlbHeaderLength: header length {length} < 12-byte header (spec §4.4.2)"
+        )));
+    }
 
     let mut json: Option<&[u8]> = None;
     let mut bin: Option<&[u8]> = None;
@@ -279,5 +305,47 @@ mod tests {
         let mut buf = vec![0u8; 12];
         buf[0] = b'X';
         assert!(parse(&buf).is_err());
+    }
+
+    #[test]
+    fn rejects_trailing_data_after_declared_length() {
+        // §4.4.2 — `length` is the total file length. Appending bytes
+        // beyond it is non-conformant: the header does not account for
+        // the surplus.
+        let json = b"{\"asset\":{\"version\":\"2.0\"}}";
+        let mut glb = encode(json, None);
+        glb.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        let err = parse(&glb).unwrap_err().to_string();
+        assert!(
+            err.contains("GlbHeaderLength"),
+            "expected GlbHeaderLength, got {err}"
+        );
+    }
+
+    #[test]
+    fn accepts_exact_declared_length() {
+        // The happy path: a byte buffer whose size exactly equals the
+        // declared header length parses cleanly.
+        let json = b"{\"asset\":{\"version\":\"2.0\"}}";
+        let glb = encode(json, None);
+        let declared = u32::from_le_bytes(glb[8..12].try_into().unwrap()) as usize;
+        assert_eq!(declared, glb.len(), "encoder must declare exact length");
+        assert!(parse(&glb).is_ok());
+    }
+
+    #[test]
+    fn rejects_header_length_below_twelve() {
+        // A `length` smaller than the 12-byte header is structurally
+        // impossible. Build a 12-byte buffer but lie about `length`.
+        let mut buf = encode(b"{}", None);
+        // shrink the declared length to 8 (< header) while keeping the
+        // real buffer large enough that the `length > bytes.len()`
+        // guard does not fire first.
+        buf[8..12].copy_from_slice(&8u32.to_le_bytes());
+        let err = parse(&buf).unwrap_err().to_string();
+        assert!(
+            err.contains("GlbHeaderLength"),
+            "expected GlbHeaderLength, got {err}"
+        );
     }
 }

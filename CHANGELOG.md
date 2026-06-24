@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- GLB container robustness per glTF 2.0 §4.4.2 + §3.6.1.2 — the binary
+  reader now enforces two length MUSTs it previously accepted silently.
+  §4.4.2: the header `length` field is "the total length of the Binary
+  glTF, including header and all chunks"; a file whose byte count exceeds
+  the declared `length` carries trailing data the header does not account
+  for and is rejected (`GlbHeaderLength`), as is a `length` below the
+  12-byte header. §3.6.1.2: the GLB-stored `buffer[0]` (uri-less,
+  referencing the BIN chunk) may have a BIN chunk up to 3 bytes larger
+  than its JSON-declared `byteLength` (the spec's padding allowance so a
+  writer need not re-update the length after 4-byte chunk padding); a
+  surplus of 4 or more bytes is a real length mismatch, not padding, and
+  is rejected (`GlbBufferLength`). Seven new tests (four `.glb` integration
+  cases in `glb_bin_length.rs`, three unit tests in `glb.rs`).
+
 - Image-source validation (`validate_images`) per glTF 2.0 §5.18 — every
   `images[i]` (referenced or not) MUST define exactly one source:
   `uri` XOR `bufferView` (`ImageNoSource` / `ImageSourceExclusive`,

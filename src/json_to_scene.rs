@@ -1196,14 +1196,34 @@ fn resolve_buffers(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Vec<Arc<Ve
                 let bin = glb_bin.ok_or_else(|| {
                     invalid("buffer[0] is uri-less but no .glb BIN chunk was provided")
                 })?;
-                if bin.len() < b.byte_length as usize {
+                let declared = b.byte_length as usize;
+                if bin.len() < declared {
                     return Err(invalid(format!(
                         "buffer[0]: BIN chunk has {} bytes < declared byteLength {}",
                         bin.len(),
-                        b.byte_length
+                        declared
                     )));
                 }
-                bin[..b.byte_length as usize].to_vec()
+                // §3.6.1.2 — "The byte length of the BIN chunk MAY be up
+                // to 3 bytes bigger than JSON-defined buffer.byteLength
+                // value to satisfy GLB padding requirements." The slack
+                // exists so a GLB writer need not re-update
+                // buffer.byteLength after applying the chunk's 4-byte
+                // zero padding. A surplus of 4 or more bytes is NOT
+                // padding — it is a mismatch between the JSON-declared
+                // buffer length and the actual BIN chunk, which the spec
+                // does not sanction.
+                if bin.len() - declared >= 4 {
+                    return Err(invalid(format!(
+                        "GlbBufferLength: buffer[0] BIN chunk has {} bytes, {} more than \
+                         declared byteLength {} — the GLB padding allowance is at most 3 \
+                         bytes (spec §3.6.1.2)",
+                        bin.len(),
+                        bin.len() - declared,
+                        declared
+                    )));
+                }
+                bin[..declared].to_vec()
             }
             (Some(uri), _) if uri.starts_with("data:") => decode_data_uri(uri)?,
             (Some(uri), _) => {

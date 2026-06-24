@@ -11,7 +11,19 @@ framework but usable standalone.
 ## What's covered
 
 - `.gltf` JSON document read + write
-- `.glb` binary container read + write (header + JSON chunk + BIN chunk)
+- `.glb` binary container read + write (header + JSON chunk + BIN chunk).
+  GLB robustness per spec §4.4.2 + §4.4.3: chunk 4-byte alignment
+  (`GlbChunkAlignment`), JSON-first / BIN-second ordering
+  (`GlbJsonChunkOrder` / `GlbBinChunkOrder`), and exact-length policing
+  — the header `length` MUST equal the file size, so trailing bytes
+  appended past the declared Binary glTF length (`GlbHeaderLength`) or a
+  `length` below the 12-byte header are rejected. The GLB-stored
+  `buffer[0]` (uri-less, references the BIN chunk) honours the §3.6.1.2
+  padding allowance: the BIN chunk MAY be up to 3 bytes larger than the
+  JSON-declared `buffer.byteLength` (so a writer need not re-update it
+  after 4-byte chunk padding), but a surplus of 4+ bytes is a genuine
+  length mismatch and is rejected (`GlbBufferLength`); a BIN chunk
+  shorter than the declared `byteLength` is likewise rejected
 - glTF 2.0 PBR metallic-roughness materials (base colour / metallic /
   roughness / normal / occlusion / emissive — factors + textures, with
   `alphaMode` and `doubleSided`)
