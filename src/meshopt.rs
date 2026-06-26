@@ -1723,4 +1723,51 @@ mod tests {
     fn encode_rejects_size_mismatch() {
         assert!(encode(&[0u8; 7], Mode::Attributes, Filter::None, 2, 4).is_err());
     }
+
+    #[test]
+    fn attributes_encode_shrinks_smooth_data() {
+        // 256 VEC3 f32 positions on a smooth ramp → small per-element
+        // byte deltas → the v0 group bit-width selection should compress
+        // well below the raw 256*12 = 3072 bytes.
+        let count = 256;
+        let stride = 12;
+        let mut raw = Vec::with_capacity(count * stride);
+        for i in 0..count {
+            let x = i as f32 * 0.01;
+            for c in [x, x * 0.5, -x] {
+                raw.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        let enc = encode(&raw, Mode::Attributes, Filter::None, count, stride).unwrap();
+        assert!(
+            enc.len() < raw.len(),
+            "smooth attributes should shrink: {} vs raw {}",
+            enc.len(),
+            raw.len()
+        );
+        // And still round-trip exactly.
+        let dec = decode(&enc, Mode::Attributes, Filter::None, count, stride).unwrap();
+        assert_eq!(dec, raw);
+    }
+
+    #[test]
+    fn indices_encode_shrinks_sequential_data() {
+        // A sequential triangle strip-ish index list compresses to ~1
+        // byte per index (delta +1 → varint single byte) vs 4 raw.
+        let count = 300;
+        let stride = 4;
+        let mut raw = Vec::with_capacity(count * stride);
+        for i in 0..count as u32 {
+            raw.extend_from_slice(&i.to_le_bytes());
+        }
+        let enc = encode(&raw, Mode::Indices, Filter::None, count, stride).unwrap();
+        assert!(
+            enc.len() < raw.len(),
+            "sequential indices should shrink: {} vs raw {}",
+            enc.len(),
+            raw.len()
+        );
+        let dec = decode(&enc, Mode::Indices, Filter::None, count, stride).unwrap();
+        assert_eq!(dec, raw);
+    }
 }

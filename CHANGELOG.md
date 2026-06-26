@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Compression-effectiveness unit tests for `meshopt::encode` — a smooth
+  256-element VEC3 f32 attribute ramp and a 300-element sequential index
+  list both compress below their raw size (and still round-trip), so the
+  encoder is verified to actually shrink data, not merely invert.
+
 - Deterministic property/fuzz coverage for the meshopt write path
   (`tests/meshopt_encode_fuzz.rs`) — a fixed-seed LCG generates ~96
   random indexed triangle meshes (varied vertex/triangle counts,
