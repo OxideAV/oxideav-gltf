@@ -920,12 +920,23 @@ fn decode_triangles(data: &[u8], count: usize, byte_stride: usize) -> Result<Vec
 }
 
 /// Encode raw index bytes into a Mode 1 TRIANGLES stream (inverse of
-/// [`decode_triangles`]). Uses the all-explicit `0xff` / `zw = 0xff`
-/// escape for every triangle: each of the three corner indices is
-/// emitted as an explicit `decode_index` delta against the shared
-/// `last`. This is the simplest fully-general encoding the FIFO decoder
-/// accepts — it does not exploit edge/vertex reuse, so it trades
-/// compactness for a clean lossless round-trip.
+/// [`decode_triangles`]).
+///
+/// The encoder mirrors the decoder's exact state machine — the edge FIFO,
+/// vertex FIFO, the `next` new-vertex counter, and the `last` explicit
+/// baseline — so that every emitted code reproduces the original triangle
+/// when fed back through [`decode_triangles`].
+///
+/// For each triangle it first tries to *reuse an edge*: if some rotation of
+/// the corners has its leading edge `(a, b)` already in the edge FIFO, the
+/// `0xXY` edge codes encode the triangle in a single byte plus (often) a
+/// vertex-FIFO reference for the third corner, which is the dominant
+/// compression mechanism for locality-optimised triangle lists. When no
+/// edge can be reused it falls back to the fully-general `0xff` explicit
+/// code (three `decode_index` deltas), so the encoder stays lossless for
+/// arbitrary index data. The third corner `c`, when not reused, is encoded
+/// as the running `next` counter where possible (the most compact form) and
+/// otherwise via a vertex-FIFO reference or an explicit delta.
 fn encode_triangles(raw: &[u8], count: usize, byte_stride: usize) -> Result<Vec<u8>> {
     if byte_stride != 2 && byte_stride != 4 {
         return Err(invalid(format!(
@@ -948,26 +959,95 @@ fn encode_triangles(raw: &[u8], count: usize, byte_stride: usize) -> Result<Vec<
         }
     };
 
-    // `code` bytes (one per triangle, all 0xff) come first, then the
-    // `data` section (the per-corner zw + explicit index varints), then
-    // the 16-byte codeaux tail. All-explicit corners never index codeaux,
-    // so an all-zero codeaux table satisfies the decoder's validity
-    // checks (last two bytes 0, no 0xf nibble).
-    let mut out = vec![0xe1u8]; // header
-    out.resize(out.len() + triangle_count, 0xffu8); // codes
-
+    // Encoder state, kept in lock-step with the decoder.
+    let mut codes: Vec<u8> = Vec::with_capacity(triangle_count);
+    let mut data: Vec<u8> = Vec::new();
+    let mut next: u32 = 0;
     let mut last: u32 = 0;
+    let mut edge_fifo = Fifo2::new();
+    let mut vertex_fifo = Fifo1::new();
+
     for t in 0..triangle_count {
-        // zw = 0xff → a, b, c all explicit. zw must not be 0x00 (which
-        // would reset `next`); 0xff is safe.
-        out.push(0xff);
-        for corner in 0..3 {
-            let idx = read_idx(t * 3 + corner);
-            encode_index(&mut out, idx, &mut last);
+        let tri = [read_idx(t * 3), read_idx(t * 3 + 1), read_idx(t * 3 + 2)];
+
+        // The decoder reconstructs each triangle as `(a, b, c)` in the exact
+        // order the chosen code dictates, so to reproduce the original index
+        // order *byte-for-byte* the encoder may only reuse the leading edge
+        // `(tri[0], tri[1])` — a cyclic rotation would reorder the stored
+        // corners. When that edge is in the FIFO we take the edge code;
+        // otherwise we fall back to the order-preserving explicit code.
+        let a = tri[0];
+        let b = tri[1];
+        let c = tri[2];
+        let best = edge_fifo.find(a, b).map(|x| (x, [a, b, c]));
+
+        if let Some((x, [a, b, c])) = best {
+            // Edge-based code 0xXY (X = edge FIFO index < 15).
+            // Choose Y to encode the third corner `c`.
+            if c == next {
+                // 0xX0: c is a brand-new vertex (low nibble Y = 0).
+                codes.push((x as u8) << 4);
+                next = next.wrapping_add(1);
+                edge_fifo.push(c, b);
+                edge_fifo.push(a, c);
+                vertex_fifo.push(c);
+            } else if let Some(vy) = vertex_fifo.find(c).filter(|&vy| (1..=0x0c).contains(&vy)) {
+                // 0xXY (1..=12): c reused from the vertex FIFO; no push of c.
+                codes.push(((x as u8) << 4) | (vy as u8));
+                edge_fifo.push(c, b);
+                edge_fifo.push(a, c);
+            } else if c == last.wrapping_sub(1) {
+                // 0xXd
+                codes.push(((x as u8) << 4) | 0x0d);
+                last = c;
+                edge_fifo.push(c, b);
+                edge_fifo.push(a, c);
+                vertex_fifo.push(c);
+            } else if c == last.wrapping_add(1) {
+                // 0xXe
+                codes.push(((x as u8) << 4) | 0x0e);
+                last = c;
+                edge_fifo.push(c, b);
+                edge_fifo.push(a, c);
+                vertex_fifo.push(c);
+            } else {
+                // 0xXf: c explicit.
+                codes.push(((x as u8) << 4) | 0x0f);
+                encode_index(&mut data, c, &mut last);
+                edge_fifo.push(c, b);
+                edge_fifo.push(a, c);
+                vertex_fifo.push(c);
+            }
+            continue;
         }
+
+        // No reusable edge — fall back to the fully-explicit 0xff code.
+        // `zw = 0xff` keeps all three corners explicit; `zw` must not be
+        // 0x00 (that would reset `next`). The decoder's 0xff path pushes a
+        // (then b iff z∈{0,0xf}, then c iff w∈{0,0xf}); with z=w=0xf all
+        // three are explicit and all three are pushed to the vertex FIFO.
+        let [a, b, c] = tri;
+        codes.push(0xff);
+        data.push(0xff); // zw nibble z=0xf, w=0xf
+        encode_index(&mut data, a, &mut last);
+        encode_index(&mut data, b, &mut last);
+        encode_index(&mut data, c, &mut last);
+        edge_fifo.push(b, a);
+        edge_fifo.push(c, b);
+        edge_fifo.push(a, c);
+        vertex_fifo.push(a);
+        vertex_fifo.push(b);
+        vertex_fifo.push(c);
     }
 
-    out.extend_from_slice(&[0u8; 16]); // codeaux tail (all zero)
+    // Assemble: header, codes, data, 16-byte codeaux tail (all zero — the
+    // 0xfY codeaux family is never emitted, so an all-zero table satisfies
+    // the decoder's validity checks: last two bytes 0, no 0xf nibble).
+    let mut out = Vec::with_capacity(1 + codes.len() + data.len() + 16);
+    out.push(0xe1u8);
+    out.extend_from_slice(&codes);
+    out.extend_from_slice(&data);
+    out.extend_from_slice(&[0u8; 16]);
     Ok(out)
 }
 
@@ -1778,6 +1858,12 @@ impl Fifo1 {
         }
         Ok(self.buf[(self.head + i) % 16])
     }
+
+    /// FIFO index (0 = most recent) of the most recent entry equal to `v`,
+    /// or `None` if absent. Used by the encoder to reuse a vertex reference.
+    fn find(&self, v: u32) -> Option<usize> {
+        (0..self.len).find(|&i| self.buf[(self.head + i) % 16] == v)
+    }
 }
 
 /// 16-entry FIFO of edge (a, b) index pairs (§"Mode 1").
@@ -1810,6 +1896,13 @@ impl Fifo2 {
             ));
         }
         Ok(self.buf[(self.head + i) % 16])
+    }
+
+    /// FIFO index (0 = most recent) of the most recent edge equal to the
+    /// ordered pair `(a, b)`, restricted to indices the `0xXY` codes can
+    /// address (X < 15), or `None`. Used by the encoder to reuse an edge.
+    fn find(&self, a: u32, b: u32) -> Option<usize> {
+        (0..self.len.min(15)).find(|&i| self.buf[(self.head + i) % 16] == (a, b))
     }
 }
 
@@ -2084,6 +2177,127 @@ mod tests {
             raw.extend_from_slice(&i.to_le_bytes());
         }
         rt(Mode::Triangles, &raw, idx.len(), 2);
+    }
+
+    /// Build a `w`×`h`-quad grid triangle list, two triangles per quad,
+    /// linearised so adjacent triangles share edges. Returns u32 indices.
+    fn grid_indices(w: u32, h: u32) -> Vec<u32> {
+        let mut idx = Vec::new();
+        let stride = w + 1;
+        for y in 0..h {
+            for x in 0..w {
+                let v0 = y * stride + x;
+                let v1 = v0 + 1;
+                let v2 = v0 + stride;
+                let v3 = v2 + 1;
+                // Two triangles sharing the v1-v2 diagonal.
+                idx.extend_from_slice(&[v0, v1, v2]);
+                idx.extend_from_slice(&[v2, v1, v3]);
+            }
+        }
+        idx
+    }
+
+    #[test]
+    fn encode_triangles_grid_roundtrips_and_uses_edge_reuse() {
+        let idx = grid_indices(8, 8); // 128 triangles, 384 indices
+        let mut raw = Vec::new();
+        for &i in &idx {
+            raw.extend_from_slice(&i.to_le_bytes());
+        }
+        let count = idx.len();
+        // Round-trip exactness.
+        rt(Mode::Triangles, &raw, count, 4);
+
+        // Edge reuse must beat the all-explicit baseline: the second
+        // triangle of every quad shares the v1-v2 edge with the first, and
+        // long runs share edges across quads, so the produced stream is far
+        // smaller than the raw 4-byte-per-index input.
+        let enc = encode(&raw, Mode::Triangles, Filter::None, count, 4).unwrap();
+        assert!(
+            enc.len() < raw.len(),
+            "edge-reuse stream {} not smaller than raw {}",
+            enc.len(),
+            raw.len()
+        );
+        // Count edge codes (high nibble < 0xf) among the per-triangle codes.
+        let triangle_count = count / 3;
+        let codes = &enc[1..1 + triangle_count];
+        let edge_codes = codes.iter().filter(|&&c| (c >> 4) < 0x0f).count();
+        // At least the second triangle of each quad (half) reuses an edge.
+        assert!(
+            edge_codes >= triangle_count / 2,
+            "only {edge_codes}/{triangle_count} triangles reused an edge"
+        );
+    }
+
+    #[test]
+    fn encode_triangles_disjoint_triangles_roundtrip() {
+        // Triangles that share no edges at all — every triangle must take
+        // the explicit fallback and still round-trip.
+        let idx: Vec<u32> = vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 5, 6, 7];
+        let mut raw = Vec::new();
+        for &i in &idx {
+            raw.extend_from_slice(&i.to_le_bytes());
+        }
+        rt(Mode::Triangles, &raw, idx.len(), 4);
+    }
+
+    #[test]
+    fn encode_triangles_fan_roundtrip() {
+        // A triangle fan around vertex 0 — consecutive triangles share the
+        // 0-vk edge, exercising vertex-FIFO reuse for the apex.
+        let mut idx = Vec::new();
+        for k in 1..20u32 {
+            idx.extend_from_slice(&[0, k, k + 1]);
+        }
+        let mut raw = Vec::new();
+        for &i in &idx {
+            raw.extend_from_slice(&i.to_le_bytes());
+        }
+        rt(Mode::Triangles, &raw, idx.len(), 4);
+    }
+
+    #[test]
+    fn encode_triangles_fuzz_random_roundtrip() {
+        // Fixed-seed LCG generates many random triangle lists (varied vertex
+        // ranges, occasional shared edges) and asserts each reproduces its
+        // exact index order through the edge-reuse encoder + FIFO decoder.
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as u32
+        };
+        for _ in 0..200 {
+            let tris = 1 + (next() % 60) as usize;
+            let vmax = 1 + next() % 50;
+            let mut idx = Vec::with_capacity(tris * 3);
+            for _ in 0..tris {
+                // Sometimes reuse the previous triangle's edge to exercise
+                // the edge-reuse path; otherwise random corners.
+                if !idx.is_empty() && next() % 2 == 0 {
+                    let n = idx.len();
+                    let a = idx[n - 2];
+                    let b = idx[n - 1];
+                    idx.push(a);
+                    idx.push(b);
+                    idx.push(next() % vmax);
+                } else {
+                    idx.push(next() % vmax);
+                    idx.push(next() % vmax);
+                    idx.push(next() % vmax);
+                }
+            }
+            let mut raw = Vec::new();
+            for &i in &idx {
+                raw.extend_from_slice(&i.to_le_bytes());
+            }
+            let enc = encode(&raw, Mode::Triangles, Filter::None, idx.len(), 4).unwrap();
+            let dec = decode(&enc, Mode::Triangles, Filter::None, idx.len(), 4).unwrap();
+            assert_eq!(dec, raw, "fuzz triangle round-trip mismatch: {idx:?}");
+        }
     }
 
     #[test]

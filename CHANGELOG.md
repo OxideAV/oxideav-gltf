@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `KHR_meshopt_compression` **TRIANGLES edge-reuse encoder** — the Mode 1
+  (TRIANGLES) write path now mirrors the decoder's full state machine
+  (edge FIFO, vertex FIFO, `next` new-vertex counter, `last` explicit
+  baseline) and emits the compact `0xXY` edge-reuse codes whenever a
+  triangle's leading edge is already in the edge FIFO, encoding the third
+  corner as the running `next` counter, a vertex-FIFO reference, a
+  `last ± 1` step, or an explicit delta — falling back to the
+  order-preserving `0xff` explicit code only when no edge can be reused.
+  This replaces the previous all-explicit encoding, so locality-optimised
+  triangle lists compress substantially (an 8×8-quad grid encodes well
+  below its raw index size with edge reuse on ≥ half the triangles).
+  Index order is preserved byte-for-byte (only the leading edge is
+  reused, never a cyclic rotation). Covered by grid / fan / disjoint
+  round-trips plus a fixed-seed fuzz test over 200 random triangle lists.
+
 - `KHR_meshopt_compression` **forward (encode-side) Appendix B filters** —
   `meshopt::encode` now accepts the four post-decompression filters
   (OCTAHEDRAL / QUATERNION / EXPONENTIAL / COLOR) in addition to NONE,
