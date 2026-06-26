@@ -332,18 +332,28 @@ fn encode_attributes_v1(raw: &[u8], count: usize, byte_stride: usize) -> Result<
     while start < count {
         let block_elements = (count - start).min(max_block_elements);
 
-        // Decide each byte position's control mode (0 or 2) and stage the
-        // body so the control header is written before the data blocks.
+        // Pick each byte position's control mode by encoded size and stage
+        // the body so the control header is written before the data blocks.
         let mut control = vec![0u8; byte_stride];
         let mut body: Vec<u8> = Vec::new();
         for (p, dslot) in deltas.iter().enumerate() {
             let block = &dslot[start..start + block_elements];
             if block.iter().all(|&d| d == 0) {
-                control[p] = 2; // no data stored
-            } else {
-                control[p] = 0; // {0,1,2,4} sentinel ladder
-                encode_byte_channel_v1_cmode0(&mut body, block);
+                control[p] = 2; // mode 2: no data stored
+                continue;
             }
+            // Evaluate the data-bearing control modes and keep the smallest.
+            // Mode 0: {0,1,2,4} ladder. Mode 1: {1,2,4,8} ladder.
+            // Mode 3: literal (group_count * 16 bytes, no headers).
+            let m0 = encode_byte_channel_v1(block, 0);
+            let m1 = encode_byte_channel_v1(block, 1);
+            let m3 = encode_byte_channel_v1(block, 3);
+            let (cmode, bytes) = [(0u8, m0), (1u8, m1), (3u8, m3)]
+                .into_iter()
+                .min_by_key(|(_, b)| b.len())
+                .unwrap();
+            control[p] = cmode;
+            body.extend_from_slice(&bytes);
         }
 
         // Pack the control header: 2 bits per byte position, 4 per byte.
@@ -363,12 +373,22 @@ fn encode_attributes_v1(raw: &[u8], count: usize, byte_stride: usize) -> Result<
     Ok(out)
 }
 
-/// Encode one byte-position data block under v1 **control mode 0**
-/// (bit-widths `{0, 1, 2, 4}`), the inverse of [`decode_byte_channel`] for
-/// `cmode == 0, version == 1`. Each 16-element group gets a 2-bit header
-/// selecting the narrowest width that fits.
-fn encode_byte_channel_v1_cmode0(out: &mut Vec<u8>, block: &[u8]) {
+/// Encode one byte-position data block under a v1 data-bearing control
+/// mode, the inverse of [`decode_byte_channel`] for `version == 1`.
+///
+/// * `cmode == 0` → header bits + groups on the `{0, 1, 2, 4}` ladder.
+/// * `cmode == 1` → header bits + groups on the `{1, 2, 4, 8}` ladder.
+/// * `cmode == 3` → literal: `group_count * 16` raw delta bytes, no headers.
+fn encode_byte_channel_v1(block: &[u8], cmode: u8) -> Vec<u8> {
     let group_count = block.len().div_ceil(16);
+
+    if cmode == 3 {
+        // Literal: pad each group to 16 and store all bytes verbatim.
+        let mut out = vec![0u8; group_count * 16];
+        out[..block.len()].copy_from_slice(block);
+        return out;
+    }
+
     let mut headers = vec![0u8; group_count];
     let mut group_payloads: Vec<Vec<u8>> = Vec::with_capacity(group_count);
     for (g, hdr_slot) in headers.iter_mut().enumerate() {
@@ -376,46 +396,59 @@ fn encode_byte_channel_v1_cmode0(out: &mut Vec<u8>, block: &[u8]) {
         let g_end = (g_start + 16).min(block.len());
         let mut grp = [0u8; 16];
         grp[..g_end - g_start].copy_from_slice(&block[g_start..g_end]);
-        let (hb, payload) = encode_group_v1_cmode0(&grp);
+        let (hb, payload) = encode_group_v1(&grp, cmode);
         *hdr_slot = hb;
         group_payloads.push(payload);
     }
     let header_bytes = group_count.div_ceil(4);
-    let mut hdr = vec![0u8; header_bytes];
+    let mut out = vec![0u8; header_bytes];
     for (g, &hb) in headers.iter().enumerate() {
-        hdr[g / 4] |= (hb & 0b11) << ((g % 4) * 2);
+        out[g / 4] |= (hb & 0b11) << ((g % 4) * 2);
     }
-    out.extend_from_slice(&hdr);
     for payload in group_payloads {
         out.extend_from_slice(&payload);
     }
+    out
 }
 
-/// Pick the narrowest v1 control-mode-0 bit-width `{0, 1, 2, 4}` for a
-/// 16-element group of zigzag delta bytes and serialise it. Returns
-/// `(hb, payload)` where `hb` is the 2-bit group header (0→0 bits, 1→1,
-/// 2→2, 3→4), matching [`group_bits`] for `cmode == 0, version == 1`.
-fn encode_group_v1_cmode0(grp: &[u8; 16]) -> (u8, Vec<u8>) {
-    if grp.iter().all(|&d| d == 0) {
-        return (0, Vec::new()); // hb 0 → 0 bits, no data
-    }
-    // Sentinel costs for widths 1, 2, 4 (hb 1, 2, 3).
+/// Choose the 2-bit group header `hb` and serialise a 16-element group for
+/// the v1 control mode `cmode` (0 → `{0,1,2,4}`, 1 → `{1,2,4,8}`), matching
+/// [`group_bits`]. Picks the smallest data cost; the bit-8 case stores 16
+/// raw bytes.
+fn encode_group_v1(grp: &[u8; 16], cmode: u8) -> (u8, Vec<u8>) {
+    // (hb, bits) candidates for each control mode.
+    let candidates: [(u8, u32); 4] = if cmode == 0 {
+        [(0, 0), (1, 1), (2, 2), (3, 4)]
+    } else {
+        [(0, 1), (1, 2), (2, 4), (3, 8)]
+    };
     let cost = |bits: u32| -> usize {
+        if bits == 0 {
+            return if grp.iter().all(|&d| d == 0) {
+                0
+            } else {
+                usize::MAX // 0-bit only valid for all-zero groups
+            };
+        }
+        if bits == 8 {
+            return 16;
+        }
         let sentinel = (1u32 << bits) - 1;
         let packed = (16 * bits as usize) / 8;
         let escapes = grp.iter().filter(|&&d| d as u32 >= sentinel).count();
         packed + escapes
     };
-    let c1 = cost(1);
-    let c2 = cost(2);
-    let c4 = cost(4);
-    let (hb, bits) = if c1 <= c2 && c1 <= c4 {
-        (1u8, 1u32)
-    } else if c2 <= c4 {
-        (2u8, 2u32)
-    } else {
-        (3u8, 4u32)
-    };
+    let (hb, bits) = candidates
+        .into_iter()
+        .min_by_key(|&(_, bits)| cost(bits))
+        .unwrap();
+
+    if bits == 0 {
+        return (hb, Vec::new());
+    }
+    if bits == 8 {
+        return (hb, grp.to_vec());
+    }
     (hb, pack_group_sentinel(grp, bits))
 }
 
@@ -2596,6 +2629,38 @@ mod tests {
             v1.len(),
             v0.len()
         );
+    }
+
+    #[test]
+    fn v1_high_entropy_roundtrip_all_control_modes() {
+        // Mix per byte position: pos 0 constant (mode 2), pos 1 tiny deltas
+        // (mode 0), pos 2 mid deltas (mode 0/1), pos 3 full-range random
+        // (mode 1 or 3). Round-trip must be exact regardless of which mode
+        // the cost model selects.
+        let count = 200;
+        let stride = 4;
+        let mut raw = vec![0u8; count * stride];
+        let mut s: u32 = 0xDEAD_BEEF;
+        let mut rnd = || {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (s >> 24) as u8
+        };
+        let mut prev3 = 0u8;
+        for e in 0..count {
+            raw[e * stride] = 0x5a; // constant
+            raw[e * stride + 1] = (e as u8) & 0x03; // tiny
+            raw[e * stride + 2] = (e as u8).wrapping_mul(7); // mid ramp
+            prev3 = prev3.wrapping_add(rnd()); // high-entropy walk
+            raw[e * stride + 3] = prev3;
+        }
+        rt(Mode::Attributes, &raw, count, stride);
+
+        // Force a literal-heavy column: pos 3 alternating extremes so its
+        // zigzag deltas are large → mode 1/3 territory; still exact.
+        for e in 0..count {
+            raw[e * stride + 3] = if e % 2 == 0 { 0x00 } else { 0xff };
+        }
+        rt(Mode::Attributes, &raw, count, stride);
     }
 
     #[test]

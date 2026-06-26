@@ -13,15 +13,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   production ATTRIBUTES write path now emits the v1 format Appendix C
   recommends ("v1 format should be preferred since it provides better
   compression ratio at no additional runtime cost"). Per block, each byte
-  position gets a 2-bit control mode: **mode 2** (all deltas zero) stores
-  **no data** — the dominant win for quantised attributes whose high bytes
-  never change — and **mode 0** otherwise, with the narrower
-  `{0, 1, 2, 4}`-bit group ladder (vs v0's `{0, 2, 4, 8}`) that packs
-  small deltas tighter. Channel modes stay byte-delta (0). The decode
-  reconstructs the input exactly. The prior v0 (`0xa0`) encoder is
-  retained for compatibility coverage. Covered by a control-mode-2
-  effectiveness test (v1 beats v0 on constant byte positions) plus the
-  existing round-trip / fuzz suites driven through the new path.
+  position gets the cheapest 2-bit control mode by encoded size:
+  **mode 2** (all deltas zero) stores **no data** — the dominant win for
+  quantised attributes whose high bytes never change; **mode 0**
+  (`{0, 1, 2, 4}` ladder) for small deltas; **mode 1** (`{1, 2, 4, 8}`
+  ladder) for larger deltas; and **mode 3** (literal, no group headers)
+  for high-entropy byte positions where header overhead would lose. Each
+  16-element group independently picks the narrowest width on its mode's
+  ladder. Channel modes stay byte-delta (0). The decode reconstructs the
+  input exactly. The prior v0 (`0xa0`) encoder is retained for
+  compatibility coverage. Covered by a control-mode-2 effectiveness test
+  (v1 beats v0 on constant byte positions), a high-entropy round-trip
+  that exercises modes 1/3, and the existing round-trip / fuzz suites
+  driven through the new path.
 
 - `KHR_meshopt_compression` **INDICES two-baseline encoder** — the Mode 2
   (INDICES) write path now uses the decoder's dual-baseline scheme,
