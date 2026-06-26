@@ -47,6 +47,14 @@ pub struct EncodeOptions {
     /// allows in normalised-int form (ROTATION VEC4 + MORPH_WEIGHTS
     /// SCALAR). See [`QuantizeMode`].
     pub quantize_animation: QuantizeMode,
+    /// When `true`, every index bufferView (`ELEMENT_ARRAY_BUFFER`,
+    /// SCALAR `u16`/`u32`) is post-compressed with
+    /// `KHR_meshopt_compression` (INDICES mode): the uncompressed BIN
+    /// buffer becomes a fallback buffer, a second buffer carries the
+    /// compressed payloads, and each compressed bufferView gains the
+    /// descriptor. See [`compress_meshopt_indices`]. Only meaningful for
+    /// the JSON-embedded flavour (GLB carries a single BIN chunk).
+    pub meshopt_compress_indices: bool,
 }
 
 /// Translate `scene` into a glTF JSON document + the matching packed
@@ -764,7 +772,144 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
         });
     }
 
+    // --- optional KHR_meshopt_compression post-pass (INDICES) ---
+    if opts.meshopt_compress_indices {
+        compress_meshopt_indices(&mut root, &bin)?;
+    }
+
     Ok(EncodedScene { root, bin })
+}
+
+/// Post-encode `KHR_meshopt_compression` pass: compress every index
+/// bufferView (`ELEMENT_ARRAY_BUFFER`, SCALAR `u16`/`u32`) with the
+/// meshopt INDICES codec per
+/// `docs/3d/gltf/extensions/KHR_meshopt_compression.md`
+/// §"Specifying compressed views" + §"Fallback buffers".
+///
+/// Layout produced:
+/// * Buffer 0 (the packed BIN, `bin`) keeps the **uncompressed** index
+///   bytes and is a plain, real-data buffer (NOT marked
+///   `fallback: true`). The spec reserves the fallback marker for
+///   no-data placeholder buffers whose every reference carries a
+///   meshopt descriptor; buffer 0 also backs the vertex bufferViews, so
+///   marking it fallback would violate §"Fallback buffers". Because
+///   buffer 0 holds genuine uncompressed bytes, meshopt-unaware readers
+///   work directly from it.
+/// * A new buffer holds all compressed payloads concatenated, exposed as
+///   a `data:` URI (self-contained; no GLB second chunk needed).
+/// * Each compressed bufferView gains a
+///   `extensions.KHR_meshopt_compression` descriptor pointing at the new
+///   buffer with `mode = "INDICES"`, `byteStride` 2/4, and `count`. The
+///   parent bufferView's own `buffer`/range still address the
+///   uncompressed bytes in buffer 0.
+/// * `KHR_meshopt_compression` is added to `extensionsUsed` only — the
+///   document remains fully readable without the extension (the
+///   compressed buffer is purely additive), so it is NOT
+///   `extensionsRequired`.
+///
+/// `u8` index views (byteStride 1) are left uncompressed: meshopt
+/// INDICES requires a 2- or 4-byte stride.
+pub fn compress_meshopt_indices(root: &mut GltfRoot, bin: &[u8]) -> Result<()> {
+    // Identify index bufferViews + their stride from the accessor that
+    // reads them as SCALAR u16/u32.
+    let mut targets: Vec<(usize, usize, usize)> = Vec::new(); // (bv_idx, stride, count)
+    for (bv_idx, bv) in root.buffer_views.iter().enumerate() {
+        if bv.target != Some(gj::TARGET_ELEMENT_ARRAY_BUFFER) {
+            continue;
+        }
+        if bv.buffer != 0 || bv.extensions.is_some() {
+            continue;
+        }
+        // Find the SCALAR index accessor on this bufferView.
+        let acc = root
+            .accessors
+            .iter()
+            .find(|a| a.buffer_view == Some(bv_idx as u32) && a.kind == "SCALAR");
+        let Some(acc) = acc else { continue };
+        let stride = match acc.component_type {
+            gj::COMPONENT_TYPE_UNSIGNED_SHORT => 2usize,
+            gj::COMPONENT_TYPE_UNSIGNED_INT => 4usize,
+            _ => continue, // u8 indices: meshopt INDICES needs stride 2/4
+        };
+        let count = acc.count as usize;
+        targets.push((bv_idx, stride, count));
+    }
+
+    if targets.is_empty() {
+        return Ok(());
+    }
+
+    // Build the compressed-payload buffer + record each descriptor.
+    let mut compressed: Vec<u8> = Vec::new();
+    let mut descriptors: Vec<(usize, gj::KhrMeshoptCompression)> = Vec::new();
+    let new_buffer_index = root.buffers.len() as u32;
+    for (bv_idx, stride, count) in targets {
+        let bv = &root.buffer_views[bv_idx];
+        let off = bv.byte_offset.unwrap_or(0) as usize;
+        let len = bv.byte_length as usize;
+        let end = off
+            .checked_add(len)
+            .filter(|&e| e <= bin.len())
+            .ok_or_else(|| invalid("meshopt: index bufferView range overruns BIN"))?;
+        let raw = &bin[off..end];
+        if raw.len() != stride * count {
+            return Err(invalid(
+                "meshopt: index bufferView byteLength != stride * count",
+            ));
+        }
+        let payload = crate::meshopt::encode(
+            raw,
+            crate::meshopt::Mode::Indices,
+            crate::meshopt::Filter::None,
+            count,
+            stride,
+        )?;
+        let comp_off = compressed.len();
+        compressed.extend_from_slice(&payload);
+        descriptors.push((
+            bv_idx,
+            gj::KhrMeshoptCompression {
+                buffer: new_buffer_index,
+                byte_offset: Some(comp_off as u32),
+                byte_length: payload.len() as u32,
+                byte_stride: stride as u32,
+                count: count as u32,
+                mode: "INDICES".to_owned(),
+                filter: None,
+            },
+        ));
+    }
+
+    // Attach descriptors to the compressed bufferViews.
+    for (bv_idx, desc) in descriptors {
+        root.buffer_views[bv_idx].extensions = Some(gj::BufferViewExtensions {
+            khr_meshopt_compression: Some(desc),
+        });
+    }
+
+    // Append the compressed-payload buffer as a self-contained data URI.
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&compressed);
+    root.buffers.push(gj::Buffer {
+        byte_length: compressed.len() as u32,
+        uri: Some(format!("data:application/octet-stream;base64,{b64}")),
+        name: Some("meshopt_compressed".to_owned()),
+        extensions: None,
+    });
+
+    // Declare the extension in `extensionsUsed` only — the document is
+    // still readable without it (buffer 0 holds the uncompressed bytes),
+    // so it is not `extensionsRequired`.
+    if !root
+        .extensions_used
+        .iter()
+        .any(|e| e == "KHR_meshopt_compression")
+    {
+        root.extensions_used
+            .push("KHR_meshopt_compression".to_owned());
+    }
+
+    Ok(())
 }
 
 // --------- per-element encoders ---------

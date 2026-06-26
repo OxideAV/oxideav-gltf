@@ -508,12 +508,25 @@ framework but usable standalone.
   under `…fallbackBuffers` as an array of buffer indices. A
   uri-less fallback buffer (the spec's "Fallback buffers" shape)
   is materialised as a zero-filled byte vector of the declared
-  `byteLength` and then overwritten by the inflated bytes. On
-  encode the sidecar is stripped from
-  `scene.extras` and the descriptors are NOT re-emitted onto the
-  freshly-built uncompressed bufferViews — documents written by
-  this crate are always uncompressed (the compression is a
-  load-time concern only). The §3.12 stack validator rejects
+  `byteLength` and then overwritten by the inflated bytes. The
+  bitstream codec is also invertible: `meshopt::encode` produces
+  payloads (all three modes, `NONE` filter) that round-trip
+  byte-for-byte through `meshopt::decode` — ATTRIBUTES emits the v0
+  stream (`0xa0`) with per-byte-position group bit-width selection,
+  INDICES the two-baseline varint delta stream, TRIANGLES an
+  all-explicit per-triangle stream. On encode the decoded sidecar is
+  stripped from `scene.extras`; by default the freshly-built
+  bufferViews are emitted uncompressed, but
+  `GltfEncoder::with_meshopt_compression(true)` opts into compressing
+  every index bufferView (`ELEMENT_ARRAY_BUFFER`, SCALAR `u16`/`u32`)
+  with the INDICES codec: the packed BIN keeps the uncompressed
+  indices (a plain real-data buffer), a second `data:`-URI buffer
+  carries the compressed payloads, each compressed index bufferView
+  gains the `INDICES` descriptor, and `KHR_meshopt_compression` is
+  added to `extensionsUsed` (not `extensionsRequired` — the document
+  stays readable without the extension). Such documents round-trip
+  back through this crate's decoder to the original indices. The
+  §3.12 stack validator rejects
   documents with the data block on any bufferView/buffer without
   the declaration (`ExtensionStackUsedNotDeclared`); uri-less
   fallback buffers without `KHR_meshopt_compression` in

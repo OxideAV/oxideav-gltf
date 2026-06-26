@@ -73,6 +73,13 @@ pub struct GltfEncoder {
     /// sampler outputs. `Float` (default) emits FLOAT (5126); the
     /// other modes pick a normalised-int component type per spec §3.11.
     pub quantize_animation: QuantizeMode,
+    /// When `true`, index bufferViews are post-compressed with
+    /// `KHR_meshopt_compression` (INDICES mode); the uncompressed data
+    /// stays in a fallback buffer and the document declares the
+    /// extension as required. Most useful with
+    /// [`OutputFlavour::JsonEmbedded`]. Enable via
+    /// [`GltfEncoder::with_meshopt_compression`]. `false` by default.
+    pub meshopt_compress_indices: bool,
 }
 
 impl GltfEncoder {
@@ -81,6 +88,7 @@ impl GltfEncoder {
             output: OutputFlavour::Glb,
             sparse_threshold: None,
             quantize_animation: QuantizeMode::Float,
+            meshopt_compress_indices: false,
         }
     }
 
@@ -89,6 +97,7 @@ impl GltfEncoder {
             output,
             sparse_threshold: None,
             quantize_animation: QuantizeMode::Float,
+            meshopt_compress_indices: false,
         }
     }
 
@@ -114,6 +123,17 @@ impl GltfEncoder {
         self.quantize_animation = mode;
         self
     }
+
+    /// Enable `KHR_meshopt_compression` of index bufferViews on write.
+    /// The uncompressed indices stay in a fallback buffer and the
+    /// compressed payloads go in a separate `data:`-URI buffer, so the
+    /// document is self-contained and round-trips through this crate's
+    /// decoder (which inflates the descriptors back to the uncompressed
+    /// indices). Pairs best with [`OutputFlavour::JsonEmbedded`].
+    pub fn with_meshopt_compression(mut self, enable: bool) -> Self {
+        self.meshopt_compress_indices = enable;
+        self
+    }
 }
 
 impl Mesh3DEncoder for GltfEncoder {
@@ -121,6 +141,7 @@ impl Mesh3DEncoder for GltfEncoder {
         let opts = EncodeOptions {
             sparse_threshold: self.sparse_threshold,
             quantize_animation: self.quantize_animation,
+            meshopt_compress_indices: self.meshopt_compress_indices,
         };
         let EncodedScene { mut root, bin } = convert_with_options(scene, &opts)?;
         match self.output {
