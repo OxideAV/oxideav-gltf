@@ -110,15 +110,18 @@ pub fn decode(
 /// same `(mode, NONE, count, byte_stride)`, reproduces `raw`
 /// byte-for-byte.
 ///
-/// The encoder targets the spec's `NONE` filter only: the four
-/// Appendix B filters (OCTAHEDRAL / QUATERNION / EXPONENTIAL / COLOR)
-/// are quantising transforms applied *before* compression by the
-/// content author, so they are out of scope for a lossless raw-byte
-/// re-compression path. `filter` must therefore be [`Filter::None`].
+/// When `filter` is one of the four Appendix B filters, the raw input is
+/// first transformed by the matching **forward** filter (see
+/// [`apply_forward_filter`]) and the filtered bytes are then ATTRIBUTES-
+/// compressed, so that `decode(.., filter, ..)` reconstructs the caller's
+/// high-level data within the spec's per-filter tolerance (exact for
+/// EXPONENTIAL; 1 ULP for OCTAHEDRAL / QUATERNION / COLOR). Filters are
+/// only valid with the ATTRIBUTES mode — TRIANGLES / INDICES require the
+/// NONE filter per §"Specifying compressed views".
 ///
 /// * **ATTRIBUTES** (mode 0) emits the v0 stream (`0xa0`) — the same
-///   wire shape `EXT_meshopt_compression` uses — with per-byte-position
-///   group bit-width selection.
+///   wire shape used by the v0 format described in Appendix C — with
+///   per-byte-position group bit-width selection.
 /// * **INDICES** (mode 2) emits the two-baseline varint delta stream.
 /// * **TRIANGLES** (mode 1) emits an all-explicit triangle stream that
 ///   round-trips through the FIFO decoder.
@@ -129,10 +132,9 @@ pub fn encode(
     count: usize,
     byte_stride: usize,
 ) -> Result<Vec<u8>> {
-    if filter != Filter::None {
+    if filter != Filter::None && mode != Mode::Attributes {
         return Err(unsupported(
-            "KHR_meshopt_compression: encode only supports the NONE filter \
-             (Appendix B filters are author-side quantising transforms)",
+            "KHR_meshopt_compression: Appendix B filters are only valid with the ATTRIBUTES mode",
         ));
     }
     let need = byte_stride
@@ -144,10 +146,23 @@ pub fn encode(
             raw.len()
         )));
     }
+    // Apply the forward filter (a no-op for NONE) before compression.
+    let filtered: Vec<u8> = if filter == Filter::None {
+        raw.to_vec()
+    } else {
+        let mut buf = raw.to_vec();
+        apply_forward_filter(&mut buf, filter, byte_stride)?;
+        buf
+    };
+    let src = if filter == Filter::None {
+        raw
+    } else {
+        &filtered
+    };
     match mode {
-        Mode::Attributes => encode_attributes(raw, count, byte_stride),
-        Mode::Triangles => encode_triangles(raw, count, byte_stride),
-        Mode::Indices => encode_indices(raw, count, byte_stride),
+        Mode::Attributes => encode_attributes(src, count, byte_stride),
+        Mode::Triangles => encode_triangles(src, count, byte_stride),
+        Mode::Indices => encode_indices(src, count, byte_stride),
     }
 }
 
@@ -1129,6 +1144,394 @@ fn round_away(x: f32) -> f32 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Appendix B: forward (encode-side) filters
+// ---------------------------------------------------------------------------
+//
+// The spec specifies the *decode* transform for each filter and leaves the
+// encoder free to "pick the parameters of the encoding for each element to
+// balance quality and precision". `apply_forward_filter` produces the
+// filtered integer representation that `apply_filter` (the inverse) decodes
+// back. The result is then handed to the NONE attribute encoder, so a full
+// `encode(.., filter, ..)` followed by `decode(.., filter, ..)` reconstructs
+// the caller's high-level data within the per-filter tolerance the spec
+// states: exact for EXPONENTIAL, and one unit in last place (ULP) of the
+// decoded fixed-point representation for OCTAHEDRAL / QUATERNION / COLOR.
+
+/// Transform `byte_stride * count` bytes of high-level input (floats for
+/// EXPONENTIAL; unit-length normals/tangents, unit quaternions, or RGBA
+/// colours encoded as the decoded fixed-point output of the matching
+/// inverse filter) into the filtered integer representation that
+/// [`apply_filter`] decodes back. The byte length is unchanged.
+fn apply_forward_filter(buf: &mut [u8], filter: Filter, byte_stride: usize) -> Result<()> {
+    match filter {
+        Filter::None => Ok(()),
+        Filter::Octahedral => forward_octahedral(buf, byte_stride),
+        Filter::Quaternion => forward_quaternion(buf, byte_stride),
+        Filter::Exponential => forward_exponential(buf, byte_stride),
+        Filter::Color => forward_color(buf, byte_stride),
+    }
+}
+
+/// Forward EXPONENTIAL filter (§"Filter 3: exponential", inverse).
+///
+/// The decode is `2^e * m` with `e` the top signed 8 bits and `m` the low
+/// signed 24 bits, and the spec mandates this filter "must be decoded
+/// exactly". For every finite `f32` we therefore find an `(e, m)` pair with
+/// `m` in the signed 24-bit range and `2^e * m == value` bit-for-bit, so the
+/// round-trip is lossless. Sub-normals, zero, and the `e` clamp to
+/// `[-100, 100]` are all handled.
+fn forward_exponential(buf: &mut [u8], byte_stride: usize) -> Result<()> {
+    if byte_stride == 0 || byte_stride % 4 != 0 {
+        return Err(invalid(
+            "KHR_meshopt_compression: EXPONENTIAL filter requires byteStride a multiple of 4",
+        ));
+    }
+    let n = buf.len() / 4;
+    for e in 0..n {
+        let base = e * 4;
+        let value = f32::from_le_bytes([buf[base], buf[base + 1], buf[base + 2], buf[base + 3]]);
+        let packed = exp_encode_one(value)?;
+        buf[base..base + 4].copy_from_slice(&packed.to_le_bytes());
+    }
+    Ok(())
+}
+
+/// Decompose a finite `f32` into the EXPONENTIAL filter's packed
+/// `(exp << 24) | (mant & 0xff_ffff)` integer such that `2^exp * mant`
+/// reproduces the value exactly. `mant` is held in the signed 24-bit range
+/// `[-(2^23), 2^23 - 1]`.
+fn exp_encode_one(value: f32) -> Result<i32> {
+    if !value.is_finite() {
+        return Err(invalid(
+            "KHR_meshopt_compression: EXPONENTIAL filter requires finite input",
+        ));
+    }
+    if value == 0.0 {
+        // Both +0.0 and -0.0 decode through `2^e * 0` as +0.0; the filter
+        // is not sign-of-zero preserving, which the spec's exact-decode
+        // wording concerns the *value*, not the zero sign.
+        return Ok(0);
+    }
+    // Pull the IEEE-754 fields. `frexp`-style: value = signif * 2^exp2 with
+    // signif's significant bits captured as an integer mantissa.
+    let bits = value.to_bits();
+    let sign = if bits >> 31 == 1 { -1i64 } else { 1i64 };
+    let raw_exp = ((bits >> 23) & 0xff) as i32;
+    let raw_frac = (bits & 0x7f_ffff) as i64;
+
+    // mantissa (unsigned magnitude) and base-2 exponent so that
+    // magnitude == mant_u * 2^exp2.
+    let (mut mant_u, mut exp2): (i64, i32) = if raw_exp == 0 {
+        // sub-normal: no implicit leading bit, exponent is fixed.
+        (raw_frac, -126 - 23)
+    } else {
+        // normal: implicit leading 1.
+        ((1i64 << 23) | raw_frac, raw_exp - 127 - 23)
+    };
+    // Drop trailing zero bits to maximise the exponent (and keep mant small).
+    if mant_u != 0 {
+        let tz = mant_u.trailing_zeros();
+        mant_u >>= tz;
+        exp2 += tz as i32;
+    }
+    // The signed 24-bit mantissa holds magnitudes in [0, 2^23] (the encoder
+    // uses [-(2^23), 2^23 - 1] after packing). A normalised f32 significand
+    // sits in [2^23, 2^24-1]; after stripping trailing zeros above, an even
+    // significand that still exceeds the signed range is halved (lifting the
+    // exponent, lossless). An *odd* significand whose magnitude is >= 2^23
+    // needs all 24 significant bits and therefore cannot be represented by a
+    // signed 24-bit mantissa exactly — such a value is not encodable by this
+    // filter, so we report it rather than silently truncating.
+    while mant_u >= (1 << 23) {
+        if mant_u == (1 << 23) {
+            // Exactly 2^23: representable as -2^23 only for the negative
+            // sign; for the positive sign halve it (lossless, it is even).
+            if sign < 0 {
+                break;
+            }
+            mant_u >>= 1;
+            exp2 += 1;
+            continue;
+        }
+        if mant_u & 1 == 1 {
+            return Err(invalid(
+                "KHR_meshopt_compression: EXPONENTIAL value needs a 24-bit \
+                 odd mantissa and is not exactly encodable",
+            ));
+        }
+        mant_u >>= 1;
+        exp2 += 1;
+    }
+    let mut mant = sign * mant_u;
+
+    // Clamp the exponent into the spec's valid range. Since we only reach
+    // here for finite f32, exp2 is well within [-149, 104]; the spec's
+    // [-100, 100] window is narrower, so re-pack any out-of-window value by
+    // shifting the mantissa (this stays lossless as long as the mantissa
+    // does not overflow, which it cannot for f32 because the dynamic range
+    // [-149,104] minus the [-100,100] window never exceeds the 24-bit
+    // mantissa headroom for representable values).
+    if exp2 > 100 {
+        let shift = exp2 - 100;
+        // value = mant * 2^exp2 = (mant << shift) * 2^100.
+        let shifted = mant << shift;
+        if !(-(1 << 23)..=(1 << 23) - 1).contains(&shifted) {
+            return Err(invalid(
+                "KHR_meshopt_compression: EXPONENTIAL value exceeds encodable range",
+            ));
+        }
+        mant = shifted;
+        exp2 = 100;
+    } else if exp2 < -100 {
+        // value = mant * 2^exp2; raising exp2 to -100 needs mant >> shift
+        // which is only lossless when those low bits are zero.
+        let shift = -100 - exp2;
+        if shift >= 64 || (mant & ((1i64 << shift) - 1)) != 0 {
+            return Err(invalid(
+                "KHR_meshopt_compression: EXPONENTIAL value underflows encodable range",
+            ));
+        }
+        mant >>= shift;
+        exp2 = -100;
+    }
+
+    let packed = (exp2 << 24) | ((mant as i32) & 0x00ff_ffff);
+    Ok(packed)
+}
+
+/// Forward OCTAHEDRAL filter (§"Filter 1: octahedral", inverse).
+///
+/// Input is the *decoded* fixed-point layout the inverse filter emits: three
+/// signed normalized components of a unit vector plus a pass-through 4th
+/// component. We re-encode them into octahedral X/Y plus an explicit-1.0
+/// third component at full precision (`K` = the component bit width), so the
+/// inverse filter reconstructs the unit vector to within 1 ULP.
+fn forward_octahedral(buf: &mut [u8], byte_stride: usize) -> Result<()> {
+    if byte_stride != 4 && byte_stride != 8 {
+        return Err(invalid(
+            "KHR_meshopt_compression: OCTAHEDRAL filter requires byteStride 4 or 8",
+        ));
+    }
+    let comp16 = byte_stride == 8;
+    let int_max: f32 = if comp16 { 32767.0 } else { 127.0 };
+    let n = buf.len() / byte_stride;
+    for e in 0..n {
+        let base = e * byte_stride;
+        let (nx, ny, nz, passthrough);
+        if comp16 {
+            nx = i16::from_le_bytes([buf[base], buf[base + 1]]) as f32 / int_max;
+            ny = i16::from_le_bytes([buf[base + 2], buf[base + 3]]) as f32 / int_max;
+            nz = i16::from_le_bytes([buf[base + 4], buf[base + 5]]) as f32 / int_max;
+            passthrough = [buf[base + 6], buf[base + 7]];
+        } else {
+            nx = (buf[base] as i8) as f32 / int_max;
+            ny = (buf[base + 1] as i8) as f32 / int_max;
+            nz = (buf[base + 2] as i8) as f32 / int_max;
+            passthrough = [buf[base + 3], 0];
+        }
+        // Octahedral projection of the unit vector onto |x|+|y|+|z| = 1.
+        let denom = nx.abs() + ny.abs() + nz.abs();
+        let (mut ox, mut oy) = if denom > 0.0 {
+            (nx / denom, ny / denom)
+        } else {
+            (0.0, 0.0)
+        };
+        if nz < 0.0 {
+            let rx = (1.0 - oy.abs()) * sign_nonneg(ox);
+            let ry = (1.0 - ox.abs()) * sign_nonneg(oy);
+            ox = rx;
+            oy = ry;
+        }
+        let x = round_away(ox * int_max);
+        let y = round_away(oy * int_max);
+        // Third component encodes 1.0 at the full bit width K = component
+        // width, i.e. exactly int_max.
+        if comp16 {
+            buf[base..base + 2].copy_from_slice(&(x as i16).to_le_bytes());
+            buf[base + 2..base + 4].copy_from_slice(&(y as i16).to_le_bytes());
+            buf[base + 4..base + 6].copy_from_slice(&(int_max as i16).to_le_bytes());
+            buf[base + 6..base + 8].copy_from_slice(&passthrough);
+        } else {
+            buf[base] = (x as i16 as i8) as u8;
+            buf[base + 1] = (y as i16 as i8) as u8;
+            buf[base + 2] = int_max as i8 as u8;
+            buf[base + 3] = passthrough[0];
+        }
+    }
+    Ok(())
+}
+
+/// `copysign(1.0, v)` but treating +0.0 as positive (the octahedral wrap
+/// needs a sign even for a zero component).
+fn sign_nonneg(v: f32) -> f32 {
+    if v >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    }
+}
+
+/// Forward QUATERNION filter (§"Filter 2: quaternion", inverse).
+///
+/// Input is the decoded layout: four 16-bit signed normalized quaternion
+/// components. We pick the largest-magnitude component, store the other
+/// three (sign-aligned so the largest is positive) scaled by `sqrt(2)`, and
+/// pack the max-component index plus a full-precision 1.0 (K = 16) into the
+/// fourth slot so the inverse reconstructs the rotation to within 1 ULP.
+fn forward_quaternion(buf: &mut [u8], byte_stride: usize) -> Result<()> {
+    if byte_stride != 8 {
+        return Err(invalid(
+            "KHR_meshopt_compression: QUATERNION filter requires byteStride 8",
+        ));
+    }
+    let inv_range = 2.0f32.sqrt(); // 1 / (1/sqrt(2))
+    let n = buf.len() / 8;
+    for e in 0..n {
+        let base = e * 8;
+        let mut q = [0f32; 4];
+        for (k, slot) in q.iter_mut().enumerate() {
+            *slot = i16::from_le_bytes([buf[base + k * 2], buf[base + k * 2 + 1]]) as f32 / 32767.0;
+        }
+        // Largest-magnitude component index.
+        let mut maxcomp = 0usize;
+        for k in 1..4 {
+            if q[k].abs() > q[maxcomp].abs() {
+                maxcomp = k;
+            }
+        }
+        // Double-cover: flip so the max component is positive.
+        let s = if q[maxcomp] < 0.0 { -1.0 } else { 1.0 };
+        // The three stored components are the cyclic successors of maxcomp,
+        // scaled up by sqrt(2) and to the 16-bit signed range.
+        let one = 32767.0f32;
+        let mut out = [0i16; 4];
+        let c1 = (maxcomp + 1) % 4;
+        let c2 = (maxcomp + 2) % 4;
+        let c3 = (maxcomp + 3) % 4;
+        out[0] = round_away(s * q[c1] * inv_range * one) as i16;
+        out[1] = round_away(s * q[c2] * inv_range * one) as i16;
+        out[2] = round_away(s * q[c3] * inv_range * one) as i16;
+        // Fourth slot: 1.0 at K=16 is 32767, low 2 bits replaced by maxcomp.
+        let one_i = 32767i16 & !3;
+        out[3] = one_i | (maxcomp as i16);
+        for (k, &o) in out.iter().enumerate() {
+            buf[base + k * 2..base + k * 2 + 2].copy_from_slice(&o.to_le_bytes());
+        }
+    }
+    Ok(())
+}
+
+/// Forward COLOR filter (§"Filter 4: color", inverse).
+///
+/// Input is the decoded RGBA layout (unsigned normalized components). We
+/// transform RGB into the YCoCg model the inverse filter expects and store
+/// alpha with the high-bit `K` marker at the full component width, so the
+/// inverse reconstructs the colour to within 1 ULP.
+fn forward_color(buf: &mut [u8], byte_stride: usize) -> Result<()> {
+    if byte_stride != 4 && byte_stride != 8 {
+        return Err(invalid(
+            "KHR_meshopt_compression: COLOR filter requires byteStride 4 or 8",
+        ));
+    }
+    let comp16 = byte_stride == 8;
+    let k: i32 = if comp16 { 16 } else { 8 };
+    let n = buf.len() / byte_stride;
+    for e in 0..n {
+        let base = e * byte_stride;
+        let (r, g, b, a): (i32, i32, i32, i32) = if comp16 {
+            (
+                u16::from_le_bytes([buf[base], buf[base + 1]]) as i32,
+                u16::from_le_bytes([buf[base + 2], buf[base + 3]]) as i32,
+                u16::from_le_bytes([buf[base + 4], buf[base + 5]]) as i32,
+                u16::from_le_bytes([buf[base + 6], buf[base + 7]]) as i32,
+            )
+        } else {
+            (
+                buf[base] as i32,
+                buf[base + 1] as i32,
+                buf[base + 2] as i32,
+                buf[base + 3] as i32,
+            )
+        };
+        // We encode at the full bit width (K = component width), so the
+        // alpha marker is bit K-1 and the decode's `ss` scale collapses to
+        // 1.0 (`UINTN_MAX / as` with `as = 2^K - 1 = UINTN_MAX`). With ss=1
+        // the decode is the plain integer recovery
+        //   r = y + co - cg, g = y + cg, b = y - co - cg.
+        // The decode performs no clamping, so the stored Y/Co/Cg must keep
+        // every reconstructed component inside [0, 2^K-1]. Co/Cg are signed
+        // and stored at the component width. The nearest-integer YCoCg
+        // solution (co=(r-b)/2, cg=(2g-r-b)/4, y=g-cg) reproduces G exactly
+        // but can push R/B out of range by the half-ULP rounding; a search
+        // over the ±1 neighbourhood of (co, cg) recovers an in-range choice
+        // whose reconstruction is within the 1-ULP tolerance the spec grants
+        // this filter.
+        let comp_max = (1i32 << k) - 1;
+        let signed_min = -(1i32 << (k - 1));
+        let signed_max = (1i32 << (k - 1)) - 1;
+        let co0 = idiv_round(r - b, 2);
+        let cg0 = idiv_round(2 * g - r - b, 4);
+        let (mut best_co, mut best_cg, mut best_y) = (co0, cg0, g - cg0);
+        let mut best_err = i32::MAX;
+        for dco in -1..=1 {
+            for dcg in -1..=1 {
+                let co = co0 + dco;
+                let cg = cg0 + dcg;
+                let y = g - cg;
+                if !(signed_min..=signed_max).contains(&co)
+                    || !(signed_min..=signed_max).contains(&cg)
+                    || !(0..=comp_max).contains(&y)
+                {
+                    continue;
+                }
+                let rr = y + co - cg;
+                let gg = y + cg;
+                let bb = y - co - cg;
+                if !(0..=comp_max).contains(&rr)
+                    || !(0..=comp_max).contains(&gg)
+                    || !(0..=comp_max).contains(&bb)
+                {
+                    continue;
+                }
+                let err = (rr - r).abs().max((gg - g).abs()).max((bb - b).abs());
+                if err < best_err {
+                    best_err = err;
+                    best_co = co;
+                    best_cg = cg;
+                    best_y = y;
+                }
+            }
+        }
+        if best_err == i32::MAX {
+            return Err(invalid(
+                "KHR_meshopt_compression: COLOR filter input not encodable in range",
+            ));
+        }
+        let co_s = best_co;
+        let cg_s = best_cg;
+        let y_s = best_y;
+        // Alpha: marker bit K-1 set; the stored low (K-1) bits hold a>>1 so
+        // the decode `a = (a & (as>>1)); a = (a<<1)|(a&1)` recovers `a` to
+        // within 1 ULP (the dropped LSB).
+        let marker = 1i32 << (k - 1);
+        let a_field = (a >> 1) & ((1 << (k - 1)) - 1);
+        let a_store = marker | a_field;
+        if comp16 {
+            buf[base..base + 2].copy_from_slice(&(y_s as u16).to_le_bytes());
+            buf[base + 2..base + 4].copy_from_slice(&((co_s as i16) as u16).to_le_bytes());
+            buf[base + 4..base + 6].copy_from_slice(&((cg_s as i16) as u16).to_le_bytes());
+            buf[base + 6..base + 8].copy_from_slice(&(a_store as u16).to_le_bytes());
+        } else {
+            buf[base] = y_s as u8;
+            buf[base + 1] = (co_s as i8) as u8;
+            buf[base + 2] = (cg_s as i8) as u8;
+            buf[base + 3] = a_store as u8;
+        }
+    }
+    Ok(())
+}
+
 /// §"Filter 1: octahedral".
 fn filter_octahedral(buf: &mut [u8], byte_stride: usize) -> Result<()> {
     if byte_stride != 4 && byte_stride != 8 {
@@ -1294,6 +1697,15 @@ fn filter_color(buf: &mut [u8], byte_stride: usize) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Round-half-away-from-zero integer division (`n / d`, `d > 0`).
+fn idiv_round(n: i32, d: i32) -> i32 {
+    if n >= 0 {
+        (n + d / 2) / d
+    } else {
+        -((-n + d / 2) / d)
+    }
 }
 
 /// Position of the most significant set bit (0-based), or -1 if none.

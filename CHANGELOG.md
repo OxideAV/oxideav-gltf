@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `KHR_meshopt_compression` **forward (encode-side) Appendix B filters** —
+  `meshopt::encode` now accepts the four post-decompression filters
+  (OCTAHEDRAL / QUATERNION / EXPONENTIAL / COLOR) in addition to NONE,
+  with ATTRIBUTES mode. Each filter's forward transform produces the
+  filtered integer representation that the inverse filter decodes back,
+  so a full `encode(.., filter, ..)` → `decode(.., filter, ..)`
+  reconstructs the caller's high-level data within the tolerance the
+  spec states (`docs/3d/gltf/extensions/KHR_meshopt_compression.md`,
+  "Appendix B"): **exact** for EXPONENTIAL (an f32 is decomposed into the
+  signed 8-bit exponent + signed 24-bit mantissa so `2^e * m` reproduces
+  the value bit-for-bit; values needing a full 24-bit *odd* mantissa, or
+  an exponent outside the spec's `[-100, 100]` window, are the only
+  finite-f32 carve-out and are reported rather than truncated), and
+  **within one unit in last place** for OCTAHEDRAL (octahedral projection
+  of unit normals/tangents with the pass-through 4th component preserved),
+  QUATERNION (largest-component max encoding with double-cover sign
+  alignment), and COLOR (YCoCg with a ±1 neighbourhood search that keeps
+  every reconstructed component in range under the unclamped decode).
+  Filters remain rejected for TRIANGLES / INDICES per §"Specifying
+  compressed views". Covered by `tests/meshopt_encode_filters.rs`.
+
 - Compression-effectiveness unit tests for `meshopt::encode` — a smooth
   256-element VEC3 f32 attribute ramp and a 300-element sequential index
   list both compress below their raw size (and still round-trip), so the
