@@ -2127,8 +2127,14 @@ mod tests {
     }
 
     #[test]
-    fn encode_rejects_non_none_filter() {
-        assert!(encode(&[0u8; 8], Mode::Attributes, Filter::Octahedral, 2, 4).is_err());
+    fn encode_rejects_filter_on_non_attributes_mode() {
+        // Appendix B filters are only valid with the ATTRIBUTES mode; the
+        // spec's §"Specifying compressed views" requires the NONE filter for
+        // TRIANGLES / INDICES.
+        assert!(encode(&[0u8; 8], Mode::Indices, Filter::Octahedral, 2, 4).is_err());
+        assert!(encode(&[0u8; 12], Mode::Triangles, Filter::Exponential, 2, 6).is_err());
+        // The ATTRIBUTES mode now accepts filters (forward Appendix B).
+        assert!(encode(&[0u8; 8], Mode::Attributes, Filter::Octahedral, 2, 4).is_ok());
     }
 
     #[test]

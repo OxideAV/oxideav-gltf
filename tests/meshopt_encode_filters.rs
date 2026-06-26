@@ -288,6 +288,119 @@ fn color_rejects_triangles_mode() {
     assert!(format!("{err}").contains("ATTRIBUTES"));
 }
 
+// -------------------------------------------------------------------------
+// Property / fuzz coverage — fixed-seed LCG, no external dependency, so a
+// failure reproduces deterministically.
+// -------------------------------------------------------------------------
+
+struct Lcg(u64);
+impl Lcg {
+    fn next_u32(&mut self) -> u32 {
+        // Numerical-Recipes LCG constants.
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (self.0 >> 32) as u32
+    }
+    fn next_f32_unit(&mut self) -> f32 {
+        // Uniform in [-1, 1].
+        (self.next_u32() as f32 / u32::MAX as f32) * 2.0 - 1.0
+    }
+}
+
+#[test]
+fn exponential_fuzz_accepted_values_roundtrip_exactly() {
+    // For every f32 the encoder accepts, the decode must reproduce it
+    // bit-for-bit ("must be decoded exactly"). We feed a wide spread of
+    // random floats (whole numbers, dyadic fractions, scaled magnitudes);
+    // any value the encoder rejects is the documented signed-24-bit /
+    // exponent-window carve-out and is simply skipped.
+    let mut rng = Lcg(0x5EED_F00D_1234_5678);
+    let mut checked = 0u32;
+    for _ in 0..4000 {
+        // Mix of value shapes that are often exactly encodable.
+        let kind = rng.next_u32() % 4;
+        let v: f32 = match kind {
+            0 => (rng.next_u32() % 4096) as f32 - 2048.0, // small integers
+            1 => ((rng.next_u32() % 65536) as f32) / 256.0, // /256 dyadics
+            2 => rng.next_f32_unit() * 1024.0,            // arbitrary mid-range
+            _ => {
+                let m = (rng.next_u32() % (1 << 20)) as f32; // <=20-bit mantissa
+                let e = (rng.next_u32() % 40) as i32 - 20;
+                m * 2.0f32.powi(e)
+            }
+        };
+        let raw = v.to_le_bytes();
+        if let Ok(comp) = encode(&raw, Mode::Attributes, Filter::Exponential, 1, 4) {
+            let back = decode(&comp, Mode::Attributes, Filter::Exponential, 1, 4)
+                .expect("decode exponential fuzz");
+            let got = read_f32(&back, 0);
+            assert_eq!(got, v, "exponential fuzz: {v} -> {got}");
+            checked += 1;
+        }
+    }
+    // The bulk of the spread is encodable; make sure the test actually
+    // exercised the round-trip rather than rejecting everything.
+    assert!(checked > 3000, "only {checked} values accepted");
+}
+
+#[test]
+fn octahedral_fuzz_unit_vectors_within_tolerance() {
+    let mut rng = Lcg(0x0C7A_8EDA_4242_1111);
+    for _ in 0..2000 {
+        let dir = [
+            rng.next_f32_unit(),
+            rng.next_f32_unit(),
+            rng.next_f32_unit(),
+        ];
+        let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+        if len < 1e-3 {
+            continue;
+        }
+        let n = [dir[0] / len, dir[1] / len, dir[2] / len];
+        let raw = vec![
+            round(n[0] * 127.0) as i8 as u8,
+            round(n[1] * 127.0) as i8 as u8,
+            round(n[2] * 127.0) as i8 as u8,
+            0,
+        ];
+        let comp = encode(&raw, Mode::Attributes, Filter::Octahedral, 1, 4).expect("encode");
+        let back = decode(&comp, Mode::Attributes, Filter::Octahedral, 1, 4).expect("decode");
+        let g = [
+            (back[0] as i8) as f32 / 127.0,
+            (back[1] as i8) as f32 / 127.0,
+            (back[2] as i8) as f32 / 127.0,
+        ];
+        let glen = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt().max(1e-6);
+        let dot = ((g[0] * n[0] + g[1] * n[1] + g[2] * n[2]) / glen).clamp(-1.0, 1.0);
+        // 8-bit octahedral: a few quantization steps of angular error.
+        assert!(dot > 0.97, "octa fuzz dir {n:?}: dot {dot}");
+    }
+}
+
+#[test]
+fn color_fuzz_8bit_within_tolerance() {
+    let mut rng = Lcg(0xC010_2030_4050_6070);
+    for _ in 0..3000 {
+        let c = [
+            (rng.next_u32() & 0xff) as u8,
+            (rng.next_u32() & 0xff) as u8,
+            (rng.next_u32() & 0xff) as u8,
+            (rng.next_u32() & 0xff) as u8,
+        ];
+        let raw = c.to_vec();
+        let comp = encode(&raw, Mode::Attributes, Filter::Color, 1, 4).expect("encode color fuzz");
+        let back = decode(&comp, Mode::Attributes, Filter::Color, 1, 4).expect("decode color fuzz");
+        for ch in 0..3 {
+            let d = (back[ch] as i32 - c[ch] as i32).abs();
+            assert!(d <= 1, "color fuzz {c:?} ch {ch}: delta {d}");
+        }
+        let da = (back[3] as i32 - c[3] as i32).abs();
+        assert!(da <= 1, "color fuzz {c:?} alpha: delta {da}");
+    }
+}
+
 /// Round half away from zero (mirrors the spec's `round`).
 fn round(x: f32) -> f32 {
     if x >= 0.0 {
