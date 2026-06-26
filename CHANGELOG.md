@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `KHR_meshopt_compression` **ATTRIBUTES v1 (`0xa1`) encoder** — the
+  production ATTRIBUTES write path now emits the v1 format Appendix C
+  recommends ("v1 format should be preferred since it provides better
+  compression ratio at no additional runtime cost"). Per block, each byte
+  position gets a 2-bit control mode: **mode 2** (all deltas zero) stores
+  **no data** — the dominant win for quantised attributes whose high bytes
+  never change — and **mode 0** otherwise, with the narrower
+  `{0, 1, 2, 4}`-bit group ladder (vs v0's `{0, 2, 4, 8}`) that packs
+  small deltas tighter. Channel modes stay byte-delta (0). The decode
+  reconstructs the input exactly. The prior v0 (`0xa0`) encoder is
+  retained for compatibility coverage. Covered by a control-mode-2
+  effectiveness test (v1 beats v0 on constant byte positions) plus the
+  existing round-trip / fuzz suites driven through the new path.
+
 - `KHR_meshopt_compression` **INDICES two-baseline encoder** — the Mode 2
   (INDICES) write path now uses the decoder's dual-baseline scheme,
   greedily delta-coding each index against whichever of the two baselines

@@ -273,11 +273,159 @@ fn decode_attributes(data: &[u8], count: usize, byte_stride: usize) -> Result<Ve
     Ok(out)
 }
 
+/// Encode raw element bytes into a Mode 0 ATTRIBUTES stream. Emits the v1
+/// (`0xa1`) format, which Appendix C recommends ("v1 format should be
+/// preferred since it provides better compression ratio at no additional
+/// runtime cost") — see [`encode_attributes_v1`]. The v0 encoder remains
+/// available as [`encode_attributes_v0`] and is exercised by tests.
+fn encode_attributes(raw: &[u8], count: usize, byte_stride: usize) -> Result<Vec<u8>> {
+    encode_attributes_v1(raw, count, byte_stride)
+}
+
+/// Encode raw element bytes into a Mode 0 ATTRIBUTES **v1** stream
+/// (inverse of [`decode_attributes`] for the `0xa1` header).
+///
+/// Per block, each byte position gets a 2-bit *control mode* in the block's
+/// control header:
+///
+/// * **mode 2** (all delta bytes zero) — stores **no data** for that byte
+///   position, the dominant win for quantised attributes whose high bytes
+///   never change.
+/// * **mode 0** (bit-widths `{0, 1, 2, 4}`) — otherwise; the narrower
+///   width ladder (vs v0's `{0, 2, 4, 8}`) packs small deltas tighter.
+///
+/// Channel modes in the tail are all 0 (byte deltas), matching the zigzag
+/// byte-delta `deltas` array. A subsequent
+/// `decode(.., NONE, count, byte_stride)` reproduces `raw` exactly.
+fn encode_attributes_v1(raw: &[u8], count: usize, byte_stride: usize) -> Result<Vec<u8>> {
+    if byte_stride == 0 || byte_stride % 4 != 0 {
+        return Err(invalid(format!(
+            "KHR_meshopt_compression: ATTRIBUTES byteStride {byte_stride} must be a positive multiple of 4"
+        )));
+    }
+
+    let baseline: Vec<u8> = if count > 0 {
+        raw[..byte_stride].to_vec()
+    } else {
+        vec![0u8; byte_stride]
+    };
+
+    // deltas[byte_pos][element] = zigzag(raw[e][p] - raw[e-1][p]).
+    let mut deltas = vec![vec![0u8; count]; byte_stride];
+    for e in 0..count {
+        for (p, dslot) in deltas.iter_mut().enumerate() {
+            let cur = raw[e * byte_stride + p];
+            let prev = if e == 0 {
+                baseline[p]
+            } else {
+                raw[(e - 1) * byte_stride + p]
+            };
+            dslot[e] = zigzag_encode_u8(cur.wrapping_sub(prev));
+        }
+    }
+
+    let mut out = vec![0xa1u8]; // v1 header
+    let cbytes = byte_stride / 4;
+
+    let max_block_elements = ((8192 / byte_stride) & !15).clamp(1, 256);
+    let mut start = 0usize;
+    while start < count {
+        let block_elements = (count - start).min(max_block_elements);
+
+        // Decide each byte position's control mode (0 or 2) and stage the
+        // body so the control header is written before the data blocks.
+        let mut control = vec![0u8; byte_stride];
+        let mut body: Vec<u8> = Vec::new();
+        for (p, dslot) in deltas.iter().enumerate() {
+            let block = &dslot[start..start + block_elements];
+            if block.iter().all(|&d| d == 0) {
+                control[p] = 2; // no data stored
+            } else {
+                control[p] = 0; // {0,1,2,4} sentinel ladder
+                encode_byte_channel_v1_cmode0(&mut body, block);
+            }
+        }
+
+        // Pack the control header: 2 bits per byte position, 4 per byte.
+        let mut chdr = vec![0u8; cbytes];
+        for (p, &c) in control.iter().enumerate() {
+            chdr[p / 4] |= (c & 0b11) << ((p % 4) * 2);
+        }
+        out.extend_from_slice(&chdr);
+        out.extend_from_slice(&body);
+
+        start += block_elements;
+    }
+
+    // Tail: baseline element + channel modes (all 0 = byte deltas).
+    out.extend_from_slice(&baseline);
+    out.extend_from_slice(&vec![0u8; cbytes]);
+    Ok(out)
+}
+
+/// Encode one byte-position data block under v1 **control mode 0**
+/// (bit-widths `{0, 1, 2, 4}`), the inverse of [`decode_byte_channel`] for
+/// `cmode == 0, version == 1`. Each 16-element group gets a 2-bit header
+/// selecting the narrowest width that fits.
+fn encode_byte_channel_v1_cmode0(out: &mut Vec<u8>, block: &[u8]) {
+    let group_count = block.len().div_ceil(16);
+    let mut headers = vec![0u8; group_count];
+    let mut group_payloads: Vec<Vec<u8>> = Vec::with_capacity(group_count);
+    for (g, hdr_slot) in headers.iter_mut().enumerate() {
+        let g_start = g * 16;
+        let g_end = (g_start + 16).min(block.len());
+        let mut grp = [0u8; 16];
+        grp[..g_end - g_start].copy_from_slice(&block[g_start..g_end]);
+        let (hb, payload) = encode_group_v1_cmode0(&grp);
+        *hdr_slot = hb;
+        group_payloads.push(payload);
+    }
+    let header_bytes = group_count.div_ceil(4);
+    let mut hdr = vec![0u8; header_bytes];
+    for (g, &hb) in headers.iter().enumerate() {
+        hdr[g / 4] |= (hb & 0b11) << ((g % 4) * 2);
+    }
+    out.extend_from_slice(&hdr);
+    for payload in group_payloads {
+        out.extend_from_slice(&payload);
+    }
+}
+
+/// Pick the narrowest v1 control-mode-0 bit-width `{0, 1, 2, 4}` for a
+/// 16-element group of zigzag delta bytes and serialise it. Returns
+/// `(hb, payload)` where `hb` is the 2-bit group header (0→0 bits, 1→1,
+/// 2→2, 3→4), matching [`group_bits`] for `cmode == 0, version == 1`.
+fn encode_group_v1_cmode0(grp: &[u8; 16]) -> (u8, Vec<u8>) {
+    if grp.iter().all(|&d| d == 0) {
+        return (0, Vec::new()); // hb 0 → 0 bits, no data
+    }
+    // Sentinel costs for widths 1, 2, 4 (hb 1, 2, 3).
+    let cost = |bits: u32| -> usize {
+        let sentinel = (1u32 << bits) - 1;
+        let packed = (16 * bits as usize) / 8;
+        let escapes = grp.iter().filter(|&&d| d as u32 >= sentinel).count();
+        packed + escapes
+    };
+    let c1 = cost(1);
+    let c2 = cost(2);
+    let c4 = cost(4);
+    let (hb, bits) = if c1 <= c2 && c1 <= c4 {
+        (1u8, 1u32)
+    } else if c2 <= c4 {
+        (2u8, 2u32)
+    } else {
+        (3u8, 4u32)
+    };
+    (hb, pack_group_sentinel(grp, bits))
+}
+
 /// Encode raw element bytes into a Mode 0 ATTRIBUTES v0 stream (inverse
 /// of [`decode_attributes`] for the `0xa0` header). Channel modes are
 /// fixed to v0 byte-delta coding; per-byte-position groups pick the
-/// narrowest of the v0 bit-widths {0, 2, 4, 8}.
-fn encode_attributes(raw: &[u8], count: usize, byte_stride: usize) -> Result<Vec<u8>> {
+/// narrowest of the v0 bit-widths {0, 2, 4, 8}. Retained for v0 (`0xa0`)
+/// compatibility coverage; the production path emits v1.
+#[cfg(test)]
+fn encode_attributes_v0(raw: &[u8], count: usize, byte_stride: usize) -> Result<Vec<u8>> {
     if byte_stride == 0 || byte_stride % 4 != 0 {
         return Err(invalid(format!(
             "KHR_meshopt_compression: ATTRIBUTES byteStride {byte_stride} must be a positive multiple of 4"
@@ -326,6 +474,7 @@ fn encode_attributes(raw: &[u8], count: usize, byte_stride: usize) -> Result<Vec
 /// Encode one byte-position "data block" of `block.len()` zigzag delta
 /// bytes (inverse of [`decode_byte_channel`] for v0 / cmode 0). Groups
 /// of 16 each get a 2-bit header selecting the v0 bit-width.
+#[cfg(test)]
 fn encode_byte_channel(out: &mut Vec<u8>, block: &[u8]) {
     let group_count = block.len().div_ceil(16);
 
@@ -360,6 +509,7 @@ fn encode_byte_channel(out: &mut Vec<u8>, block: &[u8]) {
 /// Pick the narrowest v0 bit-width {0, 2, 4, 8} for a 16-element group of
 /// zigzag delta bytes and serialise it (inverse of [`decode_group`]).
 /// Returns `(hb, payload)` where `hb` is the 2-bit group header.
+#[cfg(test)]
 fn encode_group_v0(grp: &[u8; 16]) -> (u8, Vec<u8>) {
     // hb 0 (bits 0): only valid when every delta is zero — no data.
     if grp.iter().all(|&d| d == 0) {
@@ -419,6 +569,10 @@ fn pack_group_sentinel(grp: &[u8; 16], bits: u32) -> Vec<u8> {
 /// (inverse of [`unpack_delta`]).
 fn pack_delta(packed: &mut [u8], bits: u32, i: usize, small: u8) {
     match bits {
+        1 => {
+            // LSB-first, 8 per byte (inverse of the v1 1-bit unpack).
+            packed[i / 8] |= (small & 1) << (i % 8);
+        }
         2 => {
             // MSB-first within byte: element 0 → bits 6-7, etc.
             let within = i % 4;
@@ -2398,6 +2552,63 @@ mod tests {
         rt(Mode::Attributes, &[], 0, 4);
         rt(Mode::Indices, &[], 0, 4);
         rt(Mode::Triangles, &[], 0, 4);
+    }
+
+    #[test]
+    fn production_attributes_encode_emits_v1() {
+        // The production ATTRIBUTES path now emits the v1 (0xa1) header.
+        let raw: Vec<u8> = vec![
+            0x11, 0x22, 0x33, 0x44, // e0
+            0x12, 0x22, 0x33, 0x44, // e1: +1, 0, 0, 0
+            0x13, 0x22, 0x33, 0x44, // e2: +1, 0, 0, 0
+        ];
+        let enc = encode(&raw, Mode::Attributes, Filter::None, 3, 4).unwrap();
+        assert_eq!(enc[0], 0xa1, "production encode must emit the v1 header");
+        let dec = decode(&enc, Mode::Attributes, Filter::None, 3, 4).unwrap();
+        assert_eq!(dec, raw);
+    }
+
+    #[test]
+    fn v1_control_mode_2_skips_constant_byte_positions() {
+        // Build data where byte positions 1, 2, 3 never change (all-zero
+        // deltas) while position 0 ramps. The v1 encoder must store NO data
+        // for the three constant positions (control mode 2), so the stream
+        // is far smaller than the v0 encoding of the same data.
+        let count = 64;
+        let stride = 4;
+        let mut raw = vec![0u8; count * stride];
+        for e in 0..count {
+            raw[e * stride] = (e as u8).wrapping_mul(3); // pos 0 varies
+            raw[e * stride + 1] = 0xaa; // constant
+            raw[e * stride + 2] = 0xbb; // constant
+            raw[e * stride + 3] = 0xcc; // constant
+        }
+        // Round-trip exactness through the production v1 path.
+        rt(Mode::Attributes, &raw, count, stride);
+
+        let v1 = encode(&raw, Mode::Attributes, Filter::None, count, stride).unwrap();
+        let v0 = encode_attributes_v0(&raw, count, stride).unwrap();
+        assert_eq!(v1[0], 0xa1);
+        assert_eq!(v0[0], 0xa0);
+        assert!(
+            v1.len() < v0.len(),
+            "v1 control-mode-2 ({} B) should beat v0 ({} B) on constant byte positions",
+            v1.len(),
+            v0.len()
+        );
+    }
+
+    #[test]
+    fn v0_encoder_still_roundtrips() {
+        // The retained v0 encoder must remain a valid encoding the decoder
+        // accepts (0xa0 header, v0 group ladder).
+        let raw: Vec<u8> = vec![
+            0x11, 0x22, 0x33, 0x44, 0x12, 0x22, 0x40, 0x44, 0x10, 0x52, 0x33, 0xc4,
+        ];
+        let enc = encode_attributes_v0(&raw, 3, 4).unwrap();
+        assert_eq!(enc[0], 0xa0);
+        let dec = decode(&enc, Mode::Attributes, Filter::None, 3, 4).unwrap();
+        assert_eq!(dec, raw);
     }
 
     #[test]
