@@ -707,6 +707,172 @@ fn doc_without_extension_does_not_grow_sidecar() {
     );
 }
 
+// --- encode-produced payloads feed the production decode path --------
+//
+// These build the compressed bufferView source with the crate's own
+// `meshopt::encode` (non-trivial deltas) and verify the full
+// `GltfDecoder` inflates them back to the real attribute / index data.
+// This is the end-to-end proof that the encoder is the bit-exact
+// inverse of the decode pipeline, not just the unit-level `decode`.
+
+#[test]
+fn encoded_attributes_feed_position_accessor() {
+    use oxideav_gltf::meshopt::{encode, Filter, Mode};
+
+    // Three distinct VEC3 f32 positions → genuine non-zero deltas.
+    let positions: [[f32; 3]; 3] = [[1.5, -2.0, 3.25], [1.75, -1.0, 3.0], [0.0, 0.5, 10.0]];
+    let mut raw = Vec::new();
+    for p in &positions {
+        for c in p {
+            raw.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    let comp = encode(&raw, Mode::Attributes, Filter::None, 3, 12).expect("encode attributes");
+    let comp_b64 = b64(&comp);
+    let comp_len = comp.len();
+    let json = format!(
+        r#"{{
+            "asset": {{ "version": "2.0" }},
+            "extensionsUsed": ["KHR_meshopt_compression"],
+            "extensionsRequired": ["KHR_meshopt_compression"],
+            "buffers": [
+                {{ "byteLength": 36, "extensions": {{ "KHR_meshopt_compression": {{ "fallback": true }} }} }},
+                {{ "uri": "data:application/octet-stream;base64,{comp_b64}", "byteLength": {comp_len} }}
+            ],
+            "bufferViews": [
+                {{
+                    "buffer": 0, "byteOffset": 0, "byteLength": 36, "byteStride": 12,
+                    "extensions": {{ "KHR_meshopt_compression": {{
+                        "buffer": 1, "byteOffset": 0, "byteLength": {comp_len},
+                        "byteStride": 12, "count": 3, "mode": "ATTRIBUTES" }} }}
+                }}
+            ],
+            "accessors": [
+                {{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }}
+            ],
+            "meshes": [ {{ "primitives": [ {{ "attributes": {{ "POSITION": 0 }} }} ] }} ],
+            "nodes": [ {{ "mesh": 0 }} ],
+            "scenes": [ {{ "nodes": [0] }} ],
+            "scene": 0
+        }}"#
+    );
+    let mut dec = GltfDecoder::new();
+    let scene = dec.decode(json.as_bytes()).expect("encode→inflate→decode");
+    let p = &scene.meshes[0].primitives[0];
+    assert_eq!(p.positions.len(), 3);
+    assert_eq!(p.positions, positions.to_vec());
+}
+
+#[test]
+fn encoded_indices_feed_index_accessor() {
+    use oxideav_gltf::meshopt::{encode, Filter, Mode};
+
+    // Two triangles' worth of u16 indices with a backwards delta.
+    let idx: [u16; 6] = [0, 1, 2, 2, 1, 3];
+    let mut raw = Vec::new();
+    for &i in &idx {
+        raw.extend_from_slice(&i.to_le_bytes());
+    }
+    let comp = encode(&raw, Mode::Indices, Filter::None, 6, 2).expect("encode indices");
+    let comp_b64 = b64(&comp);
+    let comp_len = comp.len();
+    let pos: Vec<u8> = [
+        0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0,
+    ]
+    .iter()
+    .flat_map(|f| f.to_le_bytes())
+    .collect();
+    let pos_b64 = b64(&pos);
+    let json = format!(
+        r#"{{
+            "asset": {{ "version": "2.0" }},
+            "extensionsUsed": ["KHR_meshopt_compression"],
+            "extensionsRequired": ["KHR_meshopt_compression"],
+            "buffers": [
+                {{ "byteLength": 12, "extensions": {{ "KHR_meshopt_compression": {{ "fallback": true }} }} }},
+                {{ "uri": "data:application/octet-stream;base64,{comp_b64}", "byteLength": {comp_len} }},
+                {{ "uri": "data:application/octet-stream;base64,{pos_b64}", "byteLength": 48 }}
+            ],
+            "bufferViews": [
+                {{
+                    "buffer": 0, "byteOffset": 0, "byteLength": 12,
+                    "extensions": {{ "KHR_meshopt_compression": {{
+                        "buffer": 1, "byteOffset": 0, "byteLength": {comp_len},
+                        "byteStride": 2, "count": 6, "mode": "INDICES" }} }}
+                }},
+                {{ "buffer": 2, "byteOffset": 0, "byteLength": 48 }}
+            ],
+            "accessors": [
+                {{ "bufferView": 0, "componentType": 5123, "count": 6, "type": "SCALAR" }},
+                {{ "bufferView": 1, "componentType": 5126, "count": 4, "type": "VEC3" }}
+            ],
+            "meshes": [ {{ "primitives": [ {{ "attributes": {{ "POSITION": 1 }}, "indices": 0 }} ] }} ],
+            "nodes": [ {{ "mesh": 0 }} ],
+            "scenes": [ {{ "nodes": [0] }} ],
+            "scene": 0
+        }}"#
+    );
+    let mut dec = GltfDecoder::new();
+    let scene = dec.decode(json.as_bytes()).expect("encode→inflate→decode");
+    let p = &scene.meshes[0].primitives[0];
+    assert_eq!(p.triangle_indices(), vec![[0, 1, 2], [2, 1, 3]]);
+}
+
+#[test]
+fn encoded_triangles_feed_index_accessor() {
+    use oxideav_gltf::meshopt::{encode, Filter, Mode};
+
+    // TRIANGLES mode: two triangles sharing an edge, u32 indices.
+    let idx: [u32; 6] = [0, 1, 2, 2, 1, 3];
+    let mut raw = Vec::new();
+    for &i in &idx {
+        raw.extend_from_slice(&i.to_le_bytes());
+    }
+    let comp = encode(&raw, Mode::Triangles, Filter::None, 6, 4).expect("encode triangles");
+    let comp_b64 = b64(&comp);
+    let comp_len = comp.len();
+    let pos: Vec<u8> = [
+        0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0,
+    ]
+    .iter()
+    .flat_map(|f| f.to_le_bytes())
+    .collect();
+    let pos_b64 = b64(&pos);
+    let json = format!(
+        r#"{{
+            "asset": {{ "version": "2.0" }},
+            "extensionsUsed": ["KHR_meshopt_compression"],
+            "extensionsRequired": ["KHR_meshopt_compression"],
+            "buffers": [
+                {{ "byteLength": 24, "extensions": {{ "KHR_meshopt_compression": {{ "fallback": true }} }} }},
+                {{ "uri": "data:application/octet-stream;base64,{comp_b64}", "byteLength": {comp_len} }},
+                {{ "uri": "data:application/octet-stream;base64,{pos_b64}", "byteLength": 48 }}
+            ],
+            "bufferViews": [
+                {{
+                    "buffer": 0, "byteOffset": 0, "byteLength": 24,
+                    "extensions": {{ "KHR_meshopt_compression": {{
+                        "buffer": 1, "byteOffset": 0, "byteLength": {comp_len},
+                        "byteStride": 4, "count": 6, "mode": "TRIANGLES" }} }}
+                }},
+                {{ "buffer": 2, "byteOffset": 0, "byteLength": 48 }}
+            ],
+            "accessors": [
+                {{ "bufferView": 0, "componentType": 5125, "count": 6, "type": "SCALAR" }},
+                {{ "bufferView": 1, "componentType": 5126, "count": 4, "type": "VEC3" }}
+            ],
+            "meshes": [ {{ "primitives": [ {{ "attributes": {{ "POSITION": 1 }}, "indices": 0 }} ] }} ],
+            "nodes": [ {{ "mesh": 0 }} ],
+            "scenes": [ {{ "nodes": [0] }} ],
+            "scene": 0
+        }}"#
+    );
+    let mut dec = GltfDecoder::new();
+    let scene = dec.decode(json.as_bytes()).expect("encode→inflate→decode");
+    let p = &scene.meshes[0].primitives[0];
+    assert_eq!(p.triangle_indices(), vec![[0, 1, 2], [2, 1, 3]]);
+}
+
 fn extract_json_chunk(glb: &[u8]) -> Vec<u8> {
     assert_eq!(&glb[0..4], b"glTF", "magic");
     let chunk_len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
