@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `KHR_meshopt_compression` **encoder** (`meshopt::encode`) — the
+  inverse of the Appendix A bitstream decoder, producing payloads that
+  round-trip byte-for-byte through `meshopt::decode`. All three modes:
+  ATTRIBUTES (mode 0) emits the v0 stream (`0xa0`, the wire shape
+  `EXT_meshopt_compression` shares) with per-byte-position group
+  bit-width selection over the v0 widths `{0, 2, 4, 8}` and sentinel
+  escapes; INDICES (mode 2) emits the two-baseline varint zigzag delta
+  stream (baseline 0 only — a valid general encoding); TRIANGLES
+  (mode 1) emits an all-explicit `0xff`/`zw=0xff` per-triangle stream
+  the FIFO decoder accepts. Restricted to the `NONE` filter (the four
+  Appendix B filters are author-side quantising transforms, not a
+  lossless raw-byte path). Fourteen new round-trip / inverse unit tests
+  (zigzag, varint, per-mode round-trips across u16/u32 strides,
+  multi-block multi-group attributes, all-zero + zero-count edges).
+
 - Morph-target structural validation (`validate_morph_targets`) per
   glTF 2.0 §3.7.2.2 — the morph MUSTs that hold on declared accessors
   alone: all primitives in a mesh declare the same number of targets

@@ -28,7 +28,7 @@
 //! truncated stream, a bad header byte, an out-of-range FIFO read, or
 //! leftover tail bytes all surface as `Err`.
 
-use crate::error::{invalid, Error, Result};
+use crate::error::{invalid, unsupported, Error, Result};
 
 /// Compression mode (`mode` descriptor property, §"Specifying
 /// compressed views").
@@ -100,6 +100,55 @@ pub fn decode(
     };
     apply_filter(&mut out, filter, byte_stride)?;
     Ok(out)
+}
+
+/// Encode `byte_stride * count` raw element bytes into a compressed
+/// `KHR_meshopt_compression` payload, the inverse of [`decode`].
+///
+/// `raw` is the uncompressed element data (exactly `byte_stride * count`
+/// bytes). The returned payload, fed back through [`decode`] with the
+/// same `(mode, NONE, count, byte_stride)`, reproduces `raw`
+/// byte-for-byte.
+///
+/// The encoder targets the spec's `NONE` filter only: the four
+/// Appendix B filters (OCTAHEDRAL / QUATERNION / EXPONENTIAL / COLOR)
+/// are quantising transforms applied *before* compression by the
+/// content author, so they are out of scope for a lossless raw-byte
+/// re-compression path. `filter` must therefore be [`Filter::None`].
+///
+/// * **ATTRIBUTES** (mode 0) emits the v0 stream (`0xa0`) — the same
+///   wire shape `EXT_meshopt_compression` uses — with per-byte-position
+///   group bit-width selection.
+/// * **INDICES** (mode 2) emits the two-baseline varint delta stream.
+/// * **TRIANGLES** (mode 1) emits an all-explicit triangle stream that
+///   round-trips through the FIFO decoder.
+pub fn encode(
+    raw: &[u8],
+    mode: Mode,
+    filter: Filter,
+    count: usize,
+    byte_stride: usize,
+) -> Result<Vec<u8>> {
+    if filter != Filter::None {
+        return Err(unsupported(
+            "KHR_meshopt_compression: encode only supports the NONE filter \
+             (Appendix B filters are author-side quantising transforms)",
+        ));
+    }
+    let need = byte_stride
+        .checked_mul(count)
+        .ok_or_else(|| invalid("KHR_meshopt_compression: byteStride * count overflows"))?;
+    if raw.len() != need {
+        return Err(invalid(format!(
+            "KHR_meshopt_compression: encode input is {} bytes, expected byteStride*count = {need}",
+            raw.len()
+        )));
+    }
+    match mode {
+        Mode::Attributes => encode_attributes(raw, count, byte_stride),
+        Mode::Triangles => encode_triangles(raw, count, byte_stride),
+        Mode::Indices => encode_indices(raw, count, byte_stride),
+    }
 }
 
 fn err_eos() -> Error {
@@ -207,6 +256,170 @@ fn decode_attributes(data: &[u8], count: usize, byte_stride: usize) -> Result<Ve
         ));
     }
     Ok(out)
+}
+
+/// Encode raw element bytes into a Mode 0 ATTRIBUTES v0 stream (inverse
+/// of [`decode_attributes`] for the `0xa0` header). Channel modes are
+/// fixed to v0 byte-delta coding; per-byte-position groups pick the
+/// narrowest of the v0 bit-widths {0, 2, 4, 8}.
+fn encode_attributes(raw: &[u8], count: usize, byte_stride: usize) -> Result<Vec<u8>> {
+    if byte_stride == 0 || byte_stride % 4 != 0 {
+        return Err(invalid(format!(
+            "KHR_meshopt_compression: ATTRIBUTES byteStride {byte_stride} must be a positive multiple of 4"
+        )));
+    }
+
+    // Baseline = the first element (so element[0]'s deltas are all zero);
+    // an all-zero buffer (count == 0) still needs a baseline of zeros.
+    let baseline: Vec<u8> = if count > 0 {
+        raw[..byte_stride].to_vec()
+    } else {
+        vec![0u8; byte_stride]
+    };
+
+    // deltas[byte_pos][element] = zigzag(raw[e][p] - raw[e-1][p]),
+    // with raw[-1] := baseline (so delta[0] == 0 for every byte pos).
+    let mut deltas = vec![vec![0u8; count]; byte_stride];
+    for e in 0..count {
+        for (p, dslot) in deltas.iter_mut().enumerate() {
+            let cur = raw[e * byte_stride + p];
+            let prev = if e == 0 {
+                baseline[p]
+            } else {
+                raw[(e - 1) * byte_stride + p]
+            };
+            dslot[e] = zigzag_encode_u8(cur.wrapping_sub(prev));
+        }
+    }
+
+    let mut out = vec![0xa0u8]; // v0 header
+
+    let max_block_elements = ((8192 / byte_stride) & !15).clamp(1, 256);
+    let mut start = 0usize;
+    while start < count {
+        let block_elements = (count - start).min(max_block_elements);
+        for dslot in &deltas {
+            encode_byte_channel(&mut out, &dslot[start..start + block_elements]);
+        }
+        start += block_elements;
+    }
+
+    out.extend_from_slice(&baseline); // tail block (v0: baseline only)
+    Ok(out)
+}
+
+/// Encode one byte-position "data block" of `block.len()` zigzag delta
+/// bytes (inverse of [`decode_byte_channel`] for v0 / cmode 0). Groups
+/// of 16 each get a 2-bit header selecting the v0 bit-width.
+fn encode_byte_channel(out: &mut Vec<u8>, block: &[u8]) {
+    let group_count = block.len().div_ceil(16);
+
+    // Decide each group's header (hb) + serialise its data after the
+    // shared header bytes. v0 hb→bits: 0→0, 1→2, 2→4, 3→8.
+    let mut headers = vec![0u8; group_count];
+    let mut group_payloads: Vec<Vec<u8>> = Vec::with_capacity(group_count);
+    for (g, hdr_slot) in headers.iter_mut().enumerate() {
+        let g_start = g * 16;
+        let g_end = (g_start + 16).min(block.len());
+        // Pad the group to 16 with zero deltas (the decoder rounds up).
+        let mut grp = [0u8; 16];
+        grp[..g_end - g_start].copy_from_slice(&block[g_start..g_end]);
+
+        let (hb, payload) = encode_group_v0(&grp);
+        *hdr_slot = hb;
+        group_payloads.push(payload);
+    }
+
+    // Header bytes: 2 bits per group, 4 groups per byte, LSB-first.
+    let header_bytes = group_count.div_ceil(4);
+    let mut hdr = vec![0u8; header_bytes];
+    for (g, &hb) in headers.iter().enumerate() {
+        hdr[g / 4] |= (hb & 0b11) << ((g % 4) * 2);
+    }
+    out.extend_from_slice(&hdr);
+    for payload in group_payloads {
+        out.extend_from_slice(&payload);
+    }
+}
+
+/// Pick the narrowest v0 bit-width {0, 2, 4, 8} for a 16-element group of
+/// zigzag delta bytes and serialise it (inverse of [`decode_group`]).
+/// Returns `(hb, payload)` where `hb` is the 2-bit group header.
+fn encode_group_v0(grp: &[u8; 16]) -> (u8, Vec<u8>) {
+    // hb 0 (bits 0): only valid when every delta is zero — no data.
+    if grp.iter().all(|&d| d == 0) {
+        return (0, Vec::new());
+    }
+
+    // Candidate sentinel widths: hb1→2 bits, hb2→4 bits. For each, a
+    // delta < sentinel packs inline; otherwise it stores the sentinel +
+    // a trailing escape byte. hb3→8 bits stores 16 raw bytes.
+    let cost_sentinel = |bits: u32| -> usize {
+        let sentinel = (1u32 << bits) - 1;
+        let packed = (16 * bits as usize) / 8;
+        let escapes = grp.iter().filter(|&&d| d as u32 >= sentinel).count();
+        packed + escapes
+    };
+    let cost2 = cost_sentinel(2);
+    let cost4 = cost_sentinel(4);
+    let cost8 = 16usize;
+
+    // Prefer the smallest data cost; ties break toward the narrower width
+    // (lower hb) for determinism.
+    let (hb, bits) = if cost2 <= cost4 && cost2 <= cost8 {
+        (1u8, 2u32)
+    } else if cost4 <= cost8 {
+        (2u8, 4u32)
+    } else {
+        (3u8, 8u32)
+    };
+
+    if bits == 8 {
+        return (hb, grp.to_vec());
+    }
+    (hb, pack_group_sentinel(grp, bits))
+}
+
+/// Serialise a 16-element group at `bits` width with sentinel escapes
+/// (inverse of the sentinel branch of [`decode_group`] + [`unpack_delta`]).
+fn pack_group_sentinel(grp: &[u8; 16], bits: u32) -> Vec<u8> {
+    let sentinel = ((1u32 << bits) - 1) as u8;
+    let packed_bytes = (16 * bits as usize) / 8;
+    let mut packed = vec![0u8; packed_bytes];
+    let mut escapes: Vec<u8> = Vec::new();
+
+    for (i, &d) in grp.iter().enumerate() {
+        let small = if d >= sentinel { sentinel } else { d };
+        pack_delta(&mut packed, bits, i, small);
+        if d >= sentinel {
+            escapes.push(d);
+        }
+    }
+
+    packed.extend_from_slice(&escapes);
+    packed
+}
+
+/// Pack the `bits`-wide value `small` for element `i` into `packed`
+/// (inverse of [`unpack_delta`]).
+fn pack_delta(packed: &mut [u8], bits: u32, i: usize, small: u8) {
+    match bits {
+        2 => {
+            // MSB-first within byte: element 0 → bits 6-7, etc.
+            let within = i % 4;
+            let shift = (3 - within) * 2;
+            packed[i / 4] |= (small & 0b11) << shift;
+        }
+        4 => {
+            // even i → high nibble, odd → low nibble.
+            if i % 2 == 0 {
+                packed[i / 2] |= (small & 0x0f) << 4;
+            } else {
+                packed[i / 2] |= small & 0x0f;
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Decode one byte-position "data block" into `block_elements`
@@ -470,6 +683,18 @@ fn zigzag_decode_u8(v: u8) -> u8 {
     }
 }
 
+/// Inverse of [`zigzag_decode_u8`]: map a signed byte delta (as a `u8`
+/// two's-complement value) to its zigzag encoding. The decoder applies
+/// `d = (v & 1) ? !(v >> 1) : (v >> 1)`; this picks `v` so that holds.
+fn zigzag_encode_u8(d: u8) -> u8 {
+    if d & 0x80 != 0 {
+        // Negative: decoder needs !(v>>1) == d → v>>1 == !d, odd.
+        ((!d) << 1) | 1
+    } else {
+        d << 1
+    }
+}
+
 fn zigzag_decode_u16(v: u16) -> u16 {
     if v & 1 != 0 {
         !(v >> 1)
@@ -679,6 +904,69 @@ fn decode_triangles(data: &[u8], count: usize, byte_stride: usize) -> Result<Vec
     emit_indices(&indices, byte_stride)
 }
 
+/// Encode raw index bytes into a Mode 1 TRIANGLES stream (inverse of
+/// [`decode_triangles`]). Uses the all-explicit `0xff` / `zw = 0xff`
+/// escape for every triangle: each of the three corner indices is
+/// emitted as an explicit `decode_index` delta against the shared
+/// `last`. This is the simplest fully-general encoding the FIFO decoder
+/// accepts — it does not exploit edge/vertex reuse, so it trades
+/// compactness for a clean lossless round-trip.
+fn encode_triangles(raw: &[u8], count: usize, byte_stride: usize) -> Result<Vec<u8>> {
+    if byte_stride != 2 && byte_stride != 4 {
+        return Err(invalid(format!(
+            "KHR_meshopt_compression: TRIANGLES byteStride {byte_stride} must be 2 or 4"
+        )));
+    }
+    if count % 3 != 0 {
+        return Err(invalid(
+            "KHR_meshopt_compression: TRIANGLES count must be divisible by 3",
+        ));
+    }
+    let triangle_count = count / 3;
+
+    let read_idx = |i: usize| -> u32 {
+        let base = i * byte_stride;
+        if byte_stride == 2 {
+            u16::from_le_bytes([raw[base], raw[base + 1]]) as u32
+        } else {
+            u32::from_le_bytes([raw[base], raw[base + 1], raw[base + 2], raw[base + 3]])
+        }
+    };
+
+    // `code` bytes (one per triangle, all 0xff) come first, then the
+    // `data` section (the per-corner zw + explicit index varints), then
+    // the 16-byte codeaux tail. All-explicit corners never index codeaux,
+    // so an all-zero codeaux table satisfies the decoder's validity
+    // checks (last two bytes 0, no 0xf nibble).
+    let mut out = vec![0xe1u8]; // header
+    out.resize(out.len() + triangle_count, 0xffu8); // codes
+
+    let mut last: u32 = 0;
+    for t in 0..triangle_count {
+        // zw = 0xff → a, b, c all explicit. zw must not be 0x00 (which
+        // would reset `next`); 0xff is safe.
+        out.push(0xff);
+        for corner in 0..3 {
+            let idx = read_idx(t * 3 + corner);
+            encode_index(&mut out, idx, &mut last);
+        }
+    }
+
+    out.extend_from_slice(&[0u8; 16]); // codeaux tail (all zero)
+    Ok(out)
+}
+
+/// Encode one explicit index as a zigzag varint delta vs `last`
+/// (inverse of [`decode_index`]). The decoder reads
+/// `delta = (v & 1) ? !(v >> 1) : (v >> 1)`.
+fn encode_index(out: &mut Vec<u8>, idx: u32, last: &mut u32) {
+    let delta = idx.wrapping_sub(*last);
+    *last = idx;
+    let (sign, w) = zigzag_split_u32(delta);
+    let v = (w << 1) | (sign as u32);
+    write_varint(out, v);
+}
+
 // ---------------------------------------------------------------------------
 // Mode 2: indices (§"Mode 2: indices")
 // ---------------------------------------------------------------------------
@@ -734,6 +1022,65 @@ fn emit_indices(indices: &[u32], byte_stride: usize) -> Result<Vec<u8>> {
         }
     }
     Ok(out)
+}
+
+/// Encode raw index bytes into a Mode 2 INDICES stream (inverse of
+/// [`decode_indices`]). Each index is delta-coded against baseline 0
+/// only — a valid, fully-general encoding the spec's decoder accepts
+/// (baseline 1 is an optional compression aid the encoder need not use).
+fn encode_indices(raw: &[u8], count: usize, byte_stride: usize) -> Result<Vec<u8>> {
+    if byte_stride != 2 && byte_stride != 4 {
+        return Err(invalid(format!(
+            "KHR_meshopt_compression: INDICES byteStride {byte_stride} must be 2 or 4"
+        )));
+    }
+    let mut out = vec![0xd1u8]; // header
+    let mut last0: u32 = 0;
+    for i in 0..count {
+        let base = i * byte_stride;
+        let idx = if byte_stride == 2 {
+            u16::from_le_bytes([raw[base], raw[base + 1]]) as u32
+        } else {
+            u32::from_le_bytes([raw[base], raw[base + 1], raw[base + 2], raw[base + 3]])
+        };
+        let delta = idx.wrapping_sub(last0);
+        last0 = idx;
+        // Layout (per decode_indices): v = (w << 2) | (sign << 1) | base.
+        // base = 0 (baseline 0), sign + w chosen so decode's
+        // `delta = sign ? !w : w` reproduces `delta`.
+        let (sign, w) = zigzag_split_u32(delta);
+        let v = (w << 2) | ((sign as u32) << 1);
+        write_varint(&mut out, v);
+    }
+    out.extend_from_slice(&[0, 0, 0, 0]); // 4-byte tail padding
+    Ok(out)
+}
+
+/// Choose the `(sign, magnitude)` pair such that the decoder's
+/// `delta = sign ? !magnitude : magnitude` (32-bit bitwise-not)
+/// reproduces `delta`, minimising the stored magnitude so the varint
+/// stays short. Picks `sign = (delta >> 31)`: positives store `delta`
+/// directly, negatives store `!delta` (small for near-zero negatives).
+fn zigzag_split_u32(delta: u32) -> (bool, u32) {
+    if delta & 0x8000_0000 != 0 {
+        (true, !delta)
+    } else {
+        (false, delta)
+    }
+}
+
+/// varint-7 / unsigned LEB128 writer (inverse of [`read_varint`]).
+fn write_varint(out: &mut Vec<u8>, mut v: u32) {
+    loop {
+        let byte = (v & 0x7f) as u8;
+        v >>= 7;
+        if v != 0 {
+            out.push(byte | 0x80);
+        } else {
+            out.push(byte);
+            break;
+        }
+    }
 }
 
 /// §"Mode 1"/"Mode 2": decode a zigzag-encoded signed index delta vs
@@ -1252,5 +1599,128 @@ mod tests {
     #[test]
     fn truncated_stream_rejected() {
         assert!(decode(&[0xd1], Mode::Indices, Filter::None, 1, 4).is_err());
+    }
+
+    // -- encode round-trip coverage ---------------------------------------
+
+    fn rt(mode: Mode, raw: &[u8], count: usize, byte_stride: usize) {
+        let enc = encode(raw, mode, Filter::None, count, byte_stride).unwrap();
+        let dec = decode(&enc, mode, Filter::None, count, byte_stride).unwrap();
+        assert_eq!(dec, raw, "{mode:?} round-trip mismatch");
+    }
+
+    #[test]
+    fn zigzag_encode_u8_inverts_decode() {
+        for v in 0u8..=255 {
+            assert_eq!(zigzag_encode_u8(zigzag_decode_u8(v)), {
+                // canonical encoding is unique, so re-encoding the decoded
+                // value must reproduce the original byte for every v.
+                v
+            });
+        }
+    }
+
+    #[test]
+    fn write_varint_inverts_read() {
+        for &v in &[0u32, 1, 0x7f, 0x80, 0x201, 0x1507f, 0xffff_ffff] {
+            let mut buf = Vec::new();
+            write_varint(&mut buf, v);
+            let mut c = Cursor::new(&buf);
+            assert_eq!(read_varint(&mut c).unwrap(), v);
+            assert!(c.is_empty());
+        }
+    }
+
+    #[test]
+    fn encode_indices_roundtrip_u32() {
+        let idx: [u32; 6] = [0, 1, 2, 2, 3, 0];
+        let mut raw = Vec::new();
+        for &i in &idx {
+            raw.extend_from_slice(&i.to_le_bytes());
+        }
+        rt(Mode::Indices, &raw, idx.len(), 4);
+    }
+
+    #[test]
+    fn encode_indices_roundtrip_u16_and_backwards_deltas() {
+        // Includes a large jump then a backwards delta to exercise both
+        // zigzag sign paths.
+        let idx: [u16; 8] = [0, 100, 50, 51, 200, 199, 0, 65535];
+        let mut raw = Vec::new();
+        for &i in &idx {
+            raw.extend_from_slice(&i.to_le_bytes());
+        }
+        rt(Mode::Indices, &raw, idx.len(), 2);
+    }
+
+    #[test]
+    fn encode_triangles_roundtrip() {
+        // Two triangles sharing an edge (0,1,2) + (2,1,3).
+        let idx: [u32; 6] = [0, 1, 2, 2, 1, 3];
+        let mut raw = Vec::new();
+        for &i in &idx {
+            raw.extend_from_slice(&i.to_le_bytes());
+        }
+        rt(Mode::Triangles, &raw, idx.len(), 4);
+    }
+
+    #[test]
+    fn encode_triangles_roundtrip_u16() {
+        let idx: [u16; 9] = [0, 1, 2, 3, 4, 5, 5, 4, 0];
+        let mut raw = Vec::new();
+        for &i in &idx {
+            raw.extend_from_slice(&i.to_le_bytes());
+        }
+        rt(Mode::Triangles, &raw, idx.len(), 2);
+    }
+
+    #[test]
+    fn encode_attributes_roundtrip_small() {
+        // 3 elements, stride 4 — picks varied group widths per byte pos.
+        let raw: Vec<u8> = vec![
+            0x11, 0x22, 0x33, 0x44, // e0
+            0x12, 0x22, 0x40, 0x44, // e1: +1, 0, +13, 0
+            0x10, 0x52, 0x33, 0xc4, // e2: -2, +0x30, -13, +0x80
+        ];
+        rt(Mode::Attributes, &raw, 3, 4);
+    }
+
+    #[test]
+    fn encode_attributes_roundtrip_large_multi_block_multi_group() {
+        // stride 8, 40 elements → multiple groups (3 groups) in one block.
+        let count = 40;
+        let stride = 8;
+        let mut raw = vec![0u8; count * stride];
+        // Deterministic pseudo-random-ish fill exercising all delta sizes.
+        let mut s: u32 = 0x1234_5678;
+        for b in raw.iter_mut() {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *b = (s >> 24) as u8;
+        }
+        rt(Mode::Attributes, &raw, count, stride);
+    }
+
+    #[test]
+    fn encode_attributes_roundtrip_all_zero() {
+        // Every byte identical → all-zero deltas → hb 0 groups.
+        let raw = vec![0x7eu8; 5 * 4];
+        rt(Mode::Attributes, &raw, 5, 4);
+    }
+
+    #[test]
+    fn encode_attributes_roundtrip_zero_count() {
+        rt(Mode::Attributes, &[], 0, 4);
+        rt(Mode::Indices, &[], 0, 4);
+        rt(Mode::Triangles, &[], 0, 4);
+    }
+
+    #[test]
+    fn encode_rejects_non_none_filter() {
+        assert!(encode(&[0u8; 8], Mode::Attributes, Filter::Octahedral, 2, 4).is_err());
+    }
+
+    #[test]
+    fn encode_rejects_size_mismatch() {
+        assert!(encode(&[0u8; 7], Mode::Attributes, Filter::None, 2, 4).is_err());
     }
 }
