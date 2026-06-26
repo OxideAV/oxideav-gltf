@@ -509,19 +509,30 @@ framework but usable standalone.
   uri-less fallback buffer (the spec's "Fallback buffers" shape)
   is materialised as a zero-filled byte vector of the declared
   `byteLength` and then overwritten by the inflated bytes. The
-  bitstream codec is also invertible: `meshopt::encode` produces
-  payloads (all three modes, `NONE` filter) that round-trip
-  byte-for-byte through `meshopt::decode` — ATTRIBUTES emits the v0
-  stream (`0xa0`) with per-byte-position group bit-width selection,
-  INDICES the two-baseline varint delta stream, TRIANGLES an
-  all-explicit per-triangle stream. On encode the decoded sidecar is
-  stripped from `scene.extras`; by default the freshly-built
-  bufferViews are emitted uncompressed, but
+  bitstream codec is also fully invertible: `meshopt::encode` produces
+  payloads that round-trip byte-for-byte through `meshopt::decode`
+  across all three modes and the Appendix B filters. ATTRIBUTES emits
+  the **v1** stream (`0xa1`), with each byte position assigned the
+  cheapest control mode by encoded size — mode 2 (no data) for constant
+  byte columns, mode 0 (`{0,1,2,4}`) for small deltas, mode 1
+  (`{1,2,4,8}`) for larger deltas, mode 3 (literal) for high-entropy
+  columns — and each 16-element group picking the narrowest width on
+  that ladder. INDICES uses the decoder's two-baseline scheme, greedily
+  delta-coding each index against whichever baseline gives the shorter
+  varint. TRIANGLES mirrors the decoder's edge/vertex FIFO state and
+  emits the compact `0xXY` edge-reuse codes whenever a triangle's
+  leading edge is cached, falling back to the order-preserving `0xff`
+  explicit code otherwise. The Appendix B forward filters are supported
+  for ATTRIBUTES too: EXPONENTIAL decomposes f32 into exponent+mantissa
+  so it round-trips **exactly**, while OCTAHEDRAL / QUATERNION / COLOR
+  round-trip within the 1-ULP tolerance the spec grants. On encode the
+  decoded sidecar is stripped from `scene.extras`; by default the
+  freshly-built bufferViews are emitted uncompressed, but
   `GltfEncoder::with_meshopt_compression(true)` opts into compressing
   eligible bufferViews: index views (`ELEMENT_ARRAY_BUFFER`, SCALAR
   `u16`/`u32`) with the INDICES codec, and dense vertex-attribute
   views (`ARRAY_BUFFER`, single accessor, element stride a multiple of
-  4 in `[4, 256]`) with the ATTRIBUTES v0 codec. The packed BIN keeps
+  4 in `[4, 256]`) with the ATTRIBUTES codec. The packed BIN keeps
   the uncompressed bytes (a plain real-data buffer), a second
   `data:`-URI buffer carries the compressed payloads, each compressed
   bufferView gains its mode descriptor, and `KHR_meshopt_compression`
