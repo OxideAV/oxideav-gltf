@@ -772,19 +772,25 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
         });
     }
 
-    // --- optional KHR_meshopt_compression post-pass (INDICES) ---
+    // --- optional KHR_meshopt_compression post-pass ---
     if opts.meshopt_compress_indices {
-        compress_meshopt_indices(&mut root, &bin)?;
+        compress_meshopt(&mut root, &bin)?;
     }
 
     Ok(EncodedScene { root, bin })
 }
 
-/// Post-encode `KHR_meshopt_compression` pass: compress every index
-/// bufferView (`ELEMENT_ARRAY_BUFFER`, SCALAR `u16`/`u32`) with the
-/// meshopt INDICES codec per
-/// `docs/3d/gltf/extensions/KHR_meshopt_compression.md`
-/// §"Specifying compressed views" + §"Fallback buffers".
+/// Post-encode `KHR_meshopt_compression` pass: compress every eligible
+/// bufferView per `docs/3d/gltf/extensions/KHR_meshopt_compression.md`
+/// §"Specifying compressed views":
+/// * index views (`ELEMENT_ARRAY_BUFFER`, SCALAR `u16`/`u32`) → INDICES
+///   mode (2/4-byte stride);
+/// * vertex-attribute views (`ARRAY_BUFFER`, single dense accessor,
+///   element stride a positive multiple of 4 in `[4, 256]`) →
+///   ATTRIBUTES mode (v0 byte-delta stream, `NONE` filter).
+///
+/// Both produce payloads that round-trip byte-for-byte through this
+/// crate's decoder.
 ///
 /// Layout produced:
 /// * Buffer 0 (the packed BIN, `bin`) keeps the **uncompressed** index
@@ -808,31 +814,80 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
 ///   `extensionsRequired`.
 ///
 /// `u8` index views (byteStride 1) are left uncompressed: meshopt
-/// INDICES requires a 2- or 4-byte stride.
-pub fn compress_meshopt_indices(root: &mut GltfRoot, bin: &[u8]) -> Result<()> {
-    // Identify index bufferViews + their stride from the accessor that
-    // reads them as SCALAR u16/u32.
-    let mut targets: Vec<(usize, usize, usize)> = Vec::new(); // (bv_idx, stride, count)
+/// INDICES requires a 2- or 4-byte stride. Sparse and interleaved
+/// (multi-accessor) views are skipped.
+pub fn compress_meshopt(root: &mut GltfRoot, bin: &[u8]) -> Result<()> {
+    // A bufferView selected for compression: which meshopt mode, its
+    // decompressed element stride, and the element count.
+    struct Target {
+        bv_idx: usize,
+        mode: crate::meshopt::Mode,
+        stride: usize,
+        count: usize,
+    }
+    let mut targets: Vec<Target> = Vec::new();
+
     for (bv_idx, bv) in root.buffer_views.iter().enumerate() {
-        if bv.target != Some(gj::TARGET_ELEMENT_ARRAY_BUFFER) {
-            continue;
-        }
         if bv.buffer != 0 || bv.extensions.is_some() {
             continue;
         }
-        // Find the SCALAR index accessor on this bufferView.
-        let acc = root
+        // A bufferView shared by more than one accessor (interleaved) is
+        // skipped — the descriptor describes a single element layout.
+        let mut accs = root
             .accessors
             .iter()
-            .find(|a| a.buffer_view == Some(bv_idx as u32) && a.kind == "SCALAR");
-        let Some(acc) = acc else { continue };
-        let stride = match acc.component_type {
-            gj::COMPONENT_TYPE_UNSIGNED_SHORT => 2usize,
-            gj::COMPONENT_TYPE_UNSIGNED_INT => 4usize,
-            _ => continue, // u8 indices: meshopt INDICES needs stride 2/4
-        };
+            .filter(|a| a.buffer_view == Some(bv_idx as u32));
+        let Some(acc) = accs.next() else { continue };
+        if accs.next().is_some() {
+            continue;
+        }
         let count = acc.count as usize;
-        targets.push((bv_idx, stride, count));
+        if count == 0 {
+            continue;
+        }
+        let len = bv.byte_length as usize;
+        // Element stride = byteLength / count (the encoder emits tightly
+        // packed, non-interleaved views).
+        if len % count != 0 {
+            continue;
+        }
+        let stride = len / count;
+
+        match bv.target {
+            Some(gj::TARGET_ELEMENT_ARRAY_BUFFER) if acc.kind == "SCALAR" => {
+                // INDICES mode — needs a 2- or 4-byte stride.
+                match acc.component_type {
+                    gj::COMPONENT_TYPE_UNSIGNED_SHORT if stride == 2 => {}
+                    gj::COMPONENT_TYPE_UNSIGNED_INT if stride == 4 => {}
+                    _ => continue,
+                }
+                targets.push(Target {
+                    bv_idx,
+                    mode: crate::meshopt::Mode::Indices,
+                    stride,
+                    count,
+                });
+            }
+            Some(gj::TARGET_ARRAY_BUFFER) => {
+                // ATTRIBUTES mode — needs a stride that is a positive
+                // multiple of 4 in [4, 256] (spec §"Specifying
+                // compressed views"). Sparse accessors have no
+                // bufferView, so any accessor reaching here is dense.
+                if acc.sparse.is_some() {
+                    continue;
+                }
+                if stride == 0 || stride % 4 != 0 || stride > 256 {
+                    continue;
+                }
+                targets.push(Target {
+                    bv_idx,
+                    mode: crate::meshopt::Mode::Attributes,
+                    stride,
+                    count,
+                });
+            }
+            _ => continue,
+        }
     }
 
     if targets.is_empty() {
@@ -843,38 +898,36 @@ pub fn compress_meshopt_indices(root: &mut GltfRoot, bin: &[u8]) -> Result<()> {
     let mut compressed: Vec<u8> = Vec::new();
     let mut descriptors: Vec<(usize, gj::KhrMeshoptCompression)> = Vec::new();
     let new_buffer_index = root.buffers.len() as u32;
-    for (bv_idx, stride, count) in targets {
-        let bv = &root.buffer_views[bv_idx];
+    for t in targets {
+        let bv = &root.buffer_views[t.bv_idx];
         let off = bv.byte_offset.unwrap_or(0) as usize;
         let len = bv.byte_length as usize;
         let end = off
             .checked_add(len)
             .filter(|&e| e <= bin.len())
-            .ok_or_else(|| invalid("meshopt: index bufferView range overruns BIN"))?;
+            .ok_or_else(|| invalid("meshopt: bufferView range overruns BIN"))?;
         let raw = &bin[off..end];
-        if raw.len() != stride * count {
-            return Err(invalid(
-                "meshopt: index bufferView byteLength != stride * count",
-            ));
+        if raw.len() != t.stride * t.count {
+            return Err(invalid("meshopt: bufferView byteLength != stride * count"));
         }
-        let payload = crate::meshopt::encode(
-            raw,
-            crate::meshopt::Mode::Indices,
-            crate::meshopt::Filter::None,
-            count,
-            stride,
-        )?;
+        let mode_name = match t.mode {
+            crate::meshopt::Mode::Indices => "INDICES",
+            crate::meshopt::Mode::Attributes => "ATTRIBUTES",
+            crate::meshopt::Mode::Triangles => "TRIANGLES",
+        };
+        let payload =
+            crate::meshopt::encode(raw, t.mode, crate::meshopt::Filter::None, t.count, t.stride)?;
         let comp_off = compressed.len();
         compressed.extend_from_slice(&payload);
         descriptors.push((
-            bv_idx,
+            t.bv_idx,
             gj::KhrMeshoptCompression {
                 buffer: new_buffer_index,
                 byte_offset: Some(comp_off as u32),
                 byte_length: payload.len() as u32,
-                byte_stride: stride as u32,
-                count: count as u32,
-                mode: "INDICES".to_owned(),
+                byte_stride: t.stride as u32,
+                count: t.count as u32,
+                mode: mode_name.to_owned(),
                 filter: None,
             },
         ));

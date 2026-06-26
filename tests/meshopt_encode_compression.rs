@@ -93,7 +93,8 @@ fn meshopt_write_u16_roundtrips() {
         "meshopt index compression must not be required"
     );
 
-    // Exactly one bufferView carries a descriptor (the index view).
+    // Two bufferViews carry descriptors: the POSITION (ATTRIBUTES) view
+    // and the index (INDICES) view.
     let bvs = doc["bufferViews"].as_array().unwrap();
     let descriptors: Vec<&Value> = bvs
         .iter()
@@ -102,11 +103,18 @@ fn meshopt_write_u16_roundtrips() {
                 .and_then(|e| e.get("KHR_meshopt_compression"))
         })
         .collect();
-    assert_eq!(descriptors.len(), 1, "one index view compressed");
-    let d = descriptors[0];
-    assert_eq!(d["mode"].as_str(), Some("INDICES"));
-    assert_eq!(d["byteStride"].as_u64(), Some(2));
-    assert_eq!(d["count"].as_u64(), Some(6));
+    assert_eq!(descriptors.len(), 2, "POSITION + index views compressed");
+    let index_desc = descriptors
+        .iter()
+        .find(|d| d["mode"].as_str() == Some("INDICES"))
+        .expect("INDICES descriptor present");
+    assert_eq!(index_desc["byteStride"].as_u64(), Some(2));
+    assert_eq!(index_desc["count"].as_u64(), Some(6));
+    let attr_desc = descriptors
+        .iter()
+        .find(|d| d["mode"].as_str() == Some("ATTRIBUTES"))
+        .expect("ATTRIBUTES descriptor present");
+    assert_eq!(attr_desc["byteStride"].as_u64(), Some(12)); // POSITION VEC3 f32
 
     // A second buffer holds the compressed payloads; buffer 0 stays a
     // plain real-data buffer (no fallback marker).
@@ -153,11 +161,12 @@ fn meshopt_write_u32_roundtrips() {
     let bvs = doc["bufferViews"].as_array().unwrap();
     let d = bvs
         .iter()
-        .find_map(|bv| {
+        .filter_map(|bv| {
             bv.get("extensions")
                 .and_then(|e| e.get("KHR_meshopt_compression"))
         })
-        .expect("index descriptor present");
+        .find(|d| d["mode"].as_str() == Some("INDICES"))
+        .expect("INDICES descriptor present");
     assert_eq!(d["byteStride"].as_u64(), Some(4));
 
     let mut dec = GltfDecoder::new();
@@ -185,11 +194,21 @@ fn meshopt_write_off_by_default() {
 }
 
 #[test]
-fn meshopt_write_no_indices_is_noop() {
-    // A non-indexed primitive → nothing to compress → no extension.
+fn meshopt_write_attributes_only_roundtrips() {
+    // A non-indexed primitive: only the POSITION (ATTRIBUTES) view is
+    // compressed; it round-trips back to the original positions.
+    // Six positions = two triangles (non-indexed count divisible by 3).
+    let positions = vec![
+        [1.5f32, -2.0, 3.25],
+        [1.75, -1.0, 3.0],
+        [0.0, 0.5, 10.0],
+        [2.0, 2.0, 2.0],
+        [-1.0, -1.0, -1.0],
+        [5.0, 0.0, -3.5],
+    ];
     let mut scene = Scene3D::new();
     let mut prim = Primitive::new(Topology::Triangles);
-    prim.positions = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+    prim.positions = positions.clone();
     let mut mesh = Mesh::new(Some("tri".to_owned()));
     mesh.primitives.push(prim);
     let mid = scene.add_mesh(mesh);
@@ -198,17 +217,25 @@ fn meshopt_write_no_indices_is_noop() {
     scene.add_root(nid);
 
     let mut enc = json_encoder().with_meshopt_compression(true);
-    let bytes = enc.encode(&scene).expect("encode no-index meshopt");
+    let bytes = enc.encode(&scene).expect("encode attributes meshopt");
     let doc = decode_json(&bytes);
-    assert!(
-        doc.get("extensionsUsed")
-            .and_then(|u| u.as_array())
-            .map(|a| a
-                .iter()
-                .all(|v| v.as_str() != Some("KHR_meshopt_compression")))
-            .unwrap_or(true),
-        "no index view → no extension"
-    );
+    // POSITION view compressed as ATTRIBUTES.
+    let d = doc["bufferViews"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|bv| {
+            bv.get("extensions")
+                .and_then(|e| e.get("KHR_meshopt_compression"))
+        })
+        .find(|d| d["mode"].as_str() == Some("ATTRIBUTES"))
+        .expect("ATTRIBUTES descriptor present");
+    assert_eq!(d["byteStride"].as_u64(), Some(12));
+    assert_eq!(d["count"].as_u64(), Some(6));
+
+    let mut dec = GltfDecoder::new();
+    let scene2 = dec.decode(&bytes).expect("decode attributes meshopt doc");
+    assert_eq!(scene2.meshes[0].primitives[0].positions, positions);
 }
 
 #[test]
@@ -223,5 +250,68 @@ fn meshopt_write_glb_flavour_roundtrips() {
     let mut dec = GltfDecoder::new();
     let scene2 = dec.decode(&glb).expect("decode glb meshopt");
     let p = &scene2.meshes[0].primitives[0];
+    assert_eq!(p.triangle_indices(), vec![[0, 300, 2], [300, 3, 2]]);
+}
+
+#[test]
+fn meshopt_write_multi_attribute_roundtrips() {
+    // POSITION (stride 12) + NORMAL (12) + TEXCOORD (8) + indices, all
+    // compressed and round-tripped. Exercises several ATTRIBUTES strides
+    // in one document.
+    let positions = vec![
+        [0.0f32, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [1.0, 1.0, 0.0],
+    ];
+    let normals = vec![[0.0f32, 0.0, 1.0]; 4];
+    let indices = vec![0u16, 300, 2, 300, 3, 2];
+
+    // Pad positions/normals/uvs to reference index 300.
+    let mut positions = positions;
+    let mut normals = normals;
+    let mut uvs0 = vec![[0.0f32, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
+    positions.resize(301, [0.0, 0.0, 0.0]);
+    normals.resize(301, [0.0, 0.0, 1.0]);
+    uvs0.resize(301, [0.0, 0.0]);
+
+    let mut scene = Scene3D::new();
+    let mut prim = Primitive::new(Topology::Triangles);
+    prim.positions = positions.clone();
+    prim.normals = Some(normals.clone());
+    prim.uvs = vec![uvs0.clone()];
+    prim.indices = Some(Indices::U16(indices));
+    let mut mesh = Mesh::new(Some("multi".to_owned()));
+    mesh.primitives.push(prim);
+    let mid = scene.add_mesh(mesh);
+    let node = Node::new().with_mesh(mid);
+    let nid = scene.add_node(node);
+    scene.add_root(nid);
+
+    let mut enc = json_encoder().with_meshopt_compression(true);
+    let bytes = enc.encode(&scene).expect("encode multi-attr meshopt");
+
+    // At least 4 descriptors: POSITION, NORMAL, TEXCOORD, indices.
+    let doc = decode_json(&bytes);
+    let descriptors: Vec<&Value> = doc["bufferViews"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|bv| {
+            bv.get("extensions")
+                .and_then(|e| e.get("KHR_meshopt_compression"))
+        })
+        .collect();
+    assert!(
+        descriptors.len() >= 4,
+        "all attribute + index views compressed"
+    );
+
+    let mut dec = GltfDecoder::new();
+    let scene2 = dec.decode(&bytes).expect("decode multi-attr meshopt");
+    let p = &scene2.meshes[0].primitives[0];
+    assert_eq!(p.positions, positions);
+    assert_eq!(p.normals.as_ref().unwrap(), &normals);
+    assert_eq!(p.uvs[0], uvs0);
     assert_eq!(p.triangle_indices(), vec![[0, 300, 2], [300, 3, 2]]);
 }

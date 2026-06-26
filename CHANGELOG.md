@@ -10,21 +10,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `KHR_meshopt_compression` **write path** —
-  `GltfEncoder::with_meshopt_compression(true)` post-compresses every
-  index bufferView (`ELEMENT_ARRAY_BUFFER`, SCALAR `u16`/`u32`) with the
-  meshopt INDICES codec. The packed BIN keeps the uncompressed indices
-  (a plain real-data buffer, NOT a fallback marker — it also backs the
-  vertex views, and §"Fallback buffers" reserves the marker for no-data
-  placeholders whose every reference carries a descriptor), a second
-  `data:`-URI buffer carries the compressed payloads, each compressed
-  index bufferView gains the `INDICES`-mode descriptor, and
-  `KHR_meshopt_compression` is declared in `extensionsUsed` only (the
-  document stays readable without the extension, so it is not
-  `extensionsRequired`). `u8` index views are left uncompressed
-  (meshopt INDICES needs a 2/4-byte stride). Opt-in, off by default;
-  works with both GLB and JSON-embedded flavours. Documents round-trip
-  back through this crate's decoder to the original indices. Five new
-  integration tests (`tests/meshopt_encode_compression.rs`).
+  `GltfEncoder::with_meshopt_compression(true)` post-compresses eligible
+  bufferViews: index views (`ELEMENT_ARRAY_BUFFER`, SCALAR `u16`/`u32`)
+  with the INDICES codec, and dense vertex-attribute views
+  (`ARRAY_BUFFER`, single accessor, element stride a positive multiple
+  of 4 in `[4, 256]`) with the ATTRIBUTES v0 codec. The packed BIN keeps
+  the uncompressed bytes (a plain real-data buffer, NOT a fallback
+  marker — it also backs the vertex views, and §"Fallback buffers"
+  reserves the marker for no-data placeholders whose every reference
+  carries a descriptor), a second `data:`-URI buffer carries the
+  compressed payloads, each compressed bufferView gains its mode
+  descriptor, and `KHR_meshopt_compression` is declared in
+  `extensionsUsed` only (the document stays readable without the
+  extension, so it is not `extensionsRequired`). `u8` index views and
+  sparse / interleaved views are left uncompressed. Opt-in, off by
+  default; works with both GLB and JSON-embedded flavours. Documents
+  round-trip back through this crate's decoder to the original
+  attribute + index data. Six new integration tests
+  (`tests/meshopt_encode_compression.rs`), including a multi-attribute
+  (POSITION + NORMAL + TEXCOORD + indices) round-trip.
 
 - `KHR_meshopt_compression` **encoder** (`meshopt::encode`) — the
   inverse of the Appendix A bitstream decoder, producing payloads that

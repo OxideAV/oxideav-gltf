@@ -518,15 +518,18 @@ framework but usable standalone.
   stripped from `scene.extras`; by default the freshly-built
   bufferViews are emitted uncompressed, but
   `GltfEncoder::with_meshopt_compression(true)` opts into compressing
-  every index bufferView (`ELEMENT_ARRAY_BUFFER`, SCALAR `u16`/`u32`)
-  with the INDICES codec: the packed BIN keeps the uncompressed
-  indices (a plain real-data buffer), a second `data:`-URI buffer
-  carries the compressed payloads, each compressed index bufferView
-  gains the `INDICES` descriptor, and `KHR_meshopt_compression` is
-  added to `extensionsUsed` (not `extensionsRequired` — the document
-  stays readable without the extension). Such documents round-trip
-  back through this crate's decoder to the original indices. The
-  §3.12 stack validator rejects
+  eligible bufferViews: index views (`ELEMENT_ARRAY_BUFFER`, SCALAR
+  `u16`/`u32`) with the INDICES codec, and dense vertex-attribute
+  views (`ARRAY_BUFFER`, single accessor, element stride a multiple of
+  4 in `[4, 256]`) with the ATTRIBUTES v0 codec. The packed BIN keeps
+  the uncompressed bytes (a plain real-data buffer), a second
+  `data:`-URI buffer carries the compressed payloads, each compressed
+  bufferView gains its mode descriptor, and `KHR_meshopt_compression`
+  is added to `extensionsUsed` (not `extensionsRequired` — the
+  document stays readable without the extension). `u8` index views and
+  sparse / interleaved views are skipped. Such documents round-trip
+  back through this crate's decoder to the original attribute + index
+  data. The §3.12 stack validator rejects
   documents with the data block on any bufferView/buffer without
   the declaration (`ExtensionStackUsedNotDeclared`); uri-less
   fallback buffers without `KHR_meshopt_compression` in

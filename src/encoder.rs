@@ -124,12 +124,14 @@ impl GltfEncoder {
         self
     }
 
-    /// Enable `KHR_meshopt_compression` of index bufferViews on write.
-    /// The uncompressed indices stay in a fallback buffer and the
-    /// compressed payloads go in a separate `data:`-URI buffer, so the
-    /// document is self-contained and round-trips through this crate's
-    /// decoder (which inflates the descriptors back to the uncompressed
-    /// indices). Pairs best with [`OutputFlavour::JsonEmbedded`].
+    /// Enable `KHR_meshopt_compression` of eligible bufferViews on
+    /// write: index views (INDICES mode, `u16`/`u32`) and dense vertex
+    /// attribute views (ATTRIBUTES mode, element stride a multiple of 4
+    /// in `[4, 256]`). The uncompressed bytes stay in the packed BIN
+    /// buffer and the compressed payloads go in a separate `data:`-URI
+    /// buffer, so the document is self-contained, stays readable without
+    /// the extension, and round-trips through this crate's decoder
+    /// (which inflates the descriptors back to the uncompressed data).
     pub fn with_meshopt_compression(mut self, enable: bool) -> Self {
         self.meshopt_compress_indices = enable;
         self
