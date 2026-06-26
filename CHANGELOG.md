@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Deterministic property/fuzz coverage for the meshopt write path
+  (`tests/meshopt_encode_fuzz.rs`) — a fixed-seed LCG generates ~96
+  random indexed triangle meshes (varied vertex/triangle counts,
+  optional normals, large multi-block primitives) and asserts each
+  reproduces the plain-encode round-trip's positions / normals /
+  indices after meshopt compression, across both GLB and JSON flavours.
+
 - `KHR_meshopt_compression` **write path** —
   `GltfEncoder::with_meshopt_compression(true)` post-compresses eligible
   bufferViews: index views (`ELEMENT_ARRAY_BUFFER`, SCALAR `u16`/`u32`)
