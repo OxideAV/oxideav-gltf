@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `KHR_meshopt_compression` **INDICES two-baseline encoder** — the Mode 2
+  (INDICES) write path now uses the decoder's dual-baseline scheme,
+  greedily delta-coding each index against whichever of the two baselines
+  yields the smaller zigzag magnitude (hence the shorter varint). Index
+  data drawn from two interleaved runs — e.g. dual-stream geometry —
+  compresses to roughly one byte per index instead of paying a multi-byte
+  varint for every cross-run jump, while staying exactly invertible. The
+  prior encoder delta-coded against baseline 0 only. Covered by a
+  two-interleaved-run round-trip + compactness assertion.
+
 - `KHR_meshopt_compression` **TRIANGLES edge-reuse encoder** — the Mode 1
   (TRIANGLES) write path now mirrors the decoder's full state machine
   (edge FIFO, vertex FIFO, `next` new-vertex counter, `last` explicit

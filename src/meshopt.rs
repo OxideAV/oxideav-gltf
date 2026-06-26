@@ -1120,9 +1120,14 @@ fn emit_indices(indices: &[u32], byte_stride: usize) -> Result<Vec<u8>> {
 }
 
 /// Encode raw index bytes into a Mode 2 INDICES stream (inverse of
-/// [`decode_indices`]). Each index is delta-coded against baseline 0
-/// only — a valid, fully-general encoding the spec's decoder accepts
-/// (baseline 1 is an optional compression aid the encoder need not use).
+/// [`decode_indices`]).
+///
+/// The decoder keeps two independent baselines and selects one per index
+/// via the low bit of the varint. For each index this encoder greedily
+/// picks the baseline whose delta has the smaller zigzag magnitude (hence
+/// the shorter varint), which compresses index data drawn from two
+/// interleaved runs — common in dual-stream geometry — far better than a
+/// single baseline, while remaining exactly invertible.
 fn encode_indices(raw: &[u8], count: usize, byte_stride: usize) -> Result<Vec<u8>> {
     if byte_stride != 2 && byte_stride != 4 {
         return Err(invalid(format!(
@@ -1130,7 +1135,7 @@ fn encode_indices(raw: &[u8], count: usize, byte_stride: usize) -> Result<Vec<u8
         )));
     }
     let mut out = vec![0xd1u8]; // header
-    let mut last0: u32 = 0;
+    let mut last = [0u32; 2];
     for i in 0..count {
         let base = i * byte_stride;
         let idx = if byte_stride == 2 {
@@ -1138,13 +1143,15 @@ fn encode_indices(raw: &[u8], count: usize, byte_stride: usize) -> Result<Vec<u8
         } else {
             u32::from_le_bytes([raw[base], raw[base + 1], raw[base + 2], raw[base + 3]])
         };
-        let delta = idx.wrapping_sub(last0);
-        last0 = idx;
+        // Evaluate both baselines and keep the one with the smaller zigzag
+        // magnitude (the varint-cheaper choice; ties keep baseline 0).
+        let (s0, w0) = zigzag_split_u32(idx.wrapping_sub(last[0]));
+        let (s1, w1) = zigzag_split_u32(idx.wrapping_sub(last[1]));
+        let baseline = if w1 < w0 { 1usize } else { 0usize };
+        let (sign, w) = if baseline == 1 { (s1, w1) } else { (s0, w0) };
+        last[baseline] = idx;
         // Layout (per decode_indices): v = (w << 2) | (sign << 1) | base.
-        // base = 0 (baseline 0), sign + w chosen so decode's
-        // `delta = sign ? !w : w` reproduces `delta`.
-        let (sign, w) = zigzag_split_u32(delta);
-        let v = (w << 2) | ((sign as u32) << 1);
+        let v = (w << 2) | ((sign as u32) << 1) | (baseline as u32);
         write_varint(&mut out, v);
     }
     out.extend_from_slice(&[0, 0, 0, 0]); // 4-byte tail padding
@@ -2156,6 +2163,59 @@ mod tests {
             raw.extend_from_slice(&i.to_le_bytes());
         }
         rt(Mode::Indices, &raw, idx.len(), 2);
+    }
+
+    #[test]
+    fn encode_indices_two_baseline_roundtrip_and_compact() {
+        // Two interleaved monotonic runs: a low run (0,1,2,...) and a high
+        // run (1000,1001,...). With a single baseline every other index
+        // would be a ±1000 jump; the two-baseline encoder tracks each run
+        // separately, so each delta is ±1 and the stream is compact.
+        let mut idx = Vec::new();
+        for k in 0..32u32 {
+            idx.push(k); // low run, baseline 0
+            idx.push(1000 + k); // high run, baseline 1
+        }
+        let mut raw = Vec::new();
+        for &i in &idx {
+            raw.extend_from_slice(&i.to_le_bytes());
+        }
+        let count = idx.len();
+        rt(Mode::Indices, &raw, count, 4);
+
+        let enc = encode(&raw, Mode::Indices, Filter::None, count, 4).unwrap();
+        // After the two runs are assigned to distinct baselines, nearly
+        // every delta is ±1 (a single-byte varint), so the body is close to
+        // one byte per index — far below a single-baseline coding where each
+        // ±1000 jump needs a multi-byte varint.
+        let body = enc.len() - 1 - 4; // strip header + tail
+        assert!(
+            body <= count + 4,
+            "two-baseline body {body} not near 1 byte/index ({count})"
+        );
+
+        // Single-baseline length of the same data, for comparison.
+        let mut single = 0usize;
+        let mut last0 = 0u32;
+        for &v in &idx {
+            let (_s, w) = zigzag_split_u32(v.wrapping_sub(last0));
+            last0 = v;
+            single += varint_len(w << 2);
+        }
+        assert!(
+            single > body,
+            "single-baseline {single} should exceed two-baseline body {body}"
+        );
+    }
+
+    /// Number of bytes a varint-7 encoding of `v` occupies.
+    fn varint_len(mut v: u32) -> usize {
+        let mut n = 1;
+        while v >= 0x80 {
+            v >>= 7;
+            n += 1;
+        }
+        n
     }
 
     #[test]
