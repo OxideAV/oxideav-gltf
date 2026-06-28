@@ -933,6 +933,16 @@ framework but usable standalone.
   number of morph targets times the number of animation frames"); and a
   CUBICSPLINE sampler MUST have ≥ 2 keyframes
   (`AnimationSamplerCubicKeyframes`, §C.5)
+- Animation-sampler keyframe-time ordering validation per spec §3.11 —
+  `validate_animation_input_times` runs on the *materialised* `&[f32]`
+  input-accessor timestamps (the rule cannot be decided from JSON
+  metadata): the first keyframe time MUST be `>= 0.0`
+  (`AnimationSamplerInputTimeStart`, spec "time[0] >= 0.0"), and the
+  sequence MUST be strictly increasing — `time[n + 1] > time[n]`
+  (`AnimationSamplerInputTimeOrder`). Equal consecutive times, decreasing
+  times, and non-finite (Infinity/NaN) times are all rejected (the
+  `partial_cmp` unordered case catches NaN). Both the base sampler decode
+  path and the `KHR_animation_pointer` sampler decode path run the check
 - Image-source validation per spec §5.18 — `validate_images` policies
   every `images[i]` (referenced or not): exactly one source MUST be
   defined, `uri` XOR `bufferView` (`ImageNoSource` /

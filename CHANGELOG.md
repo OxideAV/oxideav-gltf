@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Animation-sampler keyframe-time ordering validation per spec §3.11** —
+  the decoder now policies the input-accessor timestamp MUSTs that hold on
+  the *materialised* `&[f32]` values (not derivable from JSON metadata):
+  the first keyframe time MUST be `>= 0.0`
+  (`AnimationSamplerInputTimeStart`, spec "time[0] >= 0.0") and the
+  sequence MUST be strictly increasing — `time[n + 1] > time[n]`
+  (`AnimationSamplerInputTimeOrder`). Equal consecutive times, decreasing
+  times, and non-finite (Infinity/NaN) keyframe times are all rejected
+  (`partial_cmp` returns the unordered case for NaN). Both the base
+  sampler decode path and the `KHR_animation_pointer` sampler decode path
+  run the check.
+
 - `KHR_meshopt_compression` **ATTRIBUTES v1 (`0xa1`) encoder** — the
   production ATTRIBUTES write path now emits the v1 format Appendix C
   recommends ("v1 format should be preferred since it provides better

@@ -2658,6 +2658,61 @@ pub fn validate_animation_channels(
     Ok(())
 }
 
+/// Validate a decoded animation sampler `input` accessor's keyframe
+/// timestamps per spec §3.11: "The values represent time in seconds with
+/// `time[0] >= 0.0`, and strictly increasing values, i.e.,
+/// `time[n + 1] > time[n]`."
+///
+/// The accessor-shape MUSTs (SCALAR FLOAT, `min`/`max` defined) and the
+/// input/output count relationship are checked structurally by
+/// [`validate_animation_channels`]; this companion check operates on the
+/// *materialised* `&[f32]` timestamps because the ordering rule cannot be
+/// decided from the JSON metadata alone. Both the base sampler decode path
+/// and the `KHR_animation_pointer` sampler decode path call it.
+///
+/// `anim_idx` / `sampler_idx` only feed the error message.
+pub fn validate_animation_input_times(
+    anim_idx: usize,
+    sampler_idx: usize,
+    times: &[f32],
+) -> Result<()> {
+    use std::cmp::Ordering;
+    // `time[0] >= 0.0`. `partial_cmp` returns `None` for a NaN first
+    // timestamp, so non-finite timestamps are rejected here as well — the
+    // value must compare Greater or Equal to zero, anything else (Less or
+    // unordered) is a violation.
+    if let Some(&first) = times.first() {
+        if !matches!(
+            first.partial_cmp(&0.0),
+            Some(Ordering::Greater | Ordering::Equal)
+        ) {
+            return Err(invalid(format!(
+                "AnimationSamplerInputTimeStart: animations[{anim_idx}].samplers[{sampler_idx}] \
+                 input accessor first keyframe time {first} MUST be >= 0.0 (spec §3.11: \
+                 \"time[0] >= 0.0\")"
+            )));
+        }
+    }
+    // `time[n + 1] > time[n]` — strictly increasing. Each successor must
+    // compare strictly Greater than its predecessor; an Equal, Less, or
+    // unordered (NaN/Infinity-induced) result is a violation, so a
+    // non-finite keyframe time cannot slip through.
+    for n in 1..times.len() {
+        let prev = times[n - 1];
+        let cur = times[n];
+        if cur.partial_cmp(&prev) != Some(Ordering::Greater) {
+            return Err(invalid(format!(
+                "AnimationSamplerInputTimeOrder: animations[{anim_idx}].samplers[{sampler_idx}] \
+                 input keyframe times MUST be strictly increasing, but time[{}] = {cur} is not \
+                 greater than time[{}] = {prev} (spec §3.11: \"time[n + 1] > time[n]\")",
+                n,
+                n - 1
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Highest 2.x edition of the glTF spec this decoder implements.
 ///
 /// `asset.version` carries the *target* version of the asset (the

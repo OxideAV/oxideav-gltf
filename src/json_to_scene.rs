@@ -36,13 +36,13 @@ use crate::json_model::{self as gj, GltfRoot};
 use crate::quantization::{self, ATTR_QUANT_KEY, EXTENSION_NAME};
 use crate::validation::{
     check_asset_version, validate_accessor_fits_bufferview, validate_accessors, validate_alignment,
-    validate_animation_channels, validate_attribute_counts, validate_bufferview_fits_buffer,
-    validate_cameras, validate_color0_range, validate_extension_stack, validate_images,
-    validate_index_no_restart, validate_index_references, validate_index_value_bound,
-    validate_morph_targets, validate_morph_weights, validate_nodes, validate_primitive_index_count,
-    validate_samplers, validate_skins, validate_sparse_indices_buffer_views,
-    validate_sparse_values_buffer_views, validate_structural_minimums, validate_tangent_w,
-    validate_textures,
+    validate_animation_channels, validate_animation_input_times, validate_attribute_counts,
+    validate_bufferview_fits_buffer, validate_cameras, validate_color0_range,
+    validate_extension_stack, validate_images, validate_index_no_restart,
+    validate_index_references, validate_index_value_bound, validate_morph_targets,
+    validate_morph_weights, validate_nodes, validate_primitive_index_count, validate_samplers,
+    validate_skins, validate_sparse_indices_buffer_views, validate_sparse_values_buffer_views,
+    validate_structural_minimums, validate_tangent_w, validate_textures,
 };
 
 /// Decode a parsed [`GltfRoot`] into a [`Scene3D`], using `glb_bin`
@@ -433,7 +433,7 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
     // round-trip preservation rather than into the typed Animation.
     let mut pointer_animations: Vec<Value> = Vec::new();
     for (ai, a) in root.animations.iter().enumerate() {
-        let (anim, ptr_channels) = convert_animation(a, root, &buffers)?;
+        let (anim, ptr_channels) = convert_animation(ai, a, root, &buffers)?;
         scene.add_animation(anim);
         if !ptr_channels.is_empty() {
             let mut obj = serde_json::Map::new();
@@ -636,6 +636,7 @@ fn convert_skin(
 }
 
 fn convert_animation(
+    anim_idx: usize,
     a: &gj::Animation,
     root: &GltfRoot,
     buffers: &[Arc<Vec<u8>>],
@@ -725,6 +726,8 @@ fn convert_animation(
             let in_bytes = materialise_accessor(input_acc, &root.buffer_views, buffers)?;
             let in_view = view_from_materialised(input_acc, &in_bytes)?;
             let input_values = read_scalar_f32(&in_view)?;
+            // §3.11 — keyframe times MUST be >= 0 and strictly increasing.
+            validate_animation_input_times(anim_idx, s_idx, &input_values)?;
             let output_acc = root
                 .accessors
                 .get(s.output as usize)
@@ -843,6 +846,9 @@ fn convert_animation(
         let in_bytes = materialise_accessor(input_acc, &root.buffer_views, buffers)?;
         let in_view = view_from_materialised(input_acc, &in_bytes)?;
         let keyframes = read_scalar_f32(&in_view)?;
+        // §3.11 — keyframe times MUST be >= 0 and strictly increasing.
+        // Decided on the materialised f32 values, not the JSON metadata.
+        validate_animation_input_times(anim_idx, s_idx, &keyframes)?;
         // Output — type depends on path. FLOAT components decode
         // directly; for ROTATION (VEC4) and MORPH_WEIGHTS (SCALAR) the
         // spec also permits the four normalised-integer
