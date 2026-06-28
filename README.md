@@ -721,8 +721,14 @@ framework but usable standalone.
   pending a cross-crate followup
 - Accessor `min` / `max` bounds per spec §3.6.2.1.5 — encoder fills
   missing POSITION min/max from the data; decoder validates declared
-  bounds on VEC3 attribute accessors and rejects mismatches with an
-  `AccessorBoundsMismatch`-prefixed error message
+  bounds and rejects mismatches with an `AccessorBoundsMismatch`-prefixed
+  error message. The component-wise extrema check is arity-generic
+  (`validate_vecn_bounds`) so it covers the SCALAR animation-input
+  accessor (keyframe times), VEC2 (TEXCOORD_n), VEC3 (POSITION / NORMAL /
+  TANGENT), and VEC4 (TANGENT / COLOR_n) attribute accessors — any
+  accessor that declares `min`/`max` must agree with its stored data,
+  not only VEC3. A small relative+absolute tolerance absorbs the sub-ULP
+  drift an f32 round-trip through JSON introduces
 - Vertex-attribute compression validation per spec §3.6.2.4 (data
   alignment) + §3.7.2.1 (semantic constraints) — the decoder rejects
   six classes of spec-non-conformant attribute layouts with stable

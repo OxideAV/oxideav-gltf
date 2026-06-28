@@ -728,6 +728,10 @@ fn convert_animation(
             let input_values = read_scalar_f32(&in_view)?;
             // §3.11 — keyframe times MUST be >= 0 and strictly increasing.
             validate_animation_input_times(anim_idx, s_idx, &input_values)?;
+            // §3.6.2.1.5 — a declared min/max on the SCALAR input accessor
+            // MUST agree with the data.
+            let kf_scalar: Vec<[f32; 1]> = input_values.iter().map(|&t| [t]).collect();
+            validate_vecn_bounds(input_acc, &kf_scalar)?;
             let output_acc = root
                 .accessors
                 .get(s.output as usize)
@@ -849,6 +853,10 @@ fn convert_animation(
         // §3.11 — keyframe times MUST be >= 0 and strictly increasing.
         // Decided on the materialised f32 values, not the JSON metadata.
         validate_animation_input_times(anim_idx, s_idx, &keyframes)?;
+        // §3.6.2.1.5 — the SCALAR input accessor REQUIRES min/max, and a
+        // declared min/max MUST agree with the data.
+        let kf_scalar: Vec<[f32; 1]> = keyframes.iter().map(|&t| [t]).collect();
+        validate_vecn_bounds(input_acc, &kf_scalar)?;
         // Output — type depends on path. FLOAT components decode
         // directly; for ROTATION (VEC4) and MORPH_WEIGHTS (SCALAR) the
         // spec also permits the four normalised-integer
@@ -2728,19 +2736,32 @@ fn read_attr_vec3(
     Ok(data)
 }
 
+/// Spec §3.6.2.1.5 bounds check for a VEC3 accessor — thin wrapper over
+/// the arity-generic [`validate_vecn_bounds`].
+fn validate_vec3_bounds(acc: &gj::Accessor, data: &[[f32; 3]]) -> Result<()> {
+    validate_vecn_bounds(acc, data)
+}
+
 /// Spec §3.6.2.1.5 bounds check: when an accessor declares `min` /
 /// `max` the values MUST match the component-wise extrema of the
-/// stored data. Returns an `AccessorBoundsMismatch`-prefixed
-/// `InvalidData` (the typed `Error` enum lives in `oxideav-core` and
-/// can't gain a new variant from a sibling crate; the prefix lets
-/// callers grep for the condition without an enum check).
-fn validate_vec3_bounds(acc: &gj::Accessor, data: &[[f32; 3]]) -> Result<()> {
+/// stored data. Arity-generic over `N` so it covers SCALAR (1), VEC2
+/// (2), VEC3 (3), and VEC4 (4) attribute accessors from one body.
+/// Returns an `AccessorBoundsMismatch`-prefixed `InvalidData` (the typed
+/// `Error` enum lives in `oxideav-core` and can't gain a new variant
+/// from a sibling crate; the prefix lets callers grep for the condition
+/// without an enum check).
+///
+/// `accessor.min` / `max` length is already enforced to equal the
+/// component count by `validate_accessors` (`AccessorMinMaxLength`);
+/// the length guard here is a defensive belt so a stale length can't
+/// index out of bounds.
+fn validate_vecn_bounds<const N: usize>(acc: &gj::Accessor, data: &[[f32; N]]) -> Result<()> {
     let (Some(declared_min), Some(declared_max)) = (&acc.min, &acc.max) else {
         return Ok(());
     };
-    if declared_min.len() != 3 || declared_max.len() != 3 {
+    if declared_min.len() != N || declared_max.len() != N {
         return Err(invalid(format!(
-            "AccessorBoundsMismatch: VEC3 accessor min/max must have 3 components (got {} / {})",
+            "AccessorBoundsMismatch: accessor min/max must have {N} components (got {} / {})",
             declared_min.len(),
             declared_max.len()
         )));
@@ -2751,7 +2772,7 @@ fn validate_vec3_bounds(acc: &gj::Accessor, data: &[[f32; 3]]) -> Result<()> {
     let mut mn = data[0];
     let mut mx = data[0];
     for v in &data[1..] {
-        for c in 0..3 {
+        for c in 0..N {
             if v[c] < mn[c] {
                 mn[c] = v[c];
             }
@@ -2765,7 +2786,7 @@ fn validate_vec3_bounds(acc: &gj::Accessor, data: &[[f32; 3]]) -> Result<()> {
     // accept differences below an absolute epsilon scaled by the
     // value magnitude (1e-5 relative or 1e-6 absolute, whichever
     // wins).
-    for c in 0..3 {
+    for c in 0..N {
         let dmin = declared_min[c];
         let dmax = declared_max[c];
         let tol = (mn[c].abs().max(mx[c].abs()) * 1e-5).max(1e-6);
@@ -2830,7 +2851,10 @@ fn read_attr_vec2(
     }
     let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
     let view = view_from_materialised(acc, &bytes)?;
-    read_vec_f32::<2>(&view)
+    let data = read_vec_f32::<2>(&view)?;
+    // §3.6.2.1.5 — a declared min/max MUST agree with the data.
+    validate_vecn_bounds(acc, &data)?;
+    Ok(data)
 }
 
 fn read_attr_vec4(
@@ -2860,7 +2884,10 @@ fn read_attr_vec4(
     }
     let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
     let view = view_from_materialised(acc, &bytes)?;
-    read_vec_f32::<4>(&view)
+    let data = read_vec_f32::<4>(&view)?;
+    // §3.6.2.1.5 — a declared min/max MUST agree with the data.
+    validate_vecn_bounds(acc, &data)?;
+    Ok(data)
 }
 
 /// Gate a quantised (non-FLOAT) base-mesh attribute on the extension

@@ -195,3 +195,115 @@ fn decoder_accepts_when_bounds_omitted_on_normal() {
     assert_eq!(scene.meshes[0].primitives[0].positions.len(), 3);
     assert!(scene.meshes[0].primitives[0].normals.is_some());
 }
+
+/// Build a single-triangle mesh whose POSITION (VEC3, correct bounds)
+/// is paired with a second attribute — `attr_name` / `attr_type` with
+/// `attr_data` floats and caller-supplied (possibly wrong) `min`/`max`
+/// JSON literals. Exercises the §3.6.2.1.5 bounds rule on the
+/// non-VEC3 arities the check was generalised to cover.
+fn doc_with_attr(
+    attr_name: &str,
+    attr_type: &str,
+    attr_data: &[f32],
+    attr_min: &str,
+    attr_max: &str,
+) -> Vec<u8> {
+    use base64::Engine as _;
+    let positions: [[f32; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+    let mut bin = Vec::new();
+    for p in positions {
+        for c in p {
+            bin.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    let pos_len = bin.len();
+    for &v in attr_data {
+        bin.extend_from_slice(&v.to_le_bytes());
+    }
+    let attr_len = bin.len() - pos_len;
+    let total = bin.len();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bin);
+    let arity = match attr_type {
+        "VEC2" => 2,
+        "VEC4" => 4,
+        _ => 3,
+    };
+    let count = attr_data.len() / arity;
+    format!(
+        r#"{{
+        "asset": {{ "version": "2.0" }},
+        "buffers": [ {{ "byteLength": {total}, "uri": "data:application/octet-stream;base64,{b64}" }} ],
+        "bufferViews": [
+            {{ "buffer": 0, "byteOffset": 0, "byteLength": {pos_len} }},
+            {{ "buffer": 0, "byteOffset": {pos_len}, "byteLength": {attr_len} }}
+        ],
+        "accessors": [
+            {{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+               "min": [0, 0, 0], "max": [1, 1, 0] }},
+            {{ "bufferView": 1, "componentType": 5126, "count": {count}, "type": "{attr_type}",
+               "min": {attr_min}, "max": {attr_max} }}
+        ],
+        "meshes": [ {{ "primitives": [ {{
+            "mode": 4,
+            "attributes": {{ "POSITION": 0, "{attr_name}": 1 }}
+        }} ] }} ],
+        "nodes": [ {{ "mesh": 0 }} ],
+        "scenes": [ {{ "nodes": [0] }} ], "scene": 0
+    }}"#
+    )
+    .into_bytes()
+}
+
+#[test]
+fn texcoord_vec2_correct_bounds_accepted() {
+    let data = [0.0, 0.0, 1.0, 0.0, 0.5, 1.0];
+    let doc = doc_with_attr("TEXCOORD_0", "VEC2", &data, "[0, 0]", "[1, 1]");
+    GltfDecoder::new()
+        .decode(&doc)
+        .expect("matching VEC2 bounds must decode");
+}
+
+#[test]
+fn texcoord_vec2_wrong_max_rejected() {
+    let data = [0.0, 0.0, 1.0, 0.0, 0.5, 1.0];
+    // Declared max [2, 2] disagrees with actual [1, 1].
+    let doc = doc_with_attr("TEXCOORD_0", "VEC2", &data, "[0, 0]", "[2, 2]");
+    let err = GltfDecoder::new()
+        .decode(&doc)
+        .expect_err("wrong VEC2 max must be rejected");
+    assert!(
+        format!("{err}").contains("AccessorBoundsMismatch"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn tangent_vec4_correct_bounds_accepted() {
+    let data = [
+        1.0, 0.0, 0.0, 1.0, //
+        0.0, 1.0, 0.0, 1.0, //
+        0.0, 0.0, 1.0, 1.0, //
+    ];
+    let doc = doc_with_attr("TANGENT", "VEC4", &data, "[0, 0, 0, 1]", "[1, 1, 1, 1]");
+    GltfDecoder::new()
+        .decode(&doc)
+        .expect("matching VEC4 bounds must decode");
+}
+
+#[test]
+fn tangent_vec4_wrong_min_rejected() {
+    let data = [
+        1.0, 0.0, 0.0, 1.0, //
+        0.0, 1.0, 0.0, 1.0, //
+        0.0, 0.0, 1.0, 1.0, //
+    ];
+    // Declared w-min -1 disagrees with the actual w-min of 1.
+    let doc = doc_with_attr("TANGENT", "VEC4", &data, "[0, 0, 0, -1]", "[1, 1, 1, 1]");
+    let err = GltfDecoder::new()
+        .decode(&doc)
+        .expect_err("wrong VEC4 min must be rejected");
+    assert!(
+        format!("{err}").contains("AccessorBoundsMismatch"),
+        "got: {err}"
+    );
+}

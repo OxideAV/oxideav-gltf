@@ -71,6 +71,67 @@ fn build_anim_doc(times: &[f32]) -> Vec<u8> {
     .into_bytes()
 }
 
+/// Same shape as [`build_anim_doc`] but with caller-supplied (possibly
+/// wrong) input-accessor `min`/`max`, so the §3.6.2.1.5 bounds
+/// consistency rule on the SCALAR input accessor can be exercised.
+fn build_anim_doc_bounds(times: &[f32], decl_min: f32, decl_max: f32) -> Vec<u8> {
+    let n = times.len();
+    let mut bin = Vec::new();
+    for &t in times {
+        bin.extend_from_slice(&t.to_le_bytes());
+    }
+    let input_len = bin.len();
+    for _ in 0..n {
+        bin.extend_from_slice(&[0u8; 12]);
+    }
+    let total = bin.len();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bin);
+    format!(
+        r#"{{
+        "asset": {{ "version": "2.0" }},
+        "buffers": [ {{ "byteLength": {total}, "uri": "data:application/octet-stream;base64,{b64}" }} ],
+        "bufferViews": [
+            {{ "buffer": 0, "byteOffset": 0, "byteLength": {input_len} }},
+            {{ "buffer": 0, "byteOffset": {input_len}, "byteLength": {output_len} }}
+        ],
+        "accessors": [
+            {{ "bufferView": 0, "componentType": 5126, "count": {n}, "type": "SCALAR",
+               "min": [{decl_min}], "max": [{decl_max}] }},
+            {{ "bufferView": 1, "componentType": 5126, "count": {n}, "type": "VEC3" }}
+        ],
+        "nodes": [ {{ "translation": [0, 0, 0] }} ],
+        "animations": [ {{
+            "channels": [ {{ "sampler": 0, "target": {{ "node": 0, "path": "translation" }} }} ],
+            "samplers": [ {{ "input": 0, "output": 1, "interpolation": "LINEAR" }} ]
+        }} ],
+        "scenes": [ {{ "nodes": [0] }} ], "scene": 0
+    }}"#,
+        output_len = n * 12,
+    )
+    .into_bytes()
+}
+
+#[test]
+fn input_accessor_correct_bounds_accepted() {
+    let doc = build_anim_doc_bounds(&[0.0, 1.0, 2.0], 0.0, 2.0);
+    GltfDecoder::new()
+        .decode(&doc)
+        .expect("input accessor min/max matching the data must decode");
+}
+
+#[test]
+fn input_accessor_wrong_max_rejected() {
+    // Declared max (5.0) disagrees with the actual last time (2.0).
+    let doc = build_anim_doc_bounds(&[0.0, 1.0, 2.0], 0.0, 5.0);
+    let err = GltfDecoder::new()
+        .decode(&doc)
+        .expect_err("input accessor max not matching data must be rejected");
+    assert!(
+        format!("{err}").contains("AccessorBoundsMismatch"),
+        "got: {err}"
+    );
+}
+
 #[test]
 fn strictly_increasing_times_accepted() {
     let doc = build_anim_doc(&[0.0, 0.5, 1.0, 2.5]);

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Accessor `min`/`max` consistency generalised to all arities (spec
+  §3.6.2.1.5)** — the component-wise extrema check that previously fired
+  only on VEC3 attributes is now arity-generic (`validate_vecn_bounds`):
+  the SCALAR animation-input accessor (keyframe times), VEC2 (TEXCOORD_n),
+  and VEC4 (TANGENT / COLOR_n) attribute accessors that declare `min`/`max`
+  are now policed too, rejecting a declared/actual mismatch with
+  `AccessorBoundsMismatch`.
 - **Animation-sampler keyframe-time ordering validation per spec §3.11** —
   the decoder now policies the input-accessor timestamp MUSTs that hold on
   the *materialised* `&[f32]` values (not derivable from JSON metadata):
