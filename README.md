@@ -884,7 +884,9 @@ framework but usable standalone.
   row of every materialised inverse-bind matrix MUST be `[0, 0, 0, 1]` —
   an IBM is an affine joint transform with no projective component, so a
   deviating bottom row is rejected (`SkinIbmBottomRow`), decided on the
-  decoded `[[f32; 4]; 4]` matrices with a small f32-round-trip tolerance.
+  decoded `[[f32; 4]; 4]` matrices with a small f32-round-trip tolerance
+  (an all-zero matrix is exempt — it is the sparse zero-base sentinel the
+  sparse-IBM encoder emits for non-overridden joint slots).
   §5.25.3: a node with
   `skin` MUST reference a valid skin AND MUST also define `mesh`
   (`NodeSkinIndex` / `NodeSkinWithoutMesh`). §3.7.3.2: a skin referenced
@@ -922,6 +924,20 @@ framework but usable standalone.
   `material_texture_transforms` walk). The `KHR_texture_basisu`
   per-texture `source` indirection keeps its own in-range check in
   `validate_extension_stack`
+- Core material factor / scalar range validation per spec §5.19–§5.22 —
+  `validate_materials` enforces the JSON-schema closed-range MUSTs the
+  typed `f32` representation does not: `pbrMetallicRoughness
+  .baseColorFactor` each component ∈ `[0, 1]`
+  (`MaterialBaseColorFactorRange`), `metallicFactor` / `roughnessFactor`
+  ∈ `[0, 1]` (`MaterialMetallicFactorRange` /
+  `MaterialRoughnessFactorRange`), `emissiveFactor` each component ∈
+  `[0, 1]` (`MaterialEmissiveFactorRange`), `alphaCutoff` ≥ 0
+  (`MaterialAlphaCutoffRange`), `occlusionTexture.strength` ∈ `[0, 1]`
+  (`MaterialOcclusionStrengthRange`); `normalTexture.scale` is an
+  unbounded multiplier so only finiteness is checked
+  (`MaterialNormalScaleFinite`). Non-finite (NaN / ±∞) values fail the
+  `[lo, hi]` windows too. KHR material-extension factors keep their own
+  extension-specific ranges in `validate_extension_stack`
 - Texture-sampler filter / wrap validation per spec §5.26 — every
   `samplers[i]` entry is checked before conversion against the closed
   enum sets in §5.26.1–§5.26.4: `magFilter`, when present, MUST be

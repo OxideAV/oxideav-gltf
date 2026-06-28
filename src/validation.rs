@@ -3709,9 +3709,25 @@ pub fn validate_nodes(nodes: &[crate::json_model::Node], animations: &[Animation
 /// A small tolerance absorbs the f32 round-trip drift an encode→decode
 /// cycle introduces. A bottom row that deviates is rejected with
 /// `SkinIbmBottomRow`.
+///
+/// An all-zero matrix is exempt: it is the sparse zero-base sentinel this
+/// crate's sparse-IBM encoder emits for joints with no explicit override,
+/// so a non-overridden sparse slot decoding to all-zero is expected, not
+/// a malformed transform.
 pub fn validate_inverse_bind_matrices(skin_idx: usize, matrices: &[[[f32; 4]; 4]]) -> Result<()> {
     const TOL: f32 = 1e-5;
     for (mi, m) in matrices.iter().enumerate() {
+        // An all-zero matrix is the sparse zero-base sentinel this crate's
+        // sparse-IBM encoder emits for joints with no explicit override
+        // (see `scene_to_json`'s MAT4 sparse heuristic). It is a degenerate
+        // placeholder, not a real affine joint transform, so the
+        // fourth-row invariant does not apply — a non-overridden sparse
+        // slot legitimately decodes to all-zero. Skip it; a genuinely
+        // malformed bottom row on a non-zero matrix is still rejected.
+        let all_zero = m.iter().all(|row| row.iter().all(|&c| c == 0.0));
+        if all_zero {
+            continue;
+        }
         let row = m[3];
         let ok = row[0].abs() <= TOL
             && row[1].abs() <= TOL
@@ -4033,6 +4049,112 @@ pub fn validate_textures(
         }
     }
 
+    Ok(())
+}
+
+/// Core material factor / scalar range validation per glTF 2.0
+/// §5.19–§5.22. The JSON schema pins these number / array properties to
+/// closed ranges that the typed `f32` representation does not enforce:
+///
+/// * **§5.22.1** — `pbrMetallicRoughness.baseColorFactor`: each of the 4
+///   components MUST be in `[0, 1]` (`MaterialBaseColorFactorRange`).
+/// * **§5.22.3 / §5.22.4** — `metallicFactor` / `roughnessFactor` MUST be
+///   in `[0, 1]` (`MaterialMetallicFactorRange` /
+///   `MaterialRoughnessFactorRange`).
+/// * **§5.19.8** — `emissiveFactor`: each of the 3 components MUST be in
+///   `[0, 1]` (`MaterialEmissiveFactorRange`).
+/// * **§5.19.10** — `alphaCutoff` MUST be `>= 0`
+///   (`MaterialAlphaCutoffRange`).
+/// * **§5.21.3** — `occlusionTexture.strength` MUST be in `[0, 1]`
+///   (`MaterialOcclusionStrengthRange`).
+/// * **§5.20.3** — `normalTexture.scale` is an unbounded multiplier in
+///   the schema, so only its finiteness is checked
+///   (`MaterialNormalScaleFinite`).
+///
+/// A non-finite value (NaN / ±∞) fails every `[lo, hi]` window because
+/// the `partial_cmp`-equivalent `lo <= v && v <= hi` is false for NaN and
+/// out-of-window for ±∞, so the range checks subsume a finiteness check.
+pub fn validate_materials(materials: &[Material]) -> Result<()> {
+    // `[0, 1]`-window helper. Rejects NaN (both comparisons false) and
+    // ±∞ (out of window).
+    fn in_unit(v: f32) -> bool {
+        (0.0..=1.0).contains(&v)
+    }
+    for (mi, mat) in materials.iter().enumerate() {
+        if let Some(pbr) = &mat.pbr_metallic_roughness {
+            if let Some(bcf) = pbr.base_color_factor {
+                for (c, v) in bcf.iter().enumerate() {
+                    if !in_unit(*v) {
+                        return Err(invalid(format!(
+                            "MaterialBaseColorFactorRange: materials[{mi}].pbrMetallicRoughness\
+                             .baseColorFactor[{c}] = {v} MUST be in [0, 1] (spec §5.22.1)"
+                        )));
+                    }
+                }
+            }
+            if let Some(m) = pbr.metallic_factor {
+                if !in_unit(m) {
+                    return Err(invalid(format!(
+                        "MaterialMetallicFactorRange: materials[{mi}].pbrMetallicRoughness\
+                         .metallicFactor = {m} MUST be in [0, 1] (spec §5.22.3)"
+                    )));
+                }
+            }
+            if let Some(r) = pbr.roughness_factor {
+                if !in_unit(r) {
+                    return Err(invalid(format!(
+                        "MaterialRoughnessFactorRange: materials[{mi}].pbrMetallicRoughness\
+                         .roughnessFactor = {r} MUST be in [0, 1] (spec §5.22.4)"
+                    )));
+                }
+            }
+        }
+        if let Some(ef) = mat.emissive_factor {
+            for (c, v) in ef.iter().enumerate() {
+                if !in_unit(*v) {
+                    return Err(invalid(format!(
+                        "MaterialEmissiveFactorRange: materials[{mi}].emissiveFactor[{c}] = {v} \
+                         MUST be in [0, 1] (spec §5.19.8)"
+                    )));
+                }
+            }
+        }
+        if let Some(ac) = mat.alpha_cutoff {
+            // §5.19.10 minimum `>= 0` (no upper bound). `partial_cmp`
+            // returns the unordered case for NaN, so non-finite is also
+            // rejected; a finite negative compares Less.
+            use std::cmp::Ordering;
+            if !matches!(
+                ac.partial_cmp(&0.0),
+                Some(Ordering::Greater | Ordering::Equal)
+            ) {
+                return Err(invalid(format!(
+                    "MaterialAlphaCutoffRange: materials[{mi}].alphaCutoff = {ac} MUST be >= 0 \
+                     (spec §5.19.10)"
+                )));
+            }
+        }
+        if let Some(occ) = &mat.occlusion_texture {
+            if let Some(s) = occ.strength {
+                if !in_unit(s) {
+                    return Err(invalid(format!(
+                        "MaterialOcclusionStrengthRange: materials[{mi}].occlusionTexture\
+                         .strength = {s} MUST be in [0, 1] (spec §5.21.3)"
+                    )));
+                }
+            }
+        }
+        if let Some(nrm) = &mat.normal_texture {
+            if let Some(sc) = nrm.scale {
+                if !sc.is_finite() {
+                    return Err(invalid(format!(
+                        "MaterialNormalScaleFinite: materials[{mi}].normalTexture.scale = {sc} \
+                         MUST be finite (spec §5.20.3)"
+                    )));
+                }
+            }
+        }
+    }
     Ok(())
 }
 

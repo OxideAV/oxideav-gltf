@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Core material factor / scalar range validation (spec §5.19–§5.22)** —
+  a new `validate_materials` pass enforces the JSON-schema closed-range
+  MUSTs the typed `f32` model does not: `baseColorFactor` /
+  `metallicFactor` / `roughnessFactor` / `emissiveFactor` each in `[0, 1]`,
+  `alphaCutoff` ≥ 0, `occlusionTexture.strength` in `[0, 1]`, and
+  `normalTexture.scale` finite (`Material…Range` / `MaterialNormalScaleFinite`).
+  Non-finite values are rejected by the same windows.
 - **Inverse-bind-matrix fourth-row validation (spec §3.7.3.1)** — the
   decoder now enforces that the fourth row of every materialised
   inverse-bind matrix is `[0, 0, 0, 1]` (an IBM is an affine joint
@@ -374,6 +381,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   INDICES + OCTAHEDRAL/QUATERNION/EXPONENTIAL/COLOR filters), wired
   into the buffer-materialisation path so meshopt documents decode end
   to end (round 316)
+
+### Changed
+
+- The inverse-bind-matrix fourth-row check (`SkinIbmBottomRow`, §3.7.3.1)
+  exempts an all-zero matrix — the sparse zero-base sentinel the
+  sparse-IBM encoder emits for non-overridden joint slots — so a
+  sparse-encoded IBM accessor still round-trips.
 
 ## [0.0.3](https://github.com/OxideAV/oxideav-gltf/compare/v0.0.2...v0.0.3) - 2026-06-15
 

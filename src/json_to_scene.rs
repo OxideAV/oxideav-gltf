@@ -40,10 +40,10 @@ use crate::validation::{
     validate_bufferview_fits_buffer, validate_cameras, validate_color0_range,
     validate_extension_stack, validate_images, validate_index_no_restart,
     validate_index_references, validate_index_value_bound, validate_inverse_bind_matrices,
-    validate_morph_targets, validate_morph_weights, validate_nodes, validate_primitive_index_count,
-    validate_samplers, validate_skins, validate_sparse_indices_buffer_views,
-    validate_sparse_values_buffer_views, validate_structural_minimums, validate_tangent_w,
-    validate_textures,
+    validate_materials, validate_morph_targets, validate_morph_weights, validate_nodes,
+    validate_primitive_index_count, validate_samplers, validate_skins,
+    validate_sparse_indices_buffer_views, validate_sparse_values_buffer_views,
+    validate_structural_minimums, validate_tangent_w, validate_textures,
 };
 
 /// Decode a parsed [`GltfRoot`] into a [`Scene3D`], using `glb_bin`
@@ -136,6 +136,12 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
         &root.samplers,
         &root.materials,
     )?;
+
+    // Spec §5.19–§5.22 — core material factor / scalar ranges:
+    // baseColorFactor / metallicFactor / roughnessFactor / emissiveFactor
+    // in [0, 1], alphaCutoff >= 0, occlusionTexture.strength in [0, 1],
+    // normalTexture.scale finite.
+    validate_materials(&root.materials)?;
 
     // Spec §3.3 + §5.27.1 + §5.25.5 + §5.25.1 + §5.24.3 — every
     // top-level index reference that maps an object into a sibling root
