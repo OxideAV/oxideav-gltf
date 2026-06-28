@@ -992,7 +992,13 @@ framework but usable standalone.
   on the declared integers alone: `buffer.byteLength` ≥ 1
   (`BufferByteLength`), `bufferView.byteLength` ≥ 1
   (`BufferViewByteLength`), `accessor.sparse.count` ≥ 1 (`SparseCountMin`)
-  and ≤ the base accessor element count (`SparseCountRange`)
+  and ≤ the base accessor element count (`SparseCountRange`). It also
+  enforces the required-array `minItems: 1` schema MUSTs: `mesh.primitives`
+  ≥ 1 (`MeshPrimitivesEmpty`, §5.24.1), `animation.channels` ≥ 1
+  (`AnimationChannelsEmpty`), and `animation.samplers` ≥ 1
+  (`AnimationSamplersEmpty`). The optional `minItems: 1` arrays
+  (`scene.nodes`, `node.children`) are deliberately not checked — serde
+  cannot tell a valid absent field from an invalid explicit `[]`
 - Animation-sampler structural validation per spec §3.11 + Appendix C —
   `validate_animation_channels` now also enforces the sampler-accessor
   MUSTs: the `input` accessor MUST define both `min` and `max`

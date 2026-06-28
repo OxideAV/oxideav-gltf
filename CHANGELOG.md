@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Required-array `minItems: 1` validation** — `validate_structural_minimums`
+  now rejects an empty `mesh.primitives` (`MeshPrimitivesEmpty`, §5.24.1),
+  `animation.channels` (`AnimationChannelsEmpty`), or `animation.samplers`
+  (`AnimationSamplersEmpty`). The optional `minItems: 1` arrays
+  (`scene.nodes`, `node.children`) are not checked because serde cannot
+  distinguish an absent field from an explicit `[]`.
 - **Skinned-mesh JOINTS_n / WEIGHTS_n attribute validation (spec
   §3.7.3.3)** — a new `validate_skinning_attributes` pass enforces both
   attributes are VEC4, JOINTS_n componentType is unsigned byte / short,

@@ -4706,6 +4706,13 @@ pub fn validate_index_references(root: &GltfRoot) -> Result<()> {
 /// decode time in `accessor::read_sparse_indices` once the index bytes
 /// are read; here we police only the structural bound that needs no
 /// buffer access so a never-materialised accessor still fails fast.
+///
+/// Also enforced: the required-array `minItems: 1` schema MUSTs on
+/// `mesh.primitives` (`MeshPrimitivesEmpty`, §5.24.1), `animation.channels`
+/// (`AnimationChannelsEmpty`), and `animation.samplers`
+/// (`AnimationSamplersEmpty`). The optional `minItems: 1` arrays
+/// (`scene.nodes`, `node.children`) are not checked because serde cannot
+/// distinguish a valid absent field from an invalid explicit `[]`.
 pub fn validate_structural_minimums(root: &GltfRoot) -> Result<()> {
     for (bi, buf) in root.buffers.iter().enumerate() {
         if buf.byte_length < 1 {
@@ -4754,6 +4761,39 @@ pub fn validate_structural_minimums(root: &GltfRoot) -> Result<()> {
                     sparse.count, acc.count
                 )));
             }
+        }
+    }
+
+    // Required-array `minItems: 1` schema MUSTs. These arrays are
+    // `Required: Yes` in the schema, so an empty array (or an absent one,
+    // which serde collapses to empty) is always a violation. The two
+    // optional arrays whose schema also pins `minItems: 1`
+    // (`scene.nodes`, `node.children`) are deliberately NOT checked here:
+    // serde cannot distinguish an absent field (valid) from an explicit
+    // `[]` (invalid), and the former is the common, legal shape.
+    for (mi, mesh) in root.meshes.iter().enumerate() {
+        // §5.24.1 — `mesh.primitives` is required with `minItems: 1`.
+        if mesh.primitives.is_empty() {
+            return Err(invalid(format!(
+                "MeshPrimitivesEmpty: meshes[{mi}].primitives MUST contain at least one \
+                 primitive (spec §5.24.1, schema \"minItems: 1\")"
+            )));
+        }
+    }
+    for (ai, anim) in root.animations.iter().enumerate() {
+        // §5.4.1 / §5.4.2 — `animation.channels` and `animation.samplers`
+        // are both required with `minItems: 1`.
+        if anim.channels.is_empty() {
+            return Err(invalid(format!(
+                "AnimationChannelsEmpty: animations[{ai}].channels MUST contain at least one \
+                 channel (spec §5.4, schema \"minItems: 1\")"
+            )));
+        }
+        if anim.samplers.is_empty() {
+            return Err(invalid(format!(
+                "AnimationSamplersEmpty: animations[{ai}].samplers MUST contain at least one \
+                 sampler (spec §5.4, schema \"minItems: 1\")"
+            )));
         }
     }
 
@@ -5064,6 +5104,34 @@ mod tests {
         // extensions_used stays empty.
         let err = validate_extension_stack(&root).unwrap_err();
         assert!(format!("{err}").contains("ExtensionStackRequiredNotListed"));
+    }
+
+    #[test]
+    fn structural_minimums_rejects_empty_animation_samplers() {
+        // Direct exercise of the `AnimationSamplersEmpty` branch: an
+        // animation with one channel (so the channels-empty rule does not
+        // fire) but an empty samplers array. The end-to-end decode path
+        // catches the dangling channel.sampler reference first, so this
+        // structural branch is only independently reachable here.
+        let mut root = empty_root();
+        root.animations = vec![crate::json_model::Animation {
+            channels: vec![crate::json_model::AnimationChannel {
+                sampler: 0,
+                target: crate::json_model::AnimationChannelTarget {
+                    node: Some(0),
+                    path: "translation".into(),
+                    extensions: None,
+                },
+            }],
+            samplers: vec![],
+            name: None,
+            extras: None,
+        }];
+        let err = validate_structural_minimums(&root).unwrap_err();
+        assert!(
+            format!("{err}").contains("AnimationSamplersEmpty"),
+            "got: {err}"
+        );
     }
 
     #[test]
