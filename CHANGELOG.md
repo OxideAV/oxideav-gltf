@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Indexed attribute set-index validation (spec §3.7.2.1)** — a new
+  `validate_attribute_set_indices` pass enforces that the four indexed
+  vertex semantics (`TEXCOORD_n` / `COLOR_n` / `JOINTS_n` / `WEIGHTS_n`)
+  use set indices that start at 0, are consecutive, and carry no leading
+  zeroes — on both the primitive attributes and each morph target.
+  A gap, a non-zero start, or a malformed suffix is rejected with
+  `AttributeSetIndex`, closing the silent-drop hole in the decoder's
+  count-up TEXCOORD_n loop.
 - **Core material factor / scalar range validation (spec §5.19–§5.22)** —
   a new `validate_materials` pass enforces the JSON-schema closed-range
   MUSTs the typed `f32` model does not: `baseColorFactor` /

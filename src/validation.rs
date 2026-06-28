@@ -361,6 +361,67 @@ pub fn validate_attribute_counts(
     Ok(())
 }
 
+/// Spec §3.7.2.1: indexed attribute semantics (`TEXCOORD_n`, `COLOR_n`,
+/// `JOINTS_n`, `WEIGHTS_n`) MUST be named `[semantic]_[set_index]` where
+/// the set indices "MUST start with 0 and be consecutive positive
+/// integers" and MUST NOT use leading zeroes (`TEXCOORD_01` is invalid).
+///
+/// `label` names the attribute set for the diagnostic (e.g. "primitive"
+/// or "morph target"); `attributes` is the name → accessor-index map.
+/// A gap (`TEXCOORD_0` + `TEXCOORD_2` with no `TEXCOORD_1`), a non-zero
+/// start (`TEXCOORD_1` with no `TEXCOORD_0`), or a leading-zero / malformed
+/// suffix is rejected with `AttributeSetIndex`.
+pub fn validate_attribute_set_indices(
+    label: &str,
+    attributes: &HashMap<String, u32>,
+) -> Result<()> {
+    use std::collections::BTreeSet;
+    // The four indexed semantics. POSITION / NORMAL / TANGENT carry no set
+    // index and are ignored here.
+    const INDEXED: [&str; 4] = ["TEXCOORD", "COLOR", "JOINTS", "WEIGHTS"];
+
+    for sem in INDEXED {
+        let prefix = format!("{sem}_");
+        let mut indices: BTreeSet<u32> = BTreeSet::new();
+        for key in attributes.keys() {
+            let Some(suffix) = key.strip_prefix(&prefix) else {
+                continue;
+            };
+            // Reject empty, non-numeric, or leading-zero suffixes
+            // ("TEXCOORD_", "TEXCOORD_01", "TEXCOORD_x"). A bare "0" is the
+            // only allowed zero form.
+            let leading_zero = suffix.len() > 1 && suffix.starts_with('0');
+            let n: u32 = suffix.parse().map_err(|_| {
+                invalid(format!(
+                    "AttributeSetIndex: {label} attribute {key:?} has a malformed set index \
+                     (spec §3.7.2.1: names MUST be [semantic]_[set_index] with a plain integer)"
+                ))
+            })?;
+            if leading_zero {
+                return Err(invalid(format!(
+                    "AttributeSetIndex: {label} attribute {key:?} uses a leading-zero set index \
+                     (spec §3.7.2.1: indices MUST NOT use leading zeroes, e.g. {sem}_01 is \
+                     not allowed)"
+                )));
+            }
+            indices.insert(n);
+        }
+        if indices.is_empty() {
+            continue;
+        }
+        // The set MUST be exactly {0, 1, …, n-1}: start at 0, no gaps.
+        for (expected, &got) in indices.iter().enumerate() {
+            if got != expected as u32 {
+                return Err(invalid(format!(
+                    "AttributeSetIndex: {label} {sem}_n set indices MUST start at 0 and be \
+                     consecutive, but the sorted set {indices:?} skips {expected} (spec §3.7.2.1)"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Spec §3.7.2.1: indices accessor MUST NOT contain the
 /// primitive-restart sentinel for its component type (255 / 65535 /
 /// 4294967295).

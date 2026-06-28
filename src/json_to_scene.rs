@@ -37,8 +37,8 @@ use crate::quantization::{self, ATTR_QUANT_KEY, EXTENSION_NAME};
 use crate::validation::{
     check_asset_version, validate_accessor_fits_bufferview, validate_accessors, validate_alignment,
     validate_animation_channels, validate_animation_input_times, validate_attribute_counts,
-    validate_bufferview_fits_buffer, validate_cameras, validate_color0_range,
-    validate_extension_stack, validate_images, validate_index_no_restart,
+    validate_attribute_set_indices, validate_bufferview_fits_buffer, validate_cameras,
+    validate_color0_range, validate_extension_stack, validate_images, validate_index_no_restart,
     validate_index_references, validate_index_value_bound, validate_inverse_bind_matrices,
     validate_materials, validate_morph_targets, validate_morph_weights, validate_nodes,
     validate_primitive_index_count, validate_samplers, validate_skins,
@@ -2115,6 +2115,14 @@ fn convert_primitive(
     // a single `count`. Spec §3.6.2.4 — attribute accessor byteOffset +
     // bufferView byteStride alignment.
     validate_attribute_counts(&p.attributes, &root.accessors)?;
+    // Spec §3.7.2.1 — indexed attribute set indices (TEXCOORD_n, COLOR_n,
+    // JOINTS_n, WEIGHTS_n) MUST start at 0, be consecutive, and use no
+    // leading zeroes.
+    validate_attribute_set_indices("primitive", &p.attributes)?;
+    // The same rule applies to each morph target's indexed attributes.
+    for (ti, target) in p.targets.iter().enumerate() {
+        validate_attribute_set_indices(&format!("morph target {ti}"), target)?;
+    }
     for (name, &acc_idx) in &p.attributes {
         if let Some(acc) = root.accessors.get(acc_idx as usize) {
             validate_alignment(acc, &root.buffer_views, true, name)?;

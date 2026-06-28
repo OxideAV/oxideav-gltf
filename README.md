@@ -741,6 +741,16 @@ framework but usable standalone.
   (`VertexAttributeColor0Range`). The encoder also keeps TANGENT
   dense regardless of sparse threshold to honour the same TANGENT.w
   constraint
+- Indexed attribute set-index validation per spec §3.7.2.1 —
+  `validate_attribute_set_indices` enforces that the four indexed
+  semantics (`TEXCOORD_n` / `COLOR_n` / `JOINTS_n` / `WEIGHTS_n`) name
+  their set indices `[semantic]_[set_index]` with indices that start at 0
+  and are consecutive, with no leading zeroes. A gap (`TEXCOORD_0` +
+  `TEXCOORD_2`), a non-zero start (`TEXCOORD_1` alone), or a malformed /
+  leading-zero suffix (`TEXCOORD_01`) is rejected with `AttributeSetIndex`.
+  The same rule is enforced on each morph target's indexed attributes.
+  This closes the silent-drop hole where the decoder's count-up TEXCOORD_n
+  loop would skip a non-contiguous set
 - Primitive topology vertex-count validation per spec §3.7.2.1 — the
   decoder rejects primitives whose number of vertex indices is invalid
   for the topology `mode`: POINTS MUST be non-zero, LINE_LOOP /
