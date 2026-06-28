@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-accessor component-size alignment validation (spec §3.6.2.4 line
+  3091)** — the accessor-fit pass now enforces, on every accessor with a
+  bufferView, that `accessor.byteOffset` and
+  `accessor.byteOffset + bufferView.byteOffset` are multiples of the
+  component size (`AccessorByteOffsetAlignment`), and that a defined
+  `bufferView.byteStride` is a multiple of the component size
+  (`AccessorStrideAlignment`). Previously only the per-primitive
+  vertex-attribute pass checked alignment (with the stricter 4-byte rule),
+  leaving non-vertex accessors — animation sampler input/output, indices,
+  inverseBindMatrices, sparse — unpoliced.
 - **Accessor `min`/`max` consistency generalised to all arities (spec
   §3.6.2.1.5)** — the component-wise extrema check that previously fired
   only on VEC3 attributes is now arity-generic (`validate_vecn_bounds`):

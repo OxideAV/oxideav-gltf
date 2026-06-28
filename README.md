@@ -803,7 +803,17 @@ framework but usable standalone.
   with a bufferView and rejects overruns with
   `AccessorFitBufferView` (also covers stride < element size,
   unknown componentType / type, and u64 overflow in the offset
-  arithmetic)
+  arithmetic). The same pass enforces the §3.6.2.4 (spec line 3091)
+  component-size alignment MUSTs on every accessor with a bufferView —
+  including the non-vertex accessors (animation sampler input/output,
+  indices, inverseBindMatrices, sparse) that the per-primitive
+  vertex-attribute pass never sees: `accessor.byteOffset` and
+  `accessor.byteOffset + bufferView.byteOffset` MUST each be a multiple
+  of the component size (`AccessorByteOffsetAlignment`), and a defined
+  `bufferView.byteStride` MUST be a multiple of the component size
+  (`AccessorStrideAlignment`). For FLOAT vertex attributes this coincides
+  with the stricter §3.6.2.4 4-byte rule the per-primitive
+  `validate_alignment` pass adds on top (`VertexAttributeAlignment`)
 - BufferView-fit-in-buffer per spec §5.11 — `bufferView.byteOffset
   + byteLength > buffer.byteLength` is rejected with
   `BufferViewFitBuffer`; `bufferView.byteStride` outside the

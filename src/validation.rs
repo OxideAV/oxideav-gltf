@@ -2852,6 +2852,17 @@ pub fn check_asset_version(asset: &crate::json_model::Asset) -> Result<()> {
 /// Accessors with no `bufferView` (pure-sparse base-zero accessors) are
 /// skipped — the spec only requires fit when a bufferView is referenced.
 /// Accessor `count == 0` is also skipped (no data to fit).
+///
+/// This pass additionally enforces the §3.6.2.4 (spec line 3091)
+/// component-size alignment MUSTs on every accessor with a bufferView:
+/// `accessor.byteOffset` and `accessor.byteOffset + bufferView.byteOffset`
+/// MUST each be a multiple of the component size
+/// (`AccessorByteOffsetAlignment`), and a defined `bufferView.byteStride`
+/// MUST be a multiple of the component size (`AccessorStrideAlignment`).
+/// The per-primitive `validate_alignment` pass layers the stricter 4-byte
+/// vertex-attribute rule on top for accessors referenced by a primitive;
+/// these checks cover the non-vertex accessors (animation sampler
+/// input/output, indices, inverseBindMatrices, sparse) too.
 pub fn validate_accessor_fits_bufferview(
     accessor_idx: usize,
     accessor: &Accessor,
@@ -2885,6 +2896,52 @@ pub fn validate_accessor_fits_bufferview(
         ))
     })?;
     let element_size = (csize as u64) * (components as u64);
+
+    // §3.6.2.4 (spec line 3091) + §5.1.3 — alignment MUSTs that hold on
+    // EVERY accessor with a bufferView, not just the per-primitive vertex
+    // attributes already policed by `validate_alignment` (which adds the
+    // stricter 4-byte vertex-attribute rule on top). These cover the
+    // non-vertex accessors — animation sampler input/output, sparse
+    // base accessors, indices, inverseBindMatrices — whose data is read
+    // through `materialise_accessor` rather than the attribute pipeline.
+    let csize64 = csize as u64;
+    let acc_off = accessor.byte_offset.unwrap_or(0) as u64;
+    // "accessor.byteOffset MUST be a multiple of the size of the
+    // accessor's component type."
+    if acc_off % csize64 != 0 {
+        return Err(invalid(format!(
+            "AccessorByteOffsetAlignment: accessors[{accessor_idx}].byteOffset {acc_off} \
+             MUST be a multiple of the component size {csize64} (spec §3.6.2.4)"
+        )));
+    }
+    // "accessor.byteOffset + bufferView.byteOffset MUST be a multiple of
+    // the size of the accessor's component type."
+    let bv_off = bv.byte_offset.unwrap_or(0) as u64;
+    let combined_off = acc_off.checked_add(bv_off).ok_or_else(|| {
+        invalid(format!(
+            "AccessorFitOverflow: accessors[{accessor_idx}].byteOffset + \
+             bufferViews[{bv_idx}].byteOffset overflowed u64 (spec §3.6.2.4)"
+        ))
+    })?;
+    if combined_off % csize64 != 0 {
+        return Err(invalid(format!(
+            "AccessorByteOffsetAlignment: accessors[{accessor_idx}].byteOffset + \
+             bufferViews[{bv_idx}].byteOffset = {combined_off} MUST be a multiple of the \
+             component size {csize64} (spec §3.6.2.4)"
+        )));
+    }
+    // "When byteStride is defined, it MUST be a multiple of the size of
+    // the accessor's component type."
+    if let Some(stride) = bv.byte_stride {
+        if (stride as u64) % csize64 != 0 {
+            return Err(invalid(format!(
+                "AccessorStrideAlignment: bufferViews[{bv_idx}].byteStride {stride} (referenced \
+                 by accessors[{accessor_idx}]) MUST be a multiple of the component size \
+                 {csize64} (spec §3.6.2.4)"
+            )));
+        }
+    }
+
     let effective_stride: u64 = bv.byte_stride.map(u64::from).unwrap_or(element_size);
     if effective_stride < element_size {
         return Err(invalid(format!(
@@ -2893,7 +2950,6 @@ pub fn validate_accessor_fits_bufferview(
              (spec §3.6.2.4: stride MUST fit the element)"
         )));
     }
-    let acc_off = accessor.byte_offset.unwrap_or(0) as u64;
     let last_element_start = effective_stride
         .checked_mul(accessor.count as u64 - 1)
         .and_then(|v| v.checked_add(acc_off))

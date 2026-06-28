@@ -87,9 +87,14 @@ fn rejects_misaligned_attribute_byte_offset() {
     let res = dec.decode(&doc);
     let err = res.unwrap_err();
     let msg = format!("{err}");
+    // For a FLOAT (component size 4) the per-accessor §3.6.2.4
+    // component-size alignment rule (`AccessorByteOffsetAlignment`, run
+    // by the accessor-fit pass) coincides with — and now fires before —
+    // the per-primitive vertex-attribute 4-byte rule
+    // (`VertexAttributeAlignment`). Either is a spec-correct rejection.
     assert!(
-        msg.contains("VertexAttributeAlignment"),
-        "expected alignment error, got: {msg}"
+        msg.contains("VertexAttributeAlignment") || msg.contains("AccessorByteOffsetAlignment"),
+        "expected an alignment error, got: {msg}"
     );
 }
 
@@ -118,9 +123,15 @@ fn rejects_misaligned_byte_stride() {
     let mut dec = GltfDecoder::new();
     let err = dec.decode(&doc).unwrap_err();
     let msg = format!("{err}");
+    // stride 13 is not a multiple of the FLOAT component size (4), so the
+    // per-accessor §3.6.2.4 stride-alignment rule (`AccessorStrideAlignment`,
+    // accessor-fit pass) now fires before the per-primitive 4-byte rule
+    // (`VertexAttributeAlignment`). Either is a spec-correct rejection and
+    // both name `byteStride`.
     assert!(
-        msg.contains("VertexAttributeAlignment") && msg.contains("byteStride"),
-        "expected stride error, got: {msg}"
+        (msg.contains("VertexAttributeAlignment") || msg.contains("AccessorStrideAlignment"))
+            && msg.contains("byteStride"),
+        "expected a stride-alignment error, got: {msg}"
     );
 }
 
