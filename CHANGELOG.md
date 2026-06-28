@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Material-extension textureInfo `index` resolution (spec §5.30.1)** —
+  the `validate_textures` pass now policies every textureInfo nested
+  inside a KHR material extension (specular / clearcoat / sheen /
+  transmission / volume / iridescence / anisotropy / diffuse-transmission),
+  rejecting a `.index` that points past `textures[]` with
+  `MaterialExtensionTextureIndex`. Previously only the five core PBR
+  texture slots were range-checked. The roster is collected by a new
+  `material_extension_texture_indices` walk paralleling the existing
+  `material_texture_transforms` enumeration.
 - **Per-accessor component-size alignment validation (spec §3.6.2.4 line
   3091)** — the accessor-fit pass now enforces, on every accessor with a
   bufferView, that `accessor.byteOffset` and

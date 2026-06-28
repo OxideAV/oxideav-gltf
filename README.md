@@ -900,8 +900,23 @@ framework but usable standalone.
   `metallicRoughnessTexture`, `normalTexture`, `occlusionTexture`,
   `emissiveTexture` — MUST resolve into `textures[]`
   (`MaterialTextureIndex`, §5.30.1, naming the offending slot). The
-  `KHR_texture_basisu` per-texture `source` indirection keeps its own
-  in-range check in `validate_extension_stack`
+  §5.30.1 rule additionally reaches every textureInfo nested inside a KHR
+  material extension — `KHR_materials_specular.specularTexture` /
+  `specularColorTexture`, `KHR_materials_clearcoat.clearcoatTexture` /
+  `clearcoatRoughnessTexture` / `clearcoatNormalTexture`,
+  `KHR_materials_sheen.sheenColorTexture` / `sheenRoughnessTexture`,
+  `KHR_materials_transmission.transmissionTexture`,
+  `KHR_materials_volume.thicknessTexture`,
+  `KHR_materials_iridescence.iridescenceTexture` /
+  `iridescenceThicknessTexture`,
+  `KHR_materials_anisotropy.anisotropyTexture`,
+  `KHR_materials_diffuse_transmission.diffuseTransmissionTexture` /
+  `diffuseTransmissionColorTexture` — whose `index` MUST also resolve into
+  `textures[]` (`MaterialExtensionTextureIndex`, naming the offending
+  extension slot; the roster is shared with the
+  `material_texture_transforms` walk). The `KHR_texture_basisu`
+  per-texture `source` indirection keeps its own in-range check in
+  `validate_extension_stack`
 - Texture-sampler filter / wrap validation per spec §5.26 — every
   `samplers[i]` entry is checked before conversion against the closed
   enum sets in §5.26.1–§5.26.4: `magFilter`, when present, MUST be

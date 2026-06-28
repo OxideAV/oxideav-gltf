@@ -2399,6 +2399,107 @@ pub(crate) fn material_texture_transforms(
     out
 }
 
+/// Collect every `(slot, texture-index)` pair carried by a textureInfo
+/// nested inside a material extension — the same roster
+/// [`material_texture_transforms`] walks, but yielding the textureInfo's
+/// own `index` (the `textures[]` reference) rather than its transform.
+///
+/// Per spec §5.30.1 every material textureInfo's `index` MUST resolve
+/// into `textures[]`; the core PBR slots are policed inline in
+/// [`validate_textures`], and this collector extends that coverage to the
+/// KHR material-extension texture slots (specular / clearcoat / sheen /
+/// transmission / volume / iridescence / anisotropy / diffuse-transmission).
+pub(crate) fn material_extension_texture_indices(
+    m: &crate::json_model::Material,
+) -> Vec<(String, u32)> {
+    use crate::json_model::{NormalTextureInfo, TextureInfo};
+
+    fn ti(slot: &str, info: Option<&TextureInfo>) -> Option<(String, u32)> {
+        info.map(|i| (slot.to_owned(), i.index))
+    }
+    fn nti(slot: &str, info: Option<&NormalTextureInfo>) -> Option<(String, u32)> {
+        info.map(|i| (slot.to_owned(), i.index))
+    }
+
+    let mut out: Vec<(String, u32)> = Vec::new();
+    let Some(ext) = m.extensions.as_ref() else {
+        return out;
+    };
+    if let Some(s) = ext.khr_materials_specular.as_ref() {
+        out.extend(ti(
+            "KHR_materials_specular.specularTexture",
+            s.specular_texture.as_ref(),
+        ));
+        out.extend(ti(
+            "KHR_materials_specular.specularColorTexture",
+            s.specular_color_texture.as_ref(),
+        ));
+    }
+    if let Some(c) = ext.khr_materials_clearcoat.as_ref() {
+        out.extend(ti(
+            "KHR_materials_clearcoat.clearcoatTexture",
+            c.clearcoat_texture.as_ref(),
+        ));
+        out.extend(ti(
+            "KHR_materials_clearcoat.clearcoatRoughnessTexture",
+            c.clearcoat_roughness_texture.as_ref(),
+        ));
+        out.extend(nti(
+            "KHR_materials_clearcoat.clearcoatNormalTexture",
+            c.clearcoat_normal_texture.as_ref(),
+        ));
+    }
+    if let Some(s) = ext.khr_materials_sheen.as_ref() {
+        out.extend(ti(
+            "KHR_materials_sheen.sheenColorTexture",
+            s.sheen_color_texture.as_ref(),
+        ));
+        out.extend(ti(
+            "KHR_materials_sheen.sheenRoughnessTexture",
+            s.sheen_roughness_texture.as_ref(),
+        ));
+    }
+    if let Some(t) = ext.khr_materials_transmission.as_ref() {
+        out.extend(ti(
+            "KHR_materials_transmission.transmissionTexture",
+            t.transmission_texture.as_ref(),
+        ));
+    }
+    if let Some(v) = ext.khr_materials_volume.as_ref() {
+        out.extend(ti(
+            "KHR_materials_volume.thicknessTexture",
+            v.thickness_texture.as_ref(),
+        ));
+    }
+    if let Some(i) = ext.khr_materials_iridescence.as_ref() {
+        out.extend(ti(
+            "KHR_materials_iridescence.iridescenceTexture",
+            i.iridescence_texture.as_ref(),
+        ));
+        out.extend(ti(
+            "KHR_materials_iridescence.iridescenceThicknessTexture",
+            i.iridescence_thickness_texture.as_ref(),
+        ));
+    }
+    if let Some(a) = ext.khr_materials_anisotropy.as_ref() {
+        out.extend(ti(
+            "KHR_materials_anisotropy.anisotropyTexture",
+            a.anisotropy_texture.as_ref(),
+        ));
+    }
+    if let Some(d) = ext.khr_materials_diffuse_transmission.as_ref() {
+        out.extend(ti(
+            "KHR_materials_diffuse_transmission.diffuseTransmissionTexture",
+            d.diffuse_transmission_texture.as_ref(),
+        ));
+        out.extend(ti(
+            "KHR_materials_diffuse_transmission.diffuseTransmissionColorTexture",
+            d.diffuse_transmission_color_texture.as_ref(),
+        ));
+    }
+    out
+}
+
 /// Spec validation for one `KHR_texture_transform` block. The schema
 /// fields (`offset` / `scale` as `array[2]`, `texCoord` as a
 /// non-negative integer) are already pinned by their typed
@@ -3886,6 +3987,19 @@ pub fn validate_textures(
                 return Err(invalid(format!(
                     "MaterialTextureIndex: materials[{mi}].{slot}.index = {idx} is out of range \
                      (document has {texture_count} textures) (spec §5.30.1)"
+                )));
+            }
+        }
+
+        // §5.30.1 extends to every textureInfo nested in a material
+        // extension, not just the five core PBR slots. A specularTexture /
+        // clearcoatTexture / … pointing past the textures roster is just
+        // as much a dangling reference.
+        for (slot, idx) in material_extension_texture_indices(mat) {
+            if (idx as usize) >= texture_count {
+                return Err(invalid(format!(
+                    "MaterialExtensionTextureIndex: materials[{mi}].extensions.{slot}.index = \
+                     {idx} is out of range (document has {texture_count} textures) (spec §5.30.1)"
                 )));
             }
         }
