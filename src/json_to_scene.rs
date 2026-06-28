@@ -41,9 +41,10 @@ use crate::validation::{
     validate_color0_range, validate_extension_stack, validate_images, validate_index_no_restart,
     validate_index_references, validate_index_value_bound, validate_inverse_bind_matrices,
     validate_materials, validate_morph_targets, validate_morph_weights, validate_nodes,
-    validate_primitive_index_count, validate_samplers, validate_skins,
-    validate_sparse_indices_buffer_views, validate_sparse_values_buffer_views,
-    validate_structural_minimums, validate_tangent_w, validate_textures,
+    validate_primitive_index_count, validate_samplers, validate_skinning_attributes,
+    validate_skinning_weights, validate_skins, validate_sparse_indices_buffer_views,
+    validate_sparse_values_buffer_views, validate_structural_minimums, validate_tangent_w,
+    validate_textures,
 };
 
 /// Decode a parsed [`GltfRoot`] into a [`Scene3D`], using `glb_bin`
@@ -2123,6 +2124,9 @@ fn convert_primitive(
     for (ti, target) in p.targets.iter().enumerate() {
         validate_attribute_set_indices(&format!("morph target {ti}"), target)?;
     }
+    // Spec §3.7.3.3 — JOINTS_n / WEIGHTS_n accessors MUST be VEC4 with the
+    // spec-allowed component types.
+    validate_skinning_attributes(&p.attributes, &root.accessors)?;
     for (name, &acc_idx) in &p.attributes {
         if let Some(acc) = root.accessors.get(acc_idx as usize) {
             validate_alignment(acc, &root.buffer_views, true, name)?;
@@ -2190,7 +2194,18 @@ fn convert_primitive(
         let acc = &root.accessors[i as usize];
         let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
         let view = view_from_materialised(acc, &bytes)?;
-        let raw = read_vec_f32::<4>(&view)?;
+        // §3.7.3.3 — WEIGHTS_n may be FLOAT or normalized unsigned
+        // byte/short. FLOAT reads directly; the normalized-integer forms
+        // dequantise via the §3.6.2.2 equations (validate_skinning_attributes
+        // already gated the componentType + normalized combination).
+        let raw = if acc.component_type == gj::COMPONENT_TYPE_FLOAT {
+            read_vec_f32::<4>(&view)?
+        } else {
+            quantization::dequantize_vec4(acc, &view)?
+        };
+        // §3.7.3.3 — joint weights MUST NOT be negative. Decided on the
+        // materialised (dequantised) f32 weights.
+        validate_skinning_weights("WEIGHTS_0", &raw)?;
         prim.weights = Some(raw);
     }
 

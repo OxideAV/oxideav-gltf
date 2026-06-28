@@ -422,6 +422,102 @@ pub fn validate_attribute_set_indices(
     Ok(())
 }
 
+/// Spec §3.7.3.3 (Skinned Mesh Attributes) accessor-format MUSTs for the
+/// `JOINTS_n` / `WEIGHTS_n` attributes of a primitive:
+///
+/// * Both `JOINTS_n` and `WEIGHTS_n` accessors MUST be `"VEC4"` type
+///   ("The number of joints that influence one vertex is limited to 4 per
+///   set") — `SkinningAttributeType`.
+/// * `JOINTS_n` componentType MUST be unsigned byte or unsigned short
+///   (`SkinningJointsComponentType`).
+/// * `WEIGHTS_n` componentType MUST be float, or normalized unsigned byte,
+///   or normalized unsigned short (`SkinningWeightsComponentType`).
+///
+/// (The weights-non-negative and weight-sum MUSTs are decided on the
+/// materialised data at the decode site, not here.)
+pub fn validate_skinning_attributes(
+    attributes: &HashMap<String, u32>,
+    accessors: &[Accessor],
+) -> Result<()> {
+    use crate::json_model::{
+        COMPONENT_TYPE_FLOAT, COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_SHORT,
+    };
+    // Deterministic order for error messages.
+    let mut names: Vec<&String> = attributes.keys().collect();
+    names.sort();
+    for name in names {
+        let is_joints = name.strip_prefix("JOINTS_").is_some();
+        let is_weights = name.strip_prefix("WEIGHTS_").is_some();
+        if !is_joints && !is_weights {
+            continue;
+        }
+        let idx = attributes[name];
+        let Some(acc) = accessors.get(idx as usize) else {
+            // Index-out-of-range is reported by other passes; skip here.
+            continue;
+        };
+        if acc.kind != "VEC4" {
+            return Err(invalid(format!(
+                "SkinningAttributeType: {name} accessor {idx} is {:?}, MUST be \"VEC4\" \
+                 (spec §3.7.3.3: up to 4 joint influences per set)",
+                acc.kind
+            )));
+        }
+        if is_joints {
+            if !matches!(
+                acc.component_type,
+                COMPONENT_TYPE_UNSIGNED_BYTE | COMPONENT_TYPE_UNSIGNED_SHORT
+            ) {
+                return Err(invalid(format!(
+                    "SkinningJointsComponentType: {name} accessor {idx} componentType {} MUST be \
+                     unsigned byte (5121) or unsigned short (5123) (spec §3.7.3.3)",
+                    acc.component_type
+                )));
+            }
+        } else {
+            // WEIGHTS_n: float, or normalized unsigned byte / short.
+            let ok = acc.component_type == COMPONENT_TYPE_FLOAT
+                || (matches!(
+                    acc.component_type,
+                    COMPONENT_TYPE_UNSIGNED_BYTE | COMPONENT_TYPE_UNSIGNED_SHORT
+                ) && acc.normalized);
+            if !ok {
+                return Err(invalid(format!(
+                    "SkinningWeightsComponentType: {name} accessor {idx} componentType {} \
+                     (normalized={}) MUST be float (5126), or normalized unsigned byte (5121), \
+                     or normalized unsigned short (5123) (spec §3.7.3.3)",
+                    acc.component_type, acc.normalized
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Spec §3.7.3.3: "The joint weights for each vertex MUST NOT be
+/// negative." Decided on the materialised (already-dequantised) `&[[f32;
+/// 4]]` weight vectors. A negative component — or a non-finite one, which
+/// fails the `>= 0` comparison — is rejected with `SkinningWeightsNegative`.
+pub fn validate_skinning_weights(set: &str, weights: &[[f32; 4]]) -> Result<()> {
+    use std::cmp::Ordering;
+    for (vi, w) in weights.iter().enumerate() {
+        for (c, &v) in w.iter().enumerate() {
+            // `partial_cmp` returns the unordered case for NaN, so a
+            // non-finite weight is rejected here too.
+            if !matches!(
+                v.partial_cmp(&0.0),
+                Some(Ordering::Greater | Ordering::Equal)
+            ) {
+                return Err(invalid(format!(
+                    "SkinningWeightsNegative: {set}[{vi}][{c}] = {v} MUST NOT be negative \
+                     (spec §3.7.3.3)"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Spec §3.7.2.1: indices accessor MUST NOT contain the
 /// primitive-restart sentinel for its component type (255 / 65535 /
 /// 4294967295).

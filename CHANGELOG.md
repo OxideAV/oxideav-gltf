@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Skinned-mesh JOINTS_n / WEIGHTS_n attribute validation (spec
+  §3.7.3.3)** — a new `validate_skinning_attributes` pass enforces both
+  attributes are VEC4, JOINTS_n componentType is unsigned byte / short,
+  and WEIGHTS_n componentType is float or normalized unsigned byte / short
+  (`SkinningAttributeType` / `SkinningJointsComponentType` /
+  `SkinningWeightsComponentType`); the materialised weights are then
+  checked non-negative (`SkinningWeightsNegative`). The WEIGHTS_0 decode
+  path additionally dequantises the normalized-integer storage forms
+  (previously FLOAT-only), so spec-valid normalized weights round-trip.
 - **Indexed attribute set-index validation (spec §3.7.2.1)** — a new
   `validate_attribute_set_indices` pass enforces that the four indexed
   vertex semantics (`TEXCOORD_n` / `COLOR_n` / `JOINTS_n` / `WEIGHTS_n`)

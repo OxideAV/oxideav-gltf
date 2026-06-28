@@ -751,6 +751,17 @@ framework but usable standalone.
   The same rule is enforced on each morph target's indexed attributes.
   This closes the silent-drop hole where the decoder's count-up TEXCOORD_n
   loop would skip a non-contiguous set
+- Skinned-mesh `JOINTS_n` / `WEIGHTS_n` attribute validation per spec
+  §3.7.3.3 — `validate_skinning_attributes` enforces the accessor-format
+  MUSTs: both attributes MUST be `VEC4` (up to 4 joint influences per set,
+  `SkinningAttributeType`); `JOINTS_n` componentType MUST be unsigned byte
+  / unsigned short (`SkinningJointsComponentType`); `WEIGHTS_n`
+  componentType MUST be float, or normalized unsigned byte / short
+  (`SkinningWeightsComponentType`). The materialised weights are then
+  checked non-negative (`SkinningWeightsNegative`, NaN caught by the same
+  `partial_cmp` window). The WEIGHTS_0 decode path now also dequantises
+  the normalized-integer storage forms (it previously only read FLOAT) so
+  spec-valid normalized weights round-trip end to end
 - Primitive topology vertex-count validation per spec §3.7.2.1 — the
   decoder rejects primitives whose number of vertex indices is invalid
   for the topology `mode`: POINTS MUST be non-zero, LINE_LOOP /
