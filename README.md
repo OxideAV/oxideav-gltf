@@ -880,7 +880,12 @@ framework but usable standalone.
   MUST be a valid accessor of `"MAT4"` type with `FLOAT` components, MUST
   NOT be `normalized`, and its `count` MUST be ≥ the joint count
   (`SkinIbmIndex` / `SkinIbmAccessorType` / `SkinIbmAccessorComponentType`
-  / `SkinIbmAccessorNormalized` / `SkinIbmCount`). §5.25.3: a node with
+  / `SkinIbmAccessorNormalized` / `SkinIbmCount`). §3.7.3.1: the fourth
+  row of every materialised inverse-bind matrix MUST be `[0, 0, 0, 1]` —
+  an IBM is an affine joint transform with no projective component, so a
+  deviating bottom row is rejected (`SkinIbmBottomRow`), decided on the
+  decoded `[[f32; 4]; 4]` matrices with a small f32-round-trip tolerance.
+  §5.25.3: a node with
   `skin` MUST reference a valid skin AND MUST also define `mesh`
   (`NodeSkinIndex` / `NodeSkinWithoutMesh`). §3.7.3.2: a skin referenced
   by a node within a scene MUST have all of its joints in that same scene

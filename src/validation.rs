@@ -3699,6 +3699,34 @@ pub fn validate_nodes(nodes: &[crate::json_model::Node], animations: &[Animation
     Ok(())
 }
 
+/// Spec §3.7.3.1 (Skinned Mesh Attributes): "The fourth row of each
+/// [inverse bind] matrix MUST be set to `[0.0, 0.0, 0.0, 1.0]`." This is
+/// the affine-transform invariant — an inverse-bind matrix is a rigid /
+/// affine joint transform, so its bottom row carries no projective
+/// component. Decided on the materialised matrices (row-major
+/// `[[f32; 4]; 4]`, so the fourth row is `m[3]`), not the JSON metadata.
+///
+/// A small tolerance absorbs the f32 round-trip drift an encode→decode
+/// cycle introduces. A bottom row that deviates is rejected with
+/// `SkinIbmBottomRow`.
+pub fn validate_inverse_bind_matrices(skin_idx: usize, matrices: &[[[f32; 4]; 4]]) -> Result<()> {
+    const TOL: f32 = 1e-5;
+    for (mi, m) in matrices.iter().enumerate() {
+        let row = m[3];
+        let ok = row[0].abs() <= TOL
+            && row[1].abs() <= TOL
+            && row[2].abs() <= TOL
+            && (row[3] - 1.0).abs() <= TOL;
+        if !ok {
+            return Err(invalid(format!(
+                "SkinIbmBottomRow: skins[{skin_idx}].inverseBindMatrices[{mi}] bottom row \
+                 {row:?} MUST be [0, 0, 0, 1] (spec §3.7.3.1)"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Document-level skin validation per glTF 2.0 §5.28 (Skin), §3.7.3
 /// (Skins) and §5.25.3 (node.skin).
 ///

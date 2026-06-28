@@ -39,10 +39,11 @@ use crate::validation::{
     validate_animation_channels, validate_animation_input_times, validate_attribute_counts,
     validate_bufferview_fits_buffer, validate_cameras, validate_color0_range,
     validate_extension_stack, validate_images, validate_index_no_restart,
-    validate_index_references, validate_index_value_bound, validate_morph_targets,
-    validate_morph_weights, validate_nodes, validate_primitive_index_count, validate_samplers,
-    validate_skins, validate_sparse_indices_buffer_views, validate_sparse_values_buffer_views,
-    validate_structural_minimums, validate_tangent_w, validate_textures,
+    validate_index_references, validate_index_value_bound, validate_inverse_bind_matrices,
+    validate_morph_targets, validate_morph_weights, validate_nodes, validate_primitive_index_count,
+    validate_samplers, validate_skins, validate_sparse_indices_buffer_views,
+    validate_sparse_values_buffer_views, validate_structural_minimums, validate_tangent_w,
+    validate_textures,
 };
 
 /// Decode a parsed [`GltfRoot`] into a [`Scene3D`], using `glb_bin`
@@ -371,7 +372,7 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
     // Skins — convert before nodes so node.skin can reference SkinIds.
     let mut skin_id_map: HashMap<u32, SkinId> = HashMap::new();
     for (i, s) in root.skins.iter().enumerate() {
-        let id = convert_skin(s, root, &buffers, &mut scene)?;
+        let id = convert_skin(i, s, root, &buffers, &mut scene)?;
         skin_id_map.insert(i as u32, id);
     }
 
@@ -603,6 +604,7 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
 // --- skin / animation converters ----------------------------------------
 
 fn convert_skin(
+    skin_idx: usize,
     s: &gj::Skin,
     root: &GltfRoot,
     buffers: &[Arc<Vec<u8>>],
@@ -626,6 +628,9 @@ fn convert_skin(
         let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
         let view = view_from_materialised(acc, &bytes)?;
         skeleton.inverse_bind_matrices = read_mat4_f32(&view)?;
+        // §3.7.3.1 — the fourth row of each IBM MUST be [0, 0, 0, 1].
+        // Decided on the materialised matrices, not the JSON metadata.
+        validate_inverse_bind_matrices(skin_idx, &skeleton.inverse_bind_matrices)?;
     }
     let skel_id = scene.add_skeleton(skeleton);
     let mut skin = Skin::new(skel_id);

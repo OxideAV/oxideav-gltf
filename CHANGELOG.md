@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Inverse-bind-matrix fourth-row validation (spec §3.7.3.1)** — the
+  decoder now enforces that the fourth row of every materialised
+  inverse-bind matrix is `[0, 0, 0, 1]` (an IBM is an affine joint
+  transform with no projective component). A deviating bottom row is
+  rejected with `SkinIbmBottomRow`, decided on the decoded
+  `[[f32; 4]; 4]` matrices with a small f32-round-trip tolerance.
 - **Material-extension textureInfo `index` resolution (spec §5.30.1)** —
   the `validate_textures` pass now policies every textureInfo nested
   inside a KHR material extension (specular / clearcoat / sheen /

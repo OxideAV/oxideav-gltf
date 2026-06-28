@@ -189,6 +189,85 @@ fn ibm_well_formed_passes() {
 }
 
 // ----------------------------------------------------------------------
+// §3.7.3.1 — IBM fourth-row MUST be [0, 0, 0, 1]
+// ----------------------------------------------------------------------
+
+/// Encode `count` MAT4 float matrices (column-major, little-endian) into
+/// a base64 buffer, with the given row-major `bottom_row` ([m30, m31,
+/// m32, m33]) on every matrix and an identity upper-left 3x3.
+fn ibm_buffer_with_bottom_row(count: usize, bottom_row: [f32; 4]) -> (String, usize) {
+    use base64::Engine as _;
+    let mut bin = Vec::new();
+    for _ in 0..count {
+        // Row-major matrix: identity 3x3 in the top-left, given bottom row.
+        let m = [
+            [1.0f32, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            bottom_row,
+        ];
+        // Emit column-major: for each column c, rows 0..3.
+        for c in 0..4 {
+            for row in &m {
+                bin.extend_from_slice(&row[c].to_le_bytes());
+            }
+        }
+    }
+    let len = bin.len();
+    (base64::engine::general_purpose::STANDARD.encode(&bin), len)
+}
+
+/// Build the `extra` fragment (accessor + bufferView + buffer) around a
+/// caller-supplied IBM buffer base64 + byte length.
+fn ibm_extra_buffer(count: u32, b64: &str, byte_len: usize) -> String {
+    format!(
+        r#", "accessors": [ {{ "bufferView": 0, "componentType": 5126, "count": {count}, "type": "MAT4" }} ],
+        "bufferViews": [ {{ "buffer": 0, "byteLength": {byte_len} }} ],
+        "buffers": [ {{ "byteLength": {byte_len}, "uri": "data:application/octet-stream;base64,{b64}" }} ]"#
+    )
+}
+
+#[test]
+fn ibm_identity_bottom_row_passes() {
+    let (b64, len) = ibm_buffer_with_bottom_row(2, [0.0, 0.0, 0.0, 1.0]);
+    let extra = ibm_extra_buffer(2, &b64, len);
+    decode_ok(
+        r#"{ "joints": [0, 1], "inverseBindMatrices": 0 }"#,
+        r#"{ "children": [1] }, {}"#,
+        &extra,
+        "0",
+    );
+}
+
+#[test]
+fn ibm_nonzero_bottom_row_rejected() {
+    // Bottom row [0, 0, 0.5, 1] — a projective component the spec forbids.
+    let (b64, len) = ibm_buffer_with_bottom_row(2, [0.0, 0.0, 0.5, 1.0]);
+    let extra = ibm_extra_buffer(2, &b64, len);
+    let err = decode_err(
+        r#"{ "joints": [0, 1], "inverseBindMatrices": 0 }"#,
+        r#"{ "children": [1] }, {}"#,
+        &extra,
+        "0",
+    );
+    assert!(err.contains("SkinIbmBottomRow"), "got: {err}");
+}
+
+#[test]
+fn ibm_wrong_w_bottom_row_rejected() {
+    // Bottom row [0, 0, 0, 2] — w must be exactly 1.
+    let (b64, len) = ibm_buffer_with_bottom_row(1, [0.0, 0.0, 0.0, 2.0]);
+    let extra = ibm_extra_buffer(1, &b64, len);
+    let err = decode_err(
+        r#"{ "joints": [0], "inverseBindMatrices": 0 }"#,
+        r#"{}"#,
+        &extra,
+        "0",
+    );
+    assert!(err.contains("SkinIbmBottomRow"), "got: {err}");
+}
+
+// ----------------------------------------------------------------------
 // §3.7.3.2 — joints as disjoint scene roots are accepted
 // ----------------------------------------------------------------------
 
