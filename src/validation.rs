@@ -4800,6 +4800,57 @@ pub fn validate_structural_minimums(root: &GltfRoot) -> Result<()> {
     Ok(())
 }
 
+/// Validate the `data:`-URI mediatype MUST on every buffer per glTF 2.0
+/// §3.9.1 (Buffers) + §5.10.1 (`buffer.uri`).
+///
+/// Rule enforced:
+///
+/// * §3.9.1 — "When `data:` URI is used for buffer storage, its mediatype
+///   field MUST be set to `application/octet-stream` or
+///   `application/gltf-buffer`." A `data:` buffer URI whose mediatype is
+///   anything else (e.g. `image/png`, a copy-paste from an image URI, or a
+///   bare `data:,` with no mediatype) is rejected with
+///   `BufferUriMediaType`.
+///
+/// External (non-`data:`) URIs and an absent `uri` (the GLB-stored BIN
+/// buffer 0) are untouched — the mediatype rule only governs the embedded
+/// `data:` form. The check parses the mediatype prefix (everything before
+/// the first `,`, minus an optional `;base64` suffix and any further
+/// `;param=value` attributes) so a spec-legal
+/// `data:application/octet-stream;base64,...` and the parameter-carrying
+/// `data:application/gltf-buffer;charset=utf-8;base64,...` shapes both pass.
+pub fn validate_buffers(root: &GltfRoot) -> Result<()> {
+    for (bi, buf) in root.buffers.iter().enumerate() {
+        let Some(uri) = buf.uri.as_deref() else {
+            continue;
+        };
+        let Some(body) = uri.strip_prefix("data:") else {
+            // External file reference — mediatype rule does not apply.
+            continue;
+        };
+        // The mediatype is the header up to the first `,`.
+        let header = match body.find(',') {
+            Some(comma) => &body[..comma],
+            None => {
+                return Err(invalid(format!(
+                    "BufferUriMediaType: buffers[{bi}].uri is a malformed data URI (no comma \
+                     separating the header from the payload) (spec §3.9.1)"
+                )));
+            }
+        };
+        // Strip `;base64` and any other `;param` attributes; the mediatype
+        // is the first `;`-delimited token.
+        let mediatype = header.split(';').next().unwrap_or("");
+        if mediatype != "application/octet-stream" && mediatype != "application/gltf-buffer" {
+            return Err(invalid(format!(
+                "BufferUriMediaType: buffers[{bi}].uri data-URI mediatype {mediatype:?} MUST be \
+                 \"application/octet-stream\" or \"application/gltf-buffer\" (spec §3.9.1)"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Validate the §3.7.2.1 constraint on application-specific attribute
 /// semantics: their accessors MUST NOT use the `UNSIGNED_INT` component
 /// type.

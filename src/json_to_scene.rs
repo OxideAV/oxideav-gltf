@@ -37,7 +37,7 @@ use crate::quantization::{self, ATTR_QUANT_KEY, EXTENSION_NAME};
 use crate::validation::{
     check_asset_version, validate_accessor_fits_bufferview, validate_accessors, validate_alignment,
     validate_animation_channels, validate_animation_input_times, validate_attribute_counts,
-    validate_attribute_set_indices, validate_attribute_unsigned_int,
+    validate_attribute_set_indices, validate_attribute_unsigned_int, validate_buffers,
     validate_bufferview_fits_buffer, validate_cameras, validate_color0_range,
     validate_extension_stack, validate_images, validate_index_no_restart,
     validate_index_references, validate_index_value_bound, validate_inverse_bind_matrices,
@@ -102,6 +102,9 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
     // Spec §3.7.2.1 — application-specific (`_`-prefixed) attribute
     // semantics MUST NOT use the UNSIGNED_INT (5125) component type.
     validate_attribute_unsigned_int(root)?;
+    // Spec §3.9.1 — a `data:` URI buffer's mediatype MUST be
+    // `application/octet-stream` or `application/gltf-buffer`.
+    validate_buffers(root)?;
     // Spec §5.12 + §5.13 + §5.14 — camera projection blocks are
     // mutually exclusive; orthographic xmag/ymag MUST NOT be zero,
     // zfar > 0 and > znear, znear >= 0; perspective yfov/znear > 0,

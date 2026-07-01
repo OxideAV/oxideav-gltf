@@ -741,6 +741,13 @@ framework but usable standalone.
   (`VertexAttributeColor0Range`). The encoder also keeps TANGENT
   dense regardless of sparse threshold to honour the same TANGENT.w
   constraint
+- Buffer `data:`-URI mediatype validation per spec §3.9.1 —
+  `validate_buffers` rejects any buffer whose `data:` URI carries a
+  mediatype other than `application/octet-stream` or
+  `application/gltf-buffer` (`BufferUriMediaType`); parameter-carrying
+  headers (`;charset=…;base64`) match on the leading mediatype token, and
+  external (non-`data:`) URIs plus the GLB-stored BIN buffer 0 (no `uri`)
+  are untouched
 - Application-specific attribute UNSIGNED_INT ban per spec §3.7.2.1 —
   `validate_attribute_unsigned_int` rejects any primitive or morph-target
   attribute whose name starts with `_` (an application-specific semantic)

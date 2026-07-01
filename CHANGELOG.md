@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Buffer `data:`-URI mediatype validation (spec §3.9.1)** — a new
+  `validate_buffers` pass rejects any buffer whose `data:` URI carries a
+  mediatype other than `application/octet-stream` or
+  `application/gltf-buffer` (`BufferUriMediaType`). Parameter-carrying
+  headers (`;charset=…;base64`) are handled by matching only the leading
+  mediatype token; external (non-`data:`) URIs and the GLB-stored BIN
+  buffer 0 (no `uri`) are untouched.
 - **Application-specific attribute UNSIGNED_INT ban (spec §3.7.2.1)** — a
   new `validate_attribute_unsigned_int` pass rejects any primitive or
   morph-target attribute whose name starts with `_` (an application-specific
