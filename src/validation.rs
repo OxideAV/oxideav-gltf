@@ -4800,6 +4800,60 @@ pub fn validate_structural_minimums(root: &GltfRoot) -> Result<()> {
     Ok(())
 }
 
+/// Validate the §3.7.2.1 constraint on application-specific attribute
+/// semantics: their accessors MUST NOT use the `UNSIGNED_INT` component
+/// type.
+///
+/// Rule enforced:
+///
+/// * §3.7.2.1 — "Application-specific attribute semantics MUST NOT use
+///   unsigned int component type." Every primitive (and morph-target)
+///   attribute whose name starts with `_` and whose accessor is
+///   `UNSIGNED_INT` is rejected with `AttributeUnsignedIntComponent`.
+///
+/// The rule is scoped to `_`-prefixed (application-specific) semantics
+/// because the standard semantics already have their exact
+/// type/componentType tables policed elsewhere
+/// (`validate_skinning_attributes`, `validate_alignment`, the accessor
+/// read paths). The broader §5.1.3 "UNSIGNED_INT MUST NOT be used for any
+/// accessor not referenced by `mesh.primitive.indices`" rule is
+/// deliberately NOT enforced as a blanket pass here: extensions such as
+/// `KHR_animation_pointer` explicitly enable `UNSIGNED_INT` sampler-output
+/// accessors (§"Output Accessor Component Types"), and an unreferenced
+/// `UNSIGNED_INT` accessor carries no rendered geometry. Enforcing it
+/// would require an extension-carve-out roster; the targeted §3.7.2.1
+/// attribute rule below has no such carve-out and closes the concrete
+/// data-corruption hole (an `_`-semantic UINT would be read as garbage by
+/// a consumer expecting a vertex-attribute-legal component type).
+pub fn validate_attribute_unsigned_int(root: &GltfRoot) -> Result<()> {
+    for (mi, mesh) in root.meshes.iter().enumerate() {
+        for (pi, prim) in mesh.primitives.iter().enumerate() {
+            let attr_sets = std::iter::once(&prim.attributes).chain(prim.targets.iter());
+            for attrs in attr_sets {
+                for (name, &acc_idx) in attrs {
+                    if !name.starts_with('_') {
+                        continue;
+                    }
+                    let Some(acc) = root.accessors.get(acc_idx as usize) else {
+                        continue;
+                    };
+                    if acc.component_type == COMPONENT_TYPE_UNSIGNED_INT {
+                        return Err(invalid(format!(
+                            "AttributeUnsignedIntComponent: meshes[{mi}].primitives[{pi}] \
+                             application-specific attribute \"{name}\" uses accessor {acc_idx} \
+                             whose componentType is UNSIGNED_INT (5125); application-specific \
+                             attribute semantics MUST NOT use the unsigned int component type \
+                             (spec §3.7.2.1)"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

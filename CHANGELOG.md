@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Application-specific attribute UNSIGNED_INT ban (spec §3.7.2.1)** — a
+  new `validate_attribute_unsigned_int` pass rejects any primitive or
+  morph-target attribute whose name starts with `_` (an application-specific
+  semantic) and whose accessor uses the `UNSIGNED_INT` (5125) component type
+  (`AttributeUnsignedIntComponent`). The standard semantics keep their exact
+  type/componentType policing in the existing passes; the broader §5.1.3
+  "UNSIGNED_INT only for `mesh.primitive.indices`" rule is intentionally not
+  a blanket pass because extensions (e.g. `KHR_animation_pointer`) enable
+  UNSIGNED_INT sampler-output accessors.
+
 - **Required-array `minItems: 1` validation** — `validate_structural_minimums`
   now rejects an empty `mesh.primitives` (`MeshPrimitivesEmpty`, §5.24.1),
   `animation.channels` (`AnimationChannelsEmpty`), or `animation.samplers`

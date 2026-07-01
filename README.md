@@ -741,6 +741,15 @@ framework but usable standalone.
   (`VertexAttributeColor0Range`). The encoder also keeps TANGENT
   dense regardless of sparse threshold to honour the same TANGENT.w
   constraint
+- Application-specific attribute UNSIGNED_INT ban per spec §3.7.2.1 —
+  `validate_attribute_unsigned_int` rejects any primitive or morph-target
+  attribute whose name starts with `_` (an application-specific semantic)
+  and whose accessor uses the `UNSIGNED_INT` (5125) component type
+  (`AttributeUnsignedIntComponent`). The broader §5.1.3 "UNSIGNED_INT only
+  for `mesh.primitive.indices`" rule is deliberately not a blanket pass —
+  extensions such as `KHR_animation_pointer` enable `UNSIGNED_INT`
+  sampler-output accessors, and an unreferenced `UNSIGNED_INT` accessor
+  carries no rendered geometry
 - Indexed attribute set-index validation per spec §3.7.2.1 —
   `validate_attribute_set_indices` enforces that the four indexed
   semantics (`TEXCOORD_n` / `COLOR_n` / `JOINTS_n` / `WEIGHTS_n`) name
