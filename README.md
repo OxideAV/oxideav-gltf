@@ -1,5 +1,7 @@
 # oxideav-gltf
 
+[![CI](https://github.com/OxideAV/oxideav-gltf/actions/workflows/ci.yml/badge.svg)](https://github.com/OxideAV/oxideav-gltf/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/oxideav-gltf.svg)](https://crates.io/crates/oxideav-gltf) [![docs.rs](https://docs.rs/oxideav-gltf/badge.svg)](https://docs.rs/oxideav-gltf) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Pure-Rust **glTF 2.0** codec (Khronos KHR-public spec, royalty-free) —
 decodes and encodes both the `.gltf` JSON variant and the `.glb` binary
 container. Implements the [`oxideav-mesh3d`](https://github.com/OxideAV/oxideav-mesh3d)
