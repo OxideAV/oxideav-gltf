@@ -4378,6 +4378,19 @@ pub fn validate_materials(materials: &[Material]) -> Result<()> {
                 }
             }
         }
+        // §5.19.3 — `alphaMode` is an enum whose only legal values are
+        // "OPAQUE", "MASK", and "BLEND". An absent field defaults to
+        // "OPAQUE" and is conformant; any other string is a schema
+        // violation. (The conversion path otherwise silently coerces an
+        // unknown value to OPAQUE, hiding the malformed document.)
+        if let Some(am) = mat.alpha_mode.as_deref() {
+            if !matches!(am, "OPAQUE" | "MASK" | "BLEND") {
+                return Err(invalid(format!(
+                    "MaterialAlphaMode: materials[{mi}].alphaMode = {am:?} — MUST be one of \
+                     \"OPAQUE\", \"MASK\", or \"BLEND\" (spec §5.19.3)"
+                )));
+            }
+        }
     }
     Ok(())
 }
