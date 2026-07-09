@@ -750,6 +750,32 @@ framework but usable standalone.
   headers (`;charset=…;base64`) match on the leading mediatype token, and
   external (non-`data:`) URIs plus the GLB-stored BIN buffer 0 (no `uri`)
   are untouched
+- Schema enum validation for the remaining closed-value fields —
+  `bufferView.target`, when present, MUST be `34962` (ARRAY_BUFFER) or
+  `34963` (ELEMENT_ARRAY_BUFFER) (`BufferViewTarget`, §5.11.5);
+  `material.alphaMode`, when present, MUST be `"OPAQUE"` / `"MASK"` /
+  `"BLEND"` (`MaterialAlphaMode`, §5.19.3, closing the silent
+  coerce-to-OPAQUE hole); `camera.type` MUST be `"perspective"` /
+  `"orthographic"` and the matching projection property MUST be defined
+  (`CameraType` / `CameraProjectionMissing`, §5.12.3);
+  `accessor.componentType` MUST be one of the six datatype constants
+  (`AccessorComponentType`, §5.1.5) and `accessor.type` one of
+  `SCALAR` / `VEC2` / `VEC3` / `VEC4` / `MAT2` / `MAT3` / `MAT4`
+  (`AccessorType`, §5.1.6) — checked on **every** accessor including a
+  bufferView-less fully-sparse one the bufferView-fit pass never sees;
+  and `accessor.sparse.indices.componentType` MUST be an unsigned index
+  type `5121` / `5123` / `5125` (`SparseIndicesComponentType`, §5.3.3),
+  enforced on every declared sparse block rather than only the
+  materialised ones
+- Mesh-primitive index accessor validation per spec §5.24.2 — a
+  `mesh.primitive.indices` accessor, when defined, MUST have SCALAR type
+  (`PrimitiveIndicesType`) and an unsigned integer component type
+  `5121` / `5123` / `5125` (`PrimitiveIndicesComponentType`); an
+  out-of-range `indices` accessor index surfaces as
+  `PrimitiveIndicesAccessorIndex`. Checked on the JSON metadata alone so
+  it fires even for a primitive whose attribute data is not materialised
+  (e.g. a `KHR_draco_mesh_compression` primitive still describes its
+  decompressed index stream through this accessor)
 - Application-specific attribute UNSIGNED_INT ban per spec §3.7.2.1 —
   `validate_attribute_unsigned_int` rejects any primitive or morph-target
   attribute whose name starts with `_` (an application-specific semantic)
