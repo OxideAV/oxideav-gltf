@@ -3477,6 +3477,36 @@ pub fn validate_sparse_values_buffer_views(
 /// `znear` would otherwise slip through every comparison.
 pub fn validate_cameras(cameras: &[Camera]) -> Result<()> {
     for (ci, cam) in cameras.iter().enumerate() {
+        // §5.12.3 — `camera.type` is a required enum whose only legal
+        // values are "perspective" and "orthographic", and "Based on
+        // this, either the camera's perspective or orthographic property
+        // MUST be defined". Police both halves: an unknown discriminator
+        // (`CameraType`) and a missing matching projection block
+        // (`CameraProjectionMissing`).
+        match cam.kind.as_str() {
+            "perspective" => {
+                if cam.perspective.is_none() {
+                    return Err(invalid(format!(
+                        "CameraProjectionMissing: cameras[{ci}].type = \"perspective\" but the \
+                         perspective property is not defined (spec §5.12.3)"
+                    )));
+                }
+            }
+            "orthographic" => {
+                if cam.orthographic.is_none() {
+                    return Err(invalid(format!(
+                        "CameraProjectionMissing: cameras[{ci}].type = \"orthographic\" but the \
+                         orthographic property is not defined (spec §5.12.3)"
+                    )));
+                }
+            }
+            other => {
+                return Err(invalid(format!(
+                    "CameraType: cameras[{ci}].type = {other:?} — MUST be \"perspective\" or \
+                     \"orthographic\" (spec §5.12.3)"
+                )));
+            }
+        }
         if cam.perspective.is_some() && cam.orthographic.is_some() {
             return Err(invalid(format!(
                 "CameraProjectionExclusive: cameras[{ci}] defines BOTH perspective and \
