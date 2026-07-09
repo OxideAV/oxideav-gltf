@@ -3372,6 +3372,25 @@ pub fn validate_sparse_indices_buffer_views(
         let Some(sparse) = acc.sparse.as_ref() else {
             continue;
         };
+        // §5.3.3 — `accessor.sparse.indices.componentType` is a required
+        // enum restricted to the three UNSIGNED integer index types
+        // { 5121 UNSIGNED_BYTE, 5123 UNSIGNED_SHORT, 5125 UNSIGNED_INT }.
+        // (The materialisation path also enforces this, but only for
+        // accessors that are actually read; this pass fires on every
+        // declared sparse block — including an unreferenced accessor.)
+        let ict = sparse.indices.component_type;
+        if !matches!(
+            ict,
+            COMPONENT_TYPE_UNSIGNED_BYTE
+                | COMPONENT_TYPE_UNSIGNED_SHORT
+                | COMPONENT_TYPE_UNSIGNED_INT
+        ) {
+            return Err(invalid(format!(
+                "SparseIndicesComponentType: accessors[{ai}].sparse.indices.componentType = {ict} \
+                 — MUST be 5121 (UNSIGNED_BYTE), 5123 (UNSIGNED_SHORT), or 5125 (UNSIGNED_INT) \
+                 (spec §5.3.3)"
+            )));
+        }
         let bv_idx = sparse.indices.buffer_view as usize;
         let bv = buffer_views.get(bv_idx).ok_or_else(|| {
             invalid(format!(
