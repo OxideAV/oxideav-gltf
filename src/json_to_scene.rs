@@ -42,10 +42,10 @@ use crate::validation::{
     validate_color0_range, validate_extension_stack, validate_images, validate_index_no_restart,
     validate_index_references, validate_index_value_bound, validate_inverse_bind_matrices,
     validate_materials, validate_morph_targets, validate_morph_weights, validate_nodes,
-    validate_primitive_index_count, validate_samplers, validate_skinning_attributes,
-    validate_skinning_weights, validate_skins, validate_sparse_indices_buffer_views,
-    validate_sparse_values_buffer_views, validate_structural_minimums, validate_tangent_w,
-    validate_textures,
+    validate_primitive_index_count, validate_primitive_indices_accessors, validate_samplers,
+    validate_skinning_attributes, validate_skinning_weights, validate_skins,
+    validate_sparse_indices_buffer_views, validate_sparse_values_buffer_views,
+    validate_structural_minimums, validate_tangent_w, validate_textures,
 };
 
 /// Decode a parsed [`GltfRoot`] into a [`Scene3D`], using `glb_bin`
@@ -188,6 +188,10 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
     // `min` / `max`.
     let mesh_quantization_used = root.extensions_used.iter().any(|e| e == EXTENSION_NAME);
     validate_morph_targets(&root.meshes, &root.accessors, mesh_quantization_used)?;
+
+    // Spec §5.24.2 — a `mesh.primitive.indices` accessor, when defined,
+    // MUST have SCALAR type and an unsigned integer component type.
+    validate_primitive_indices_accessors(&root.meshes, &root.accessors)?;
 
     let mut buffers = resolve_buffers(root, glb_bin)?;
     // `KHR_meshopt_compression` inflate pass — per

@@ -607,6 +607,61 @@ pub fn validate_index_value_bound(indices: &[u32], attr_count: u32) -> Result<()
     Ok(())
 }
 
+/// Spec §5.24.2 (`mesh.primitive.indices`): "When defined, the accessor
+/// MUST have SCALAR type and an unsigned integer component type."
+///
+/// Every mesh primitive that defines an `indices` accessor is policed:
+/// the referenced accessor's `type` MUST be `"SCALAR"`
+/// (`PrimitiveIndicesType`) and its `componentType` MUST be one of the
+/// three unsigned integer component types 5121 (UNSIGNED_BYTE), 5123
+/// (UNSIGNED_SHORT), or 5125 (UNSIGNED_INT) — the same set §5.24.2
+/// allows for a draw-elements index stream
+/// (`PrimitiveIndicesComponentType`). A signed / float index accessor
+/// or a vector / matrix index accessor is a hard violation: the GPU
+/// draw-elements call has no such interpretation. An out-of-range
+/// `indices` accessor index surfaces as `PrimitiveIndicesAccessorIndex`.
+///
+/// The check runs on the JSON metadata alone (no buffer materialisation),
+/// so it fires even for a primitive whose attribute accessors are not
+/// materialised (e.g. a `KHR_draco_mesh_compression` primitive still
+/// describes its decompressed index stream through this accessor).
+pub fn validate_primitive_indices_accessors(meshes: &[Mesh], accessors: &[Accessor]) -> Result<()> {
+    for (mi, mesh) in meshes.iter().enumerate() {
+        for (pi, prim) in mesh.primitives.iter().enumerate() {
+            let Some(idx) = prim.indices else { continue };
+            let acc = accessors.get(idx as usize).ok_or_else(|| {
+                invalid(format!(
+                    "PrimitiveIndicesAccessorIndex: meshes[{mi}].primitives[{pi}].indices = {idx} \
+                     out of range (have {} accessors, spec §5.24.2)",
+                    accessors.len()
+                ))
+            })?;
+            if acc.kind != "SCALAR" {
+                return Err(invalid(format!(
+                    "PrimitiveIndicesType: meshes[{mi}].primitives[{pi}].indices accessor \
+                     [{idx}] has type {} — MUST be SCALAR (spec §5.24.2)",
+                    acc.kind
+                )));
+            }
+            if !matches!(
+                acc.component_type,
+                COMPONENT_TYPE_UNSIGNED_BYTE
+                    | COMPONENT_TYPE_UNSIGNED_SHORT
+                    | COMPONENT_TYPE_UNSIGNED_INT
+            ) {
+                return Err(invalid(format!(
+                    "PrimitiveIndicesComponentType: meshes[{mi}].primitives[{pi}].indices \
+                     accessor [{idx}] has componentType {} — MUST be an unsigned integer type \
+                     5121 (UNSIGNED_BYTE) / 5123 (UNSIGNED_SHORT) / 5125 (UNSIGNED_INT) \
+                     (spec §5.24.2)",
+                    acc.component_type
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Spec §3.7.2.1: each TANGENT element's W component (handedness) MUST
 /// be exactly `+1.0` or `-1.0`. Tolerance allows for f32 round-trip
 /// drift around the two valid values.
