@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/OxideAV/oxideav-gltf/compare/v0.0.3...v0.0.4) - 2026-07-09
+
+### Other
+
+- document round-403 schema-enum + primitive-indices validation deepening
+- accessor componentType/type enum validation covers bufferView-less sparse accessors per spec §5.1.5 + §5.1.6
+- accessor.sparse.indices.componentType enum validation per spec §5.3.3
+- camera.type enum + matching projection block validation per spec §5.12.3
+- material.alphaMode enum validation per spec §5.19.3
+- mesh.primitive.indices accessor SCALAR + unsigned componentType validation per spec §5.24.2
+- bufferView.target enum validation per spec §5.11.5
+- add CI / crates.io / docs.rs / MIT-license badges
+- buffer data-URI mediatype validation per spec §3.9.1
+- application-specific attribute UNSIGNED_INT ban per spec §3.7.2.1
+- required-array minItems:1 validation (mesh.primitives, animation.channels/samplers)
+- skinned-mesh JOINTS_n/WEIGHTS_n attribute validation per spec §3.7.3.3
+- indexed attribute set-index validation per spec §3.7.2.1
+- core material factor/scalar range validation per spec §5.19–§5.22
+- inverse-bind-matrix fourth-row validation per spec §3.7.3.1
+- material-extension textureInfo index resolution per spec §5.30.1
+- per-accessor component-size alignment validation (spec §3.6.2.4)
+- generalise accessor min/max consistency to all arities (spec §3.6.2.1.5)
+- animation-sampler keyframe-time ordering validation per spec §3.11
+- document deepened meshopt encoder (v1 attributes, edge-reuse triangles, two-baseline indices, forward filters)
+- v1 ATTRIBUTES cost-based control-mode selection (modes 0/1/2/3)
+- ATTRIBUTES v1 (0xa1) encoder with control-mode-2 + narrow ladder
+- INDICES two-baseline encoder (per-index baseline selection)
+- TRIANGLES edge-reuse encoder (0xXY codes, FIFO state machine)
+- update inline filter test for forward-filter support + add filter fuzz coverage
+- forward Appendix B filters (octahedral/quaternion/exponential/color encode)
+- assert encoder shrinks compressible data (effectiveness tests)
+- deterministic fuzz coverage for write-compression round-trip
+- extend write compression to vertex attributes (ATTRIBUTES mode)
+- opt-in KHR_meshopt_compression of index bufferViews on write
+- end-to-end tests — encode→inflate through production decode path
+- add KHR_meshopt_compression encoder (Appendix A inverse, all 3 modes)
+- morph-target structural validation per spec §3.7.2.2
+- animation-channel target uniqueness per spec §3.11
+- bufferView.target enum validation per spec §5.11.5
+- enforce §4.4.2 header-length exactness + §3.6.1.2 BIN padding bound
+- document r360 validation passes (index-refs, structural minimums, animation samplers, image source, mesh weights)
+- image-source (§5.18) + mesh-morph-weights (§5.23.2) validation
+- animation-sampler structural validation per §3.11 + Appendix C
+- top-level index-reference + structural-minimum validation (§3.3 + §5.27.1 + §5.25 + §5.24.3 + §5.10.2 + §5.11.3 + §5.2.1 + §3.6.2.3)
+- correct material_carries_texture_transform doc comment (any textureInfo, not five core slots)
+- round-trip test for KHR_texture_transform on the normalTextureInfo extension path
+- KHR_texture_transform on material-extension textureInfos (§3.12 + finiteness)
+- reword skin common-root rationale to cite spec text directly
+- texture / material reference validation per spec §5.29 + §5.30 + §5.22
+- skin-roster validation per spec §5.28 + §3.7.3 + §5.25.3
+- primitive topology vertex-count validation per spec §3.7.2.1
+- KHR_gaussian_splatting typed splat-field decode
+- KHR_gaussian_splatting spherical-harmonics colour evaluator
+- KHR_lights_punctual per-light property checks
+- gltf r316: KHR_meshopt_compression bitstream decoder (Appendix A + B)
+- refresh to current status, drop per-round changelog cruft
+
 ### Added
 
 - **Buffer `data:`-URI mediatype validation (spec §3.9.1)** — a new
