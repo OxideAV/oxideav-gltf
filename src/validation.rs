@@ -3637,13 +3637,38 @@ pub fn validate_cameras(cameras: &[Camera]) -> Result<()> {
 ///   entries (`AccessorMinMaxLength`). The length set is therefore one
 ///   of 1/2/3/4/9/16, matching the `type` value.
 ///
-/// `componentType` / `type` enum-membership itself is checked lazily by
-/// the bufferView-fit pass (`AccessorFitComponentType` /
-/// `AccessorFitElementType`); here we resolve `type` only to obtain the
-/// component count for the bounds-length rule and skip the bounds check
-/// when the `type` string is unknown (the fit pass surfaces that error).
+/// `componentType` / `type` enum-membership is policed here for **every**
+/// accessor (`AccessorComponentType` / `AccessorType`) so a bufferView-less
+/// accessor (a §3.6.2.3 fully-sparse accessor whose base is implicit zeros)
+/// is covered too. For a bufferView-backed accessor the earlier
+/// bufferView-fit pass reaches the same conclusion first with its own
+/// `AccessorFitComponentType` / `AccessorFitElementType` prefixes, so this
+/// pass is the authoritative gate only for the no-bufferView case.
 pub fn validate_accessors(accessors: &[Accessor]) -> Result<()> {
     for (ai, acc) in accessors.iter().enumerate() {
+        // §5.1.5 — componentType is a required enum restricted to the six
+        // datatype constants { 5120 BYTE, 5121 UNSIGNED_BYTE, 5122 SHORT,
+        // 5123 UNSIGNED_SHORT, 5125 UNSIGNED_INT, 5126 FLOAT }.
+        // `component_size` resolves exactly this set to Some(..).
+        if component_size(acc.component_type).is_none() {
+            return Err(invalid(format!(
+                "AccessorComponentType: accessors[{ai}].componentType = {} — MUST be one of \
+                 5120 (BYTE) / 5121 (UNSIGNED_BYTE) / 5122 (SHORT) / 5123 (UNSIGNED_SHORT) / \
+                 5125 (UNSIGNED_INT) / 5126 (FLOAT) (spec §5.1.5)",
+                acc.component_type
+            )));
+        }
+        // §5.1.6 — type is a required enum restricted to
+        // { SCALAR, VEC2, VEC3, VEC4, MAT2, MAT3, MAT4 }.
+        // `type_components` resolves exactly this set to Some(..).
+        if type_components(&acc.kind).is_none() {
+            return Err(invalid(format!(
+                "AccessorType: accessors[{ai}].type = {:?} — MUST be one of \"SCALAR\", \"VEC2\", \
+                 \"VEC3\", \"VEC4\", \"MAT2\", \"MAT3\", or \"MAT4\" (spec §5.1.6)",
+                acc.kind
+            )));
+        }
+
         // §5.1 — count Minimum: >= 1.
         if acc.count == 0 {
             return Err(invalid(format!(
@@ -7584,12 +7609,22 @@ mod tests {
     }
 
     #[test]
-    fn accessors_skip_bounds_check_for_unknown_type() {
-        // Unknown `type` defers to the bufferView-fit pass; the bounds
-        // rule does not fire (no component count to compare against).
+    fn accessors_reject_unknown_type_string() {
+        // §5.1.6 — an unknown `type` string is rejected outright by the
+        // enum gate (before the bounds-length rule can even resolve a
+        // component count).
         let mut a = bare_accessor(COMPONENT_TYPE_FLOAT, 1, "WEIRD");
         a.min = Some(vec![0.0, 0.0]);
-        validate_accessors(&[a]).unwrap();
+        let err = validate_accessors(&[a]).unwrap_err();
+        assert!(format!("{err}").contains("AccessorType"));
+    }
+
+    #[test]
+    fn accessors_reject_unknown_component_type() {
+        // §5.1.5 — a componentType outside the six-value enum is rejected.
+        let a = bare_accessor(5124, 1, "SCALAR");
+        let err = validate_accessors(&[a]).unwrap_err();
+        assert!(format!("{err}").contains("AccessorComponentType"));
     }
 
     // --- §5.28 + §3.7.3 + §5.25.3 skin validation ---
