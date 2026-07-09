@@ -23,7 +23,10 @@ fn doc(attributes_json: &str, extra_accessors: &str) -> Vec<u8> {
         r#"{{
         "asset": {{ "version": "2.0" }},
         "buffers": [ {{ "uri": "{b64}", "byteLength": 64 }} ],
-        "bufferViews": [ {{ "buffer": 0, "byteOffset": 0, "byteLength": 64 }} ],
+        "bufferViews": [
+            {{ "buffer": 0, "byteOffset": 0, "byteLength": 32 }},
+            {{ "buffer": 0, "byteOffset": 32, "byteLength": 32 }}
+        ],
         "accessors": [
             {{ "bufferView": 0, "componentType": 5126, "count": 1, "type": "VEC3",
                "min": [0.0, 0.0, 0.0], "max": [0.0, 0.0, 0.0] }}
@@ -57,7 +60,7 @@ fn rejects_application_specific_semantic_with_unsigned_int() {
     // UNSIGNED_INT (5125) — a §3.7.2.1 MUST NOT.
     let msg = decode_err(
         r#"{ "POSITION": 0, "_ID": 1 }"#,
-        r#", { "bufferView": 0, "componentType": 5125, "count": 1, "type": "SCALAR" }"#,
+        r#", { "bufferView": 1, "componentType": 5125, "count": 1, "type": "SCALAR" }"#,
     );
     assert!(msg.contains("AttributeUnsignedIntComponent"), "got: {msg}");
 }
@@ -68,7 +71,7 @@ fn accepts_application_specific_semantic_with_float() {
     // for application-specific data. No §3.7.2.1 violation.
     decode_ok(
         r#"{ "POSITION": 0, "_ID": 1 }"#,
-        r#", { "bufferView": 0, "componentType": 5126, "count": 1, "type": "SCALAR" }"#,
+        r#", { "bufferView": 1, "componentType": 5126, "count": 1, "type": "SCALAR" }"#,
     );
 }
 
@@ -78,7 +81,7 @@ fn accepts_application_specific_semantic_with_unsigned_short() {
     // application-specific semantic — only UNSIGNED_INT is barred.
     decode_ok(
         r#"{ "POSITION": 0, "_BATCHID": 1 }"#,
-        r#", { "bufferView": 0, "componentType": 5123, "count": 1, "type": "SCALAR" }"#,
+        r#", { "bufferView": 1, "componentType": 5123, "count": 1, "type": "SCALAR" }"#,
     );
 }
 

@@ -38,8 +38,8 @@ use crate::validation::{
     check_asset_version, validate_accessor_fits_bufferview, validate_accessors, validate_alignment,
     validate_animation_channels, validate_animation_input_times, validate_attribute_counts,
     validate_attribute_set_indices, validate_attribute_unsigned_int, validate_buffers,
-    validate_bufferview_fits_buffer, validate_cameras, validate_color0_range,
-    validate_extension_stack, validate_images, validate_index_no_restart,
+    validate_bufferview_data_kind, validate_bufferview_fits_buffer, validate_cameras,
+    validate_color0_range, validate_extension_stack, validate_images, validate_index_no_restart,
     validate_index_references, validate_index_value_bound, validate_inverse_bind_matrices,
     validate_materials, validate_morph_targets, validate_morph_weights, validate_nodes,
     validate_primitive_index_count, validate_samplers, validate_skinning_attributes,
@@ -105,6 +105,11 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
     // Spec §3.9.1 — a `data:` URI buffer's mediatype MUST be
     // `application/octet-stream` or `application/gltf-buffer`.
     validate_buffers(root)?;
+    // Spec §5.11 — a bufferView MUST contain only one kind of data
+    // (image / vertex indices / vertex attributes / inverse bind
+    // matrices), and a bufferView shared by 2+ vertex-attribute accessors
+    // MUST define byteStride.
+    validate_bufferview_data_kind(root)?;
     // Spec §5.12 + §5.13 + §5.14 — camera projection blocks are
     // mutually exclusive; orthographic xmag/ymag MUST NOT be zero,
     // zfar > 0 and > znear, znear >= 0; perspective yfov/znear > 0,

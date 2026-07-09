@@ -86,7 +86,8 @@ fn build_morph_doc(targets_json: &str, mesh_weights: Option<&str>) -> Vec<u8> {
             {{ "buffer": 0, "byteOffset": {off1}, "byteLength": 36 }},
             {{ "buffer": 0, "byteOffset": {off2}, "byteLength": 36 }},
             {{ "buffer": 0, "byteOffset": {off3}, "byteLength": 36 }},
-            {{ "buffer": 0, "byteOffset": {off4}, "byteLength": 36 }}
+            {{ "buffer": 0, "byteOffset": {off4}, "byteLength": 36 }},
+            {{ "buffer": 0, "byteOffset": 0, "byteLength": 36 }}
         ],
         "accessors": [
             {{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0] }},
@@ -94,7 +95,7 @@ fn build_morph_doc(targets_json: &str, mesh_weights: Option<&str>) -> Vec<u8> {
             {{ "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.2, 0.0], "max": [0.0, 0.2, 0.0] }},
             {{ "bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, 0.3], "max": [0.0, 0.0, 0.3] }},
             {{ "bufferView": 4, "componentType": 5126, "count": 3, "type": "VEC3" }},
-            {{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }}
+            {{ "bufferView": 5, "componentType": 5126, "count": 3, "type": "VEC3" }}
         ],
         "meshes": [
             {{

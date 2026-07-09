@@ -3285,6 +3285,18 @@ pub fn validate_bufferview_fits_buffer(
             )));
         }
     }
+    // Spec §5.11.5 — `bufferView.target`, when present, is a hint whose
+    // value is constrained to the closed enum { 34962 ARRAY_BUFFER,
+    // 34963 ELEMENT_ARRAY_BUFFER }. Any other integer is not a legal
+    // WebGL buffer-binding target and is a schema violation.
+    if let Some(target) = bv.target {
+        if !matches!(target, TARGET_ARRAY_BUFFER | TARGET_ELEMENT_ARRAY_BUFFER) {
+            return Err(invalid(format!(
+                "BufferViewTarget: bufferViews[{bv_idx}].target = {target} — when present MUST be \
+                 34962 (ARRAY_BUFFER) or 34963 (ELEMENT_ARRAY_BUFFER) (spec §5.11.5)"
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -4793,6 +4805,177 @@ pub fn validate_structural_minimums(root: &GltfRoot) -> Result<()> {
             return Err(invalid(format!(
                 "AnimationSamplersEmpty: animations[{ai}].samplers MUST contain at least one \
                  sampler (spec §5.4, schema \"minItems: 1\")"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// The kind of data a bufferView carries, per the glTF 2.0 §5.11
+/// enumeration ("Buffer views used for images, vertex indices, vertex
+/// attributes, or inverse bind matrices MUST contain only one kind of
+/// data"). Two references of *different* kinds into the same bufferView is
+/// the MUST violation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BufferViewKind {
+    Image,
+    VertexIndex,
+    VertexAttribute,
+    InverseBindMatrix,
+}
+
+impl BufferViewKind {
+    fn label(self) -> &'static str {
+        match self {
+            BufferViewKind::Image => "image",
+            BufferViewKind::VertexIndex => "vertex indices",
+            BufferViewKind::VertexAttribute => "vertex attributes",
+            BufferViewKind::InverseBindMatrix => "inverse bind matrices",
+        }
+    }
+}
+
+/// Validate the §5.11 bufferView data-kind + interleaved-stride MUSTs.
+///
+/// Rules enforced:
+///
+/// * §5.11 — "Buffer views used for images, vertex indices, vertex
+///   attributes, or inverse bind matrices MUST contain only one kind of
+///   data, i.e., the same buffer view MUST NOT be used both for vertex
+///   indices and vertex attributes." A bufferView referenced by two
+///   *different* kinds (e.g. an image bufferView also referenced by a
+///   vertex-attribute accessor) is rejected with `BufferViewMixedData`.
+/// * §5.11 / §3.6.2.4 — "When two or more vertex attribute accessors use
+///   the same bufferView, its byteStride MUST be defined." A bufferView
+///   with two or more distinct vertex-attribute accessors and no
+///   `byteStride` is rejected with `BufferViewInterleavedStride` (the
+///   reader cannot otherwise separate the interleaved attributes).
+///
+/// The kinds are resolved by a document-wide reference walk: `image.
+/// bufferView` (Image), `primitive.indices` accessor (VertexIndex),
+/// `primitive.attributes` + morph-target accessors (VertexAttribute), and
+/// `skin.inverseBindMatrices` accessor (InverseBindMatrix). Animation
+/// sampler and sparse accessors are *not* in the §5.11 enumeration, so
+/// they do not participate. Primitives carrying `KHR_draco_mesh_compression`
+/// are skipped for the mixed-kind walk — their `attributes` accessors
+/// describe the decompressed fallback data, but the compressed payload
+/// lives in a separate opaque bufferView this pass-through engine does not
+/// classify (the descriptor's own bufferView index is policed by
+/// `validate_extension_stack`).
+pub fn validate_bufferview_data_kind(root: &GltfRoot) -> Result<()> {
+    let bv_count = root.buffer_views.len();
+    // First reference (kind + a human location) recorded per bufferView.
+    let mut kind_of: Vec<Option<(BufferViewKind, String)>> = vec![None; bv_count];
+    // Distinct vertex-attribute accessor indices seen per bufferView.
+    let mut attr_accessors: Vec<std::collections::BTreeSet<u32>> =
+        vec![std::collections::BTreeSet::new(); bv_count];
+
+    // Helper: resolve an accessor index to its bufferView (if any). A
+    // sparse-only accessor with no base bufferView contributes nothing.
+    let bv_of = |acc_idx: u32| -> Option<u32> {
+        root.accessors
+            .get(acc_idx as usize)
+            .and_then(|a| a.buffer_view)
+    };
+
+    let mut mark = |bv: u32, kind: BufferViewKind, location: String| -> Result<()> {
+        let Some(slot) = kind_of.get_mut(bv as usize) else {
+            // Out-of-range bufferView index — a different pass
+            // (`validate_accessor_fits_bufferview` / `validate_images`)
+            // owns that error; nothing to classify here.
+            return Ok(());
+        };
+        match slot {
+            None => *slot = Some((kind, location)),
+            Some((existing_kind, existing_loc)) => {
+                if *existing_kind != kind {
+                    return Err(invalid(format!(
+                        "BufferViewMixedData: bufferViews[{bv}] is used for both {} ({}) and {} \
+                         ({location}) — a bufferView MUST contain only one kind of data \
+                         (spec §5.11)",
+                        existing_kind.label(),
+                        existing_loc,
+                        kind.label(),
+                    )));
+                }
+            }
+        }
+        Ok(())
+    };
+
+    // Images.
+    for (ii, img) in root.images.iter().enumerate() {
+        if let Some(bv) = img.buffer_view {
+            mark(bv, BufferViewKind::Image, format!("images[{ii}]"))?;
+        }
+    }
+
+    // Primitives: indices (VertexIndex) + attributes / morph deltas
+    // (VertexAttribute). Draco primitives are skipped.
+    for (mi, mesh) in root.meshes.iter().enumerate() {
+        for (pi, prim) in mesh.primitives.iter().enumerate() {
+            let is_draco = prim
+                .extensions
+                .as_ref()
+                .and_then(|e| e.khr_draco_mesh_compression.as_ref())
+                .is_some();
+            if is_draco {
+                continue;
+            }
+            if let Some(idx_acc) = prim.indices {
+                if let Some(bv) = bv_of(idx_acc) {
+                    mark(
+                        bv,
+                        BufferViewKind::VertexIndex,
+                        format!("meshes[{mi}].primitives[{pi}].indices"),
+                    )?;
+                }
+            }
+            let attr_sets = std::iter::once(&prim.attributes).chain(prim.targets.iter());
+            for attrs in attr_sets {
+                for (name, &acc) in attrs {
+                    if let Some(bv) = bv_of(acc) {
+                        mark(
+                            bv,
+                            BufferViewKind::VertexAttribute,
+                            format!("meshes[{mi}].primitives[{pi}].attributes.{name}"),
+                        )?;
+                        if let Some(set) = attr_accessors.get_mut(bv as usize) {
+                            set.insert(acc);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Skins: inverseBindMatrices (InverseBindMatrix).
+    for (si, skin) in root.skins.iter().enumerate() {
+        if let Some(ibm_acc) = skin.inverse_bind_matrices {
+            if let Some(bv) = bv_of(ibm_acc) {
+                mark(
+                    bv,
+                    BufferViewKind::InverseBindMatrix,
+                    format!("skins[{si}].inverseBindMatrices"),
+                )?;
+            }
+        }
+    }
+
+    // §5.11 — a bufferView shared by two or more *distinct* vertex-attribute
+    // accessors MUST define byteStride so the reader can separate the
+    // interleaved attributes.
+    for (bv, accs) in attr_accessors.iter().enumerate() {
+        if accs.len() >= 2 && root.buffer_views[bv].byte_stride.is_none() {
+            let list: Vec<String> = accs.iter().map(|a| a.to_string()).collect();
+            return Err(invalid(format!(
+                "BufferViewInterleavedStride: bufferViews[{bv}] is used by {} distinct \
+                 vertex-attribute accessors ({}) but defines no byteStride — when two or more \
+                 vertex attribute accessors use the same bufferView its byteStride MUST be \
+                 defined (spec §5.11)",
+                accs.len(),
+                list.join(", "),
             )));
         }
     }

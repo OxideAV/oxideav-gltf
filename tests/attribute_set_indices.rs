@@ -9,12 +9,16 @@ use oxideav_gltf::GltfDecoder;
 use oxideav_mesh3d::Mesh3DDecoder;
 
 /// Build a minimal single-triangle mesh whose `attributes` map is the
-/// caller-supplied JSON. Three accessors are provided over a shared
-/// buffer: accessor 0 = POSITION VEC3 (3 verts), accessors 1..=N are
-/// VEC2 float TEXCOORD-shaped accessors the attributes map can point at.
+/// caller-supplied JSON. Three accessors are provided: accessor 0 =
+/// POSITION VEC3 (3 verts), accessors 1 + 2 are VEC2 float TEXCOORD-shaped
+/// accessors the attributes map can point at. Each attribute accessor gets
+/// its own bufferView (one-kind-of-data + no shared-bufferView-stride
+/// requirement per spec §5.11) so this fixture exercises the
+/// `AttributeSetIndex` rule in isolation.
 fn build_doc(attributes_json: &str) -> Vec<u8> {
-    // 3 VEC3 positions (36 bytes) + 3 VEC2 (24 bytes) shared by every
-    // extra attribute accessor.
+    // 3 VEC3 positions (36 bytes) + 3 VEC2 (24 bytes) + a duplicate 3 VEC2
+    // (24 bytes) so each of the two UV accessors owns a distinct
+    // bufferView.
     let positions: [[f32; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
     let mut bin = Vec::new();
     for p in positions {
@@ -23,12 +27,19 @@ fn build_doc(attributes_json: &str) -> Vec<u8> {
         }
     }
     let pos_len = bin.len();
-    for uv in [[0.0f32, 0.0], [1.0, 0.0], [0.0, 1.0]] {
+    let uvs = [[0.0f32, 0.0], [1.0, 0.0], [0.0, 1.0]];
+    for uv in uvs {
         for c in uv {
             bin.extend_from_slice(&c.to_le_bytes());
         }
     }
-    let uv_len = bin.len() - pos_len;
+    let uv0_end = bin.len();
+    let uv_len = uv0_end - pos_len;
+    for uv in uvs {
+        for c in uv {
+            bin.extend_from_slice(&c.to_le_bytes());
+        }
+    }
     let total = bin.len();
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bin);
 
@@ -38,13 +49,14 @@ fn build_doc(attributes_json: &str) -> Vec<u8> {
         "buffers": [ {{ "byteLength": {total}, "uri": "data:application/octet-stream;base64,{b64}" }} ],
         "bufferViews": [
             {{ "buffer": 0, "byteOffset": 0, "byteLength": {pos_len} }},
-            {{ "buffer": 0, "byteOffset": {pos_len}, "byteLength": {uv_len} }}
+            {{ "buffer": 0, "byteOffset": {pos_len}, "byteLength": {uv_len} }},
+            {{ "buffer": 0, "byteOffset": {uv0_end}, "byteLength": {uv_len} }}
         ],
         "accessors": [
             {{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
                "min": [0, 0, 0], "max": [1, 1, 0] }},
             {{ "bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC2" }},
-            {{ "bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC2" }}
+            {{ "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC2" }}
         ],
         "meshes": [ {{ "primitives": [ {{
             "mode": 4,

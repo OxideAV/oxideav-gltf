@@ -395,7 +395,8 @@ fn quantized_morph_short_normalized_normal_and_tangent_round_trip() {
             {{ "buffer": 0, "byteOffset": 0, "byteLength": 36 }},
             {{ "buffer": 0, "byteOffset": {nrm_off}, "byteLength": 24, "byteStride": 8 }},
             {{ "buffer": 0, "byteOffset": {tan_off}, "byteLength": 24, "byteStride": 8 }},
-            {{ "buffer": 0, "byteOffset": {base_tan_off}, "byteLength": 48 }}
+            {{ "buffer": 0, "byteOffset": {base_tan_off}, "byteLength": 48 }},
+            {{ "buffer": 0, "byteOffset": 0, "byteLength": 36 }}
         ],
         "accessors": [
             {{
@@ -411,7 +412,7 @@ fn quantized_morph_short_normalized_normal_and_tangent_round_trip() {
                 "normalized": true
             }},
             {{
-                "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"
+                "bufferView": 4, "componentType": 5126, "count": 3, "type": "VEC3"
             }},
             {{
                 "bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC4"
@@ -553,12 +554,13 @@ fn quantized_morph_texcoord_round_trip() {
         "buffers": [ {{ "byteLength": {total}, "uri": "data:application/octet-stream;base64,{b64}" }} ],
         "bufferViews": [
             {{ "buffer": 0, "byteOffset": 0, "byteLength": 36 }},
-            {{ "buffer": 0, "byteOffset": {morph_off}, "byteLength": 12, "byteStride": 4 }}
+            {{ "buffer": 0, "byteOffset": {morph_off}, "byteLength": 12, "byteStride": 4 }},
+            {{ "buffer": 0, "byteOffset": 0, "byteLength": 24 }}
         ],
         "accessors": [
             {{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0] }},
             {{ "bufferView": 1, "componentType": 5120, "count": 3, "type": "VEC2", "normalized": false }},
-            {{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC2" }}
+            {{ "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC2" }}
         ],
         "meshes": [
             {{ "primitives": [ {{ "attributes": {{ "POSITION": 0, "TEXCOORD_0": 2 }}, "targets": [ {{ "TEXCOORD_0": 1 }} ] }} ] }}
