@@ -835,7 +835,16 @@ fn convert_animation(
                         ),
                     );
                 }
-                None => {
+                _ => {
+                    // Every other registered data type (`float`,
+                    // `float[]`, `float2..4`, `float4x4`) and every
+                    // unmatched pointer uses the `float*` conversion
+                    // branch — the output values ride the sidecar as
+                    // JSON numbers. (No staged Object Model table
+                    // declares a mutable `int` property, so the `int`
+                    // "used as-is" lane has no reachable row; the
+                    // non-normalized-integer float cast below is
+                    // value-preserving for the widths involved.)
                     obj.insert(
                         "output".into(),
                         Value::Array(output_values.into_iter().map(json_f32).collect()),

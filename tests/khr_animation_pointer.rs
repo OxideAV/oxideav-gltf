@@ -249,9 +249,12 @@ fn pointer_channel_with_node_is_rejected() {
 #[test]
 fn pointer_path_without_extension_data_is_rejected() {
     // Path is `"pointer"` but no extension data attached — spec
-    // requires both to be present together.
+    // requires both to be present together. (`extensionsUsed` is
+    // declared so the §3.12 declaration gate, which now fires first,
+    // doesn't mask the per-channel rule under test.)
     let json = br#"{
         "asset": { "version": "2.0" },
+        "extensionsUsed": ["KHR_animation_pointer"],
         "animations": [
             {
                 "channels": [
@@ -321,14 +324,14 @@ fn duplicate_pointer_within_one_animation_is_rejected() {
                         "sampler": 0,
                         "target": {
                             "path": "pointer",
-                            "extensions": { "KHR_animation_pointer": { "pointer": "/materials/0/emissiveFactor" } }
+                            "extensions": { "KHR_animation_pointer": { "pointer": "/materials/0/extensions/EXT_custom_lane/factor" } }
                         }
                     },
                     {
                         "sampler": 0,
                         "target": {
                             "path": "pointer",
-                            "extensions": { "KHR_animation_pointer": { "pointer": "/materials/0/emissiveFactor" } }
+                            "extensions": { "KHR_animation_pointer": { "pointer": "/materials/0/extensions/EXT_custom_lane/factor" } }
                         }
                     }
                 ],
@@ -418,6 +421,13 @@ fn b64(bin: &[u8]) -> String {
 /// `output_bytes` is the raw .bin payload that the output accessor
 /// will reference; `component_type` + `normalized` + `kind` + `count`
 /// describe it to the glTF parser.
+///
+/// The channel targets a deliberately **unregistered** pointer
+/// (`/materials/0/extensions/EXT_custom_lane/factor` matches no
+/// Object Model registry row) so the raw `float*` conversion lane can
+/// be exercised with arbitrary accessor kinds — a registered pointer
+/// would pin the accessor `type` through the §Operation data-type
+/// table (`ExtensionStackAnimationPointerAccessorType`).
 fn pointer_doc_with_output(
     output_bytes: &[u8],
     component_type: u32,
@@ -467,7 +477,7 @@ fn pointer_doc_with_output(
                                 "path": "pointer",
                                 "extensions": {{
                                     "KHR_animation_pointer": {{
-                                        "pointer": "/materials/0/pbrMetallicRoughness/baseColorFactor"
+                                        "pointer": "/materials/0/extensions/EXT_custom_lane/factor"
                                     }}
                                 }}
                             }}
@@ -754,7 +764,7 @@ fn legacy_sidecar_without_component_type_keys_defaults_to_float() {
     let mut scene = Scene3D::new();
     let channel = json!({
         "channel": 0u32,
-        "pointer": "/materials/0/pbrMetallicRoughness/baseColorFactor",
+        "pointer": "/materials/0/extensions/EXT_custom_lane/factor",
         "interpolation": "LINEAR",
         "input": [0.0, 1.0],
         "output_kind": "VEC4",
@@ -1033,11 +1043,14 @@ fn bool_pointer_round_trips_through_glb() {
 
 #[test]
 fn unregistered_pointer_stays_on_float_lane() {
-    // A pointer with no registry row (here a core material factor)
-    // keeps the float* branch: numeric sidecar output and no
-    // `output_data_type` key, even with a UBYTE STEP sampler.
+    // A pointer with no registry row (a vendor-extension property the
+    // staged Object Model tables don't declare) keeps the float*
+    // branch: numeric sidecar output and no `output_data_type` key,
+    // even with a UBYTE STEP sampler. (Core material factors gained
+    // registry rows when `docs/3d/gltf/ObjectModel.md` landed, so this
+    // premise now needs a genuinely unstaged pointer.)
     let doc = pointer_doc_full(
-        "/materials/0/pbrMetallicRoughness/metallicFactor",
+        "/materials/0/extensions/EXT_custom_lane/factor",
         Some("STEP"),
         &[0u8, 1, 7],
         5121,

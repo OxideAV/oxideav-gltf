@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Full Object Model pointer-template registry** — `object_model.rs`
+  now transcribes the entire staged
+  `docs/3d/gltf/ObjectModel.md` (its arrival closes the round-269
+  DOCS-GAP): the core mutable table (cameras / materials / node TRS +
+  `/nodes/{}/weights` `float[]` + `/nodes/{}/weights/{}`), the core
+  read-only runtime table (`.length` sizes, `matrix` /
+  `globalMatrix`, object references), and every per-extension table
+  (`KHR_texture_transform` on the five core slots,
+  `KHR_lights_punctual`, the ten `KHR_materials_*` tables with their
+  "Interaction with KHR_texture_transform" rows, `EXT_lights_ies`,
+  `EXT_lights_image_based`, `ADOBE_materials_clearcoat_specular` /
+  `_tint`), plus the extension-owned tables in
+  `KHR_node_visibility.md` and `KHR_audio_emitter.md` (which
+  contributes two more `bool` rows — `sources/{}/autoplay` /
+  `loop`). New `pointer_entry()` exposes data type + mutability;
+  `pointer_data_type()` keeps its decode-lane contract (mutable rows
+  only). Three `KHR_animation_pointer` §Operation MUSTs are now
+  enforced on registry-matched pointer channels:
+  - "The property being animated MUST be mutable as defined by the
+    glTF 2.0 Asset Object Model" — read-only rows are rejected with
+    `ExtensionStackAnimationPointerReadOnly`.
+  - "The output accessor MUST be compatible with the animated
+    property data type" — the §Operation table's accessor kind
+    (SCALAR / VEC2 / VEC3 / VEC4 / MAT4) is enforced with
+    `ExtensionStackAnimationPointerAccessorType` (the `bool` lane
+    keeps its historical `…BoolType` / `…BoolComponentType` /
+    `…BoolInterpolation` errors).
+  - "The JSON Pointer MUST point to a property defined in the
+    asset" — decidable shapes are enforced: a `{}` array index past
+    the nodes / materials / cameras / punctual-lights roster
+    (`ExtensionStackAnimationPointerIndex`), `/nodes/{}/weights[/{}]`
+    on a node without a morphed mesh or with an element index past
+    the morph-target count, and `/nodes/{}/rotation` / `scale` on a
+    static-`matrix` node (`ExtensionStackAnimationPointerUndefined`
+    — the Object Model's §"Core Pointers" prose defines exactly
+    these as undefined; the translation pointer stays valid).
+- **`/nodes/{}/weights` `float[]` output sizing** — a pointer channel
+  animating the whole morph-weight array carries
+  `morph-target-count` output elements per keyframe (the same §3.11
+  sizing as a base `weights` channel). The sampler output-count
+  validator now resolves the target node's morph-target count through
+  the pointer instead of assuming one element per keyframe, fixing a
+  false `AnimationSamplerOutputCount` rejection of conformant
+  documents. The §3.12 declaration gate
+  (`ExtensionStackUsedNotDeclared`) now runs before the per-channel
+  pointer checks so an undeclared extension surfaces as the
+  declaration error, not a downstream Object-Model diagnostic.
+  The `int` "used as-is" output branch remains structurally
+  unreachable: every staged `int` row is read-only and no staged
+  extension re-declares one as mutable. 13 new integration tests
+  (`tests/object_model_pointers.rs`) + 5 registry unit tests.
+
 - **Typed morph-target decode (`Primitive::targets` + `Mesh::weights`)** —
   the decoder now fills the typed `oxideav_mesh3d::Primitive::targets`
   field (`MorphTarget { position, normal, tangent }` vertex deltas per

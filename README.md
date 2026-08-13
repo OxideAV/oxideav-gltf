@@ -372,17 +372,31 @@ framework but usable standalone.
   / `f = c/255` / `f = max(c/32767, -1)` / `f = c/65535`), and
   non-normalised BYTE / UBYTE / SHORT / USHORT / UINT cast directly
   to f32 (`1` → `1.0` per spec). Normalised UINT is rejected because
-  §3.6.2.2 has no dequantisation row for it. The `bool` Object Model
-  Data Type branch dispatches through the pointer-template registry in
-  `object_model.rs` (seeded from the staged extension specs' §"Extending
-  glTF 2.0 Asset Object Model" tables — today the single row
-  `/nodes/{}/extensions/KHR_node_visibility/visible` → `bool`): a
-  registry-matched channel surfaces JSON booleans in the sidecar
-  (`output_data_type: "bool"`, `0` → `false`, any other value →
-  `true` per §"Output Accessor Component Types") and re-encodes as a
-  SCALAR UNSIGNED_BYTE 0/1 accessor with a STEP sampler. The `int`
-  branch stays deferred — no staged Object Model table declares an
-  `int`-typed property (core `ObjectModel.adoc` is not staged). The §3.12 stack validator rejects
+  §3.6.2.2 has no dequantisation row for it. Output-lane dispatch and
+  the §Operation pointer MUSTs run through the full Object Model
+  pointer-template registry in `object_model.rs`, transcribed from the
+  staged `docs/3d/gltf/ObjectModel.md` (core mutable + read-only
+  tables and every per-extension table: `KHR_texture_transform`,
+  `KHR_lights_punctual`, the `KHR_materials_*` family,
+  `EXT_lights_ies`, `EXT_lights_image_based`, the two
+  `ADOBE_materials_clearcoat_*` tables) plus the extension-owned
+  tables in `KHR_node_visibility.md` and `KHR_audio_emitter.md` —
+  121 mutable rows + 32 read-only rows across the eight data types
+  (`bool` / `float` / `float[]` / `float2..4` / `float4x4` / `int`).
+  A `bool`-typed channel (`…/KHR_node_visibility/visible`,
+  `…/KHR_audio_emitter/sources/{}/autoplay` / `loop`) surfaces JSON
+  booleans in the sidecar (`output_data_type: "bool"`, `0` → `false`,
+  any other value → `true` per §"Output Accessor Component Types")
+  and re-encodes as a SCALAR UNSIGNED_BYTE 0/1 accessor with a STEP
+  sampler. The `float[]` row `/nodes/{}/weights` animates the whole
+  morph-weight array: its output accessor carries
+  morph-target-count elements per keyframe (the same sizing as a base
+  `weights` channel), which the sampler output-count validator now
+  resolves through the pointer instead of assuming one
+  element/keyframe. The `int` "used as-is" branch stays unreachable
+  by construction — every staged `int` row is read-only ("Read-only
+  pointers … can be made mutable by extensions on a case-by-case
+  basis"; none staged does). The §3.12 stack validator rejects
   documents carrying the data block without the declaration
   (`ExtensionStackUsedNotDeclared`); rejects pointer channels with
   `target.node` set (`ExtensionStackAnimationPointerNode` — the spec
@@ -400,7 +414,24 @@ framework but usable standalone.
   componentType other than UNSIGNED_BYTE
   (`ExtensionStackAnimationPointerBoolComponentType`), and sampler
   interpolation other than STEP
-  (`ExtensionStackAnimationPointerBoolInterpolation`)
+  (`ExtensionStackAnimationPointerBoolInterpolation`). Three further
+  §Operation MUSTs are enforced on every registry-matched pointer:
+  a pointer targeting a read-only Object Model row ("The property
+  being animated MUST be mutable") is rejected
+  (`ExtensionStackAnimationPointerReadOnly`); an output accessor
+  whose `type` contradicts the §Operation data-type table ("The
+  output accessor MUST be compatible with the animated property data
+  type") is rejected (`ExtensionStackAnimationPointerAccessorType`);
+  and "The JSON Pointer MUST point to a property defined in the
+  asset" is enforced where the parsed model can decide it — a `{}`
+  array index past the nodes / materials / cameras /
+  punctual-lights roster (`ExtensionStackAnimationPointerIndex`),
+  plus the Object-Model-documented undefined shapes:
+  `/nodes/{}/weights[/{}]` on a node without a morphed mesh (or an
+  element index past the target count) and `/nodes/{}/rotation` /
+  `scale` on a node using the static `matrix` transform form
+  (`ExtensionStackAnimationPointerUndefined`; the translation
+  pointer stays valid per the Object Model's carve-out)
 - KHR_mesh_quantization (Khronos ratified) decode + encode — quantized
   vertex attributes AND quantized morph-target deltas from
   `docs/3d/gltf/extensions/KHR_mesh_quantization.md`. Base mesh
@@ -1128,21 +1159,18 @@ The KHR extension registry is now staged under
 `docs/3d/gltf/extensions/` (25 specs + index), so the remaining work
 is implementation, not docs:
 
-- KHR_animation_pointer `int` Object-Model branch + core property
-  table — the pointer-template registry
-  (`object_model.rs`) and the `bool` branch (componentType MUST be
-  UNSIGNED_BYTE, `0` → false, else true, STEP-only samplers) are in
-  place, seeded
-  from the staged extension specs' §"Extending glTF 2.0 Asset Object
-  Model" tables. The `int` branch (componentType MUST be a
-  non-normalised integer, values used as-is, STEP-only) is wired the
-  same way but has zero registry rows to dispatch on — **blocked on
-  DOCS-GAP**: the core spec's Object Model table (`ObjectModel.adoc`)
-  is not staged under `docs/3d/gltf/`, and no staged extension
-  declares an `int`-typed mutable property. Staging `ObjectModel.adoc`
-  would also unlock spec-aware pointer-resolution validation
-  (accessor-type vs data-type compatibility per the §Operation table
-  for core properties)
+- KHR_animation_pointer Object-Model registry — **the DOCS-GAP is
+  closed**: `docs/3d/gltf/ObjectModel.md` is staged and the full
+  pointer-template registry (`object_model.rs`) now carries the core
+  mutable + read-only tables and every per-extension table, with
+  read-only-target rejection, accessor-type compatibility, defined-ness
+  checks, and the `/nodes/{}/weights` `float[]` output sizing. The
+  `int` "used as-is" output branch remains structurally unreachable —
+  every staged `int` row is read-only, and no staged extension
+  re-declares one as mutable — so it stays a no-op until such a row
+  lands. Finer-grained §Operation defined-ness (e.g.
+  `/cameras/{}/perspective/zfar` being invalid when the default-less
+  property is absent) is the remaining increment
 - KHR_texture_basisu transcode lane — the per-texture
   indirection round-trip (sidecar + §3.12 validation) is in place as
   a pass-through; an actual KTX2 / Basis Universal transcode lane

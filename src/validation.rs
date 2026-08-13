@@ -169,7 +169,9 @@ use crate::json_model::{
     COMPONENT_TYPE_SHORT, COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_INT,
     COMPONENT_TYPE_UNSIGNED_SHORT, TARGET_ARRAY_BUFFER, TARGET_ELEMENT_ARRAY_BUFFER,
 };
-use crate::object_model::{pointer_data_type, ObjectModelDataType};
+use crate::object_model::{
+    pointer_data_type, pointer_entry, pointer_index_at, ObjectModelDataType,
+};
 use std::collections::HashMap;
 
 /// Maximum nesting depth a glTF JSON document may declare before the
@@ -1045,6 +1047,137 @@ pub fn validate_khr_lights_punctual(root: &GltfRoot) -> Result<()> {
     Ok(())
 }
 
+/// `KHR_animation_pointer` §Operation: "The JSON Pointer MUST point to
+/// a property defined in the asset." Called only for pointers matched
+/// by a MUTABLE Object Model registry row, this enforces the
+/// definedness rules decidable from the parsed model:
+///
+/// * The leading `{}` array index of `/nodes/{}/…`, `/materials/{}/…`,
+///   `/cameras/{}/…`, and
+///   `/extensions/KHR_lights_punctual/lights/{}/…` templates MUST
+///   resolve into the corresponding array
+///   (`ExtensionStackAnimationPointerIndex`). Collections this crate
+///   does not model at root scope (`KHR_audio_emitter`,
+///   `EXT_lights_image_based`) are skipped.
+/// * Per `docs/3d/gltf/ObjectModel.md` §"Core Pointers" prose:
+///   `/nodes/{}/weights` and `/nodes/{}/weights/{}` "are undefined"
+///   when "the node instantiates no mesh or … the mesh has no morph
+///   targets" (a `/weights/{}` element index must additionally fall
+///   inside the morph-target count), and the `/nodes/{}/rotation` /
+///   `/nodes/{}/scale` pointers "are undefined" when "the static
+///   `matrix` property is defined on the node object in JSON"
+///   (`ExtensionStackAnimationPointerUndefined`).
+///
+/// Finer-grained presence rules (e.g. `/cameras/{}/perspective/zfar`
+/// being invalid when the default-less property is absent) require
+/// per-property default knowledge and are left to the reader.
+fn validate_pointer_target_defined(
+    root: &GltfRoot,
+    pointer: &str,
+    ai: usize,
+    ci: usize,
+) -> Result<()> {
+    let head = pointer
+        .strip_prefix('/')
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or("");
+    let index_bound = |i: Option<usize>, len: usize, what: &str| -> Result<()> {
+        if let Some(i) = i {
+            if i >= len {
+                return Err(invalid(format!(
+                    "ExtensionStackAnimationPointerIndex: animations[{ai}].channels[{ci}] \
+                     pointer {pointer:?} indexes {what}[{i}] but the asset defines {len} — \
+                     \"The JSON Pointer MUST point to a property defined in the asset\" \
+                     (KHR_animation_pointer §Operation)"
+                )));
+            }
+        }
+        Ok(())
+    };
+    match head {
+        "nodes" => index_bound(pointer_index_at(pointer, 1), root.nodes.len(), "nodes")?,
+        "materials" => index_bound(
+            pointer_index_at(pointer, 1),
+            root.materials.len(),
+            "materials",
+        )?,
+        "cameras" => index_bound(pointer_index_at(pointer, 1), root.cameras.len(), "cameras")?,
+        "extensions" if pointer.starts_with("/extensions/KHR_lights_punctual/lights/") => {
+            let len = root
+                .extensions
+                .as_ref()
+                .and_then(|e| e.khr_lights_punctual.as_ref())
+                .map(|l| l.lights.len())
+                .unwrap_or(0);
+            index_bound(
+                pointer_index_at(pointer, 3),
+                len,
+                "extensions.KHR_lights_punctual.lights",
+            )?;
+        }
+        _ => {}
+    }
+
+    if head == "nodes" {
+        if let Some(node) = pointer_index_at(pointer, 1).and_then(|ni| root.nodes.get(ni)) {
+            let prop = pointer
+                .strip_prefix('/')
+                .and_then(|rest| rest.split('/').nth(2));
+            match prop {
+                Some("weights") => {
+                    // ObjectModel §"Core Pointers": "If the node
+                    // instantiates no mesh or if the mesh has no morph
+                    // targets, these pointers are undefined."
+                    let target_count = node
+                        .mesh
+                        .and_then(|mi| root.meshes.get(mi as usize))
+                        .and_then(|m| m.primitives.first())
+                        .map(|p| p.targets.len())
+                        .unwrap_or(0);
+                    if target_count == 0 {
+                        return Err(invalid(format!(
+                            "ExtensionStackAnimationPointerUndefined: \
+                             animations[{ai}].channels[{ci}] pointer {pointer:?} targets \
+                             the morph weights of a node that instantiates no mesh with \
+                             morph targets — the Object Model defines these pointers only \
+                             for nodes whose mesh declares targets \
+                             (docs ObjectModel §\"Core Pointers\")"
+                        )));
+                    }
+                    if let Some(wi) = pointer_index_at(pointer, 3) {
+                        if wi >= target_count {
+                            return Err(invalid(format!(
+                                "ExtensionStackAnimationPointerUndefined: \
+                                 animations[{ai}].channels[{ci}] pointer {pointer:?} \
+                                 indexes morph weight {wi} but the instantiated mesh \
+                                 declares {target_count} morph target(s) \
+                                 (docs ObjectModel §\"Core Pointers\")"
+                            )));
+                        }
+                    }
+                }
+                Some("rotation") | Some("scale") if node.matrix.is_some() => {
+                    // ObjectModel §"Core Pointers": "If the static
+                    // `matrix` property is defined on the node object
+                    // in JSON, the corresponding rotation and scale
+                    // pointers are undefined; the translation pointer
+                    // is always defined."
+                    return Err(invalid(format!(
+                        "ExtensionStackAnimationPointerUndefined: \
+                         animations[{ai}].channels[{ci}] pointer {pointer:?} targets the \
+                         {} of a node that uses the static `matrix` transform form — the \
+                         Object Model leaves rotation/scale pointers undefined for \
+                         matrix-form nodes (docs ObjectModel §\"Core Pointers\")",
+                        prop.unwrap_or_default()
+                    )));
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Spec §3.12: `extensionsRequired` MUST be a subset of `extensionsUsed`.
 ///
 /// In addition, any extension whose object actually appears in the
@@ -1831,7 +1964,27 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
     // string lives at `target.extensions.KHR_animation_pointer.pointer`.
     // §3.12 rule: any document carrying the data block MUST declare the
     // extension in `extensionsUsed`.
-    let mut has_animation_pointer = false;
+    // §3.12 declaration gate first — an undeclared extension is the
+    // more fundamental error, so it fires before the per-channel
+    // Object-Model checks below.
+    let has_animation_pointer = root.animations.iter().any(|anim| {
+        anim.channels.iter().any(|ch| {
+            ch.target.path == "pointer"
+                || ch
+                    .target
+                    .extensions
+                    .as_ref()
+                    .and_then(|e| e.khr_animation_pointer.as_ref())
+                    .is_some()
+        })
+    });
+    if has_animation_pointer && !used("KHR_animation_pointer") {
+        return Err(invalid(
+            "ExtensionStackUsedNotDeclared: KHR_animation_pointer data \
+             is present on an animation channel but the extension is not \
+             listed in extensionsUsed (spec §3.12)",
+        ));
+    }
     for (ai, anim) in root.animations.iter().enumerate() {
         for (ci, ch) in anim.channels.iter().enumerate() {
             let ptr = ch
@@ -1840,9 +1993,6 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
                 .as_ref()
                 .and_then(|e| e.khr_animation_pointer.as_ref());
             let path_is_pointer = ch.target.path == "pointer";
-            if ptr.is_some() || path_is_pointer {
-                has_animation_pointer = true;
-            }
             // Consistency: data block iff `path == "pointer"`. These
             // are spec §"Extension Usage" rules — surfaced as
             // ExtensionStackAnimationPointer<…> for grep-ability with
@@ -1886,12 +2036,68 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
                         p.pointer
                     )));
                 }
-                // Object-Model data-type rules — when the pointer
-                // resolves through the registry of staged pointer
-                // templates (`object_model::pointer_data_type`) to a
-                // `bool` property, three MUSTs from
-                // `docs/3d/gltf/extensions/KHR_animation_pointer.md`
-                // bind the channel's sampler + output accessor:
+                // Object-Model registry rules — the staged
+                // `docs/3d/gltf/ObjectModel.md` tables (plus the
+                // per-extension Object Model sections) let three
+                // `KHR_animation_pointer` §Operation MUSTs be decided
+                // for every registered pointer:
+                //
+                // * "The property being animated MUST be mutable as
+                //   defined by the glTF 2.0 Asset Object Model" — a
+                //   pointer matching a read-only row (array sizes,
+                //   `matrix` / `globalMatrix` runtime transforms,
+                //   object references) is rejected.
+                // * "The JSON Pointer MUST point to a property
+                //   defined in the asset" — for rows whose leading
+                //   collection this crate models, the `{}` array
+                //   index must resolve; and per the Object Model's
+                //   §"Core Pointers" prose, `/nodes/{}/weights[/{}]`
+                //   is undefined when the node instantiates no mesh
+                //   or the mesh has no morph targets, and
+                //   `/nodes/{}/rotation` / `/nodes/{}/scale` are
+                //   undefined when the node uses the static `matrix`
+                //   form.
+                // * "The output accessor MUST be compatible with the
+                //   animated property data type" — the §Operation
+                //   table maps each data type to an accessor type.
+                if let Some(entry) = pointer_entry(&p.pointer) {
+                    if !entry.mutable {
+                        return Err(invalid(format!(
+                            "ExtensionStackAnimationPointerReadOnly: \
+                             animations[{ai}].channels[{ci}] targets {:?}, a read-only \
+                             Object Model property — \"The property being animated MUST \
+                             be mutable as defined by the glTF 2.0 Asset Object Model\" \
+                             (KHR_animation_pointer §Operation)",
+                            p.pointer
+                        )));
+                    }
+                    validate_pointer_target_defined(root, &p.pointer, ai, ci)?;
+                    // Accessor-type compatibility per the §Operation
+                    // data-type table. The `bool` lane's own SCALAR
+                    // rule below keeps its historical error prefix;
+                    // every other registered type is policed here.
+                    if entry.data_type != ObjectModelDataType::Bool {
+                        if let Some(s) = anim.samplers.get(ch.sampler as usize) {
+                            if let Some(out_acc) = root.accessors.get(s.output as usize) {
+                                let expected = entry.data_type.expected_accessor_kind();
+                                if out_acc.kind != expected {
+                                    return Err(invalid(format!(
+                                        "ExtensionStackAnimationPointerAccessorType: \
+                                         animations[{ai}].channels[{ci}] targets {:?} \
+                                         whose Object Model Data Type maps to output \
+                                         accessor type {expected:?}, but the output \
+                                         accessor type is {:?} — \"The output accessor \
+                                         MUST be compatible with the animated property \
+                                         data type\" (KHR_animation_pointer §Operation)",
+                                        p.pointer, out_acc.kind
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                }
+                // `bool`-lane MUSTs from
+                // `docs/3d/gltf/extensions/KHR_animation_pointer.md`:
                 // §Operation data-type table pins `bool` → SCALAR;
                 // §"Output Accessor Component Types": "the output
                 // accessor component type MUST be unsigned byte"; and
@@ -1967,14 +2173,6 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
             }
         }
     }
-    if has_animation_pointer && !used("KHR_animation_pointer") {
-        return Err(invalid(
-            "ExtensionStackUsedNotDeclared: KHR_animation_pointer data \
-             is present on an animation channel but the extension is not \
-             listed in extensionsUsed (spec §3.12)",
-        ));
-    }
-
     // KHR_materials_variants — both a root-level `variants` roster and
     // per-primitive `mappings` arrays surface this extension. Same
     // §3.12 rule: presence of either data block requires the extension
@@ -2882,6 +3080,38 @@ pub fn validate_animation_channels(
                 )));
             }
             per_keyframe_elements = target_count as u32;
+        }
+
+        // KHR_animation_pointer `float[]` lane — a pointer channel
+        // whose pointer resolves to the Object Model's `float[]` row
+        // (`/nodes/{}/weights`, `docs/3d/gltf/ObjectModel.md` §"Core
+        // Pointers") animates the whole morph-weight array, so its
+        // per-keyframe element count is the referenced node's
+        // morph-target count — mirroring the base-spec "weights" path
+        // above rather than the scalar pointer default of 1. An
+        // unresolvable node/mesh is left at 1 element/keyframe here;
+        // `validate_extension_stack` rejects the undefined pointer
+        // with `ExtensionStackAnimationPointerUndefined`.
+        if ch.target.path == "pointer" {
+            if let Some(p) = ch
+                .target
+                .extensions
+                .as_ref()
+                .and_then(|e| e.khr_animation_pointer.as_ref())
+            {
+                if pointer_data_type(&p.pointer) == Some(ObjectModelDataType::FloatArray) {
+                    let target_count = pointer_index_at(&p.pointer, 1)
+                        .and_then(|ni| nodes.get(ni))
+                        .and_then(|n| n.mesh)
+                        .and_then(|mi| meshes.get(mi as usize))
+                        .and_then(|m| m.primitives.first())
+                        .map(|pr| pr.targets.len())
+                        .unwrap_or(0);
+                    if target_count > 0 {
+                        per_keyframe_elements = target_count as u32;
+                    }
+                }
+            }
         }
 
         // §3.11 / Appendix C — the output element count relates to the
