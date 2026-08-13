@@ -294,6 +294,152 @@ fn rotation_pointer_on_matrix_form_node_rejected() {
     expect_err(&doc, "ExtensionStackAnimationPointerUndefined");
 }
 
+/// Doc with one perspective camera (no zfar / no aspectRatio), one
+/// material carrying only a bare pbrMetallicRoughness, and a pointer
+/// channel. Exercises the §Operation enclosure/presence rules.
+fn presence_doc(pointer: &str, out_kind: &str, out_values: &[f32]) -> Vec<u8> {
+    let mut bin = Vec::new();
+    for t in [0.0f32, 1.0] {
+        bin.extend_from_slice(&t.to_le_bytes());
+    }
+    let out_off = bin.len();
+    for v in out_values {
+        bin.extend_from_slice(&v.to_le_bytes());
+    }
+    let out_bytes = out_values.len() * 4;
+    let comps = match out_kind {
+        "SCALAR" => 1,
+        "VEC2" => 2,
+        "VEC3" => 3,
+        "VEC4" => 4,
+        other => panic!("unhandled kind {other}"),
+    };
+    let out_count = out_values.len() / comps;
+    let total = bin.len();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bin);
+    format!(
+        r#"{{
+        "asset": {{ "version": "2.0" }},
+        "extensionsUsed": ["KHR_animation_pointer"],
+        "buffers": [
+            {{ "byteLength": {total}, "uri": "data:application/octet-stream;base64,{b64}" }}
+        ],
+        "bufferViews": [
+            {{ "buffer": 0, "byteOffset": 0, "byteLength": 8 }},
+            {{ "buffer": 0, "byteOffset": {out_off}, "byteLength": {out_bytes} }}
+        ],
+        "accessors": [
+            {{ "bufferView": 0, "componentType": 5126, "count": 2, "type": "SCALAR", "min": [0.0], "max": [1.0] }},
+            {{ "bufferView": 1, "componentType": 5126, "count": {out_count}, "type": "{out_kind}" }}
+        ],
+        "cameras": [
+            {{ "type": "perspective", "perspective": {{ "yfov": 0.7, "znear": 0.01 }} }}
+        ],
+        "materials": [
+            {{ "pbrMetallicRoughness": {{ "metallicFactor": 0.5 }} }}
+        ],
+        "animations": [
+            {{
+                "channels": [
+                    {{
+                        "sampler": 0,
+                        "target": {{
+                            "path": "pointer",
+                            "extensions": {{
+                                "KHR_animation_pointer": {{ "pointer": "{pointer}" }}
+                            }}
+                        }}
+                    }}
+                ],
+                "samplers": [
+                    {{ "input": 0, "interpolation": "LINEAR", "output": 1 }}
+                ]
+            }}
+        ]
+    }}"#
+    )
+    .into_bytes()
+}
+
+#[test]
+fn default_less_perspective_zfar_pointer_rejected_when_absent() {
+    // §Operation names this exact example: "Pointers to the asset
+    // properties that do not have a spec-defined default value, such
+    // as `/cameras/0/perspective/zfar`, are invalid if the property
+    // is not defined in the asset explicitly."
+    let doc = presence_doc("/cameras/0/perspective/zfar", "SCALAR", &[10.0, 20.0]);
+    expect_err(&doc, "ExtensionStackAnimationPointerUndefined");
+}
+
+#[test]
+fn default_less_perspective_aspect_ratio_pointer_rejected_when_absent() {
+    let doc = presence_doc("/cameras/0/perspective/aspectRatio", "SCALAR", &[1.0, 2.0]);
+    expect_err(&doc, "ExtensionStackAnimationPointerUndefined");
+}
+
+#[test]
+fn required_perspective_property_pointer_accepted() {
+    // `yfov` is a required property of a present perspective block.
+    let doc = presence_doc("/cameras/0/perspective/yfov", "SCALAR", &[0.5, 0.9]);
+    GltfDecoder::new()
+        .decode(&doc)
+        .expect("yfov pointer on a present perspective block decodes");
+}
+
+#[test]
+fn orthographic_pointer_on_perspective_camera_rejected() {
+    // The camera has no `orthographic` block, so its rows are absent.
+    let doc = presence_doc("/cameras/0/orthographic/xmag", "SCALAR", &[1.0, 2.0]);
+    expect_err(&doc, "ExtensionStackAnimationPointerUndefined");
+}
+
+#[test]
+fn material_texture_slot_pointer_rejected_when_slot_absent() {
+    // The material defines no normalTexture, so its `scale` (and any
+    // nested texture-transform row) is not present.
+    let doc = presence_doc("/materials/0/normalTexture/scale", "SCALAR", &[1.0, 2.0]);
+    expect_err(&doc, "ExtensionStackAnimationPointerUndefined");
+}
+
+#[test]
+fn pbr_factor_pointer_accepted_when_block_present() {
+    // metallicFactor: explicitly present; roughnessFactor: default +
+    // enclosing pbrMetallicRoughness present — the §Operation example
+    // pair.
+    for ptr in [
+        "/materials/0/pbrMetallicRoughness/metallicFactor",
+        "/materials/0/pbrMetallicRoughness/roughnessFactor",
+    ] {
+        let doc = presence_doc(ptr, "SCALAR", &[0.1, 0.9]);
+        GltfDecoder::new()
+            .decode(&doc)
+            .expect("factor pointer with present pbr block decodes");
+    }
+}
+
+#[test]
+fn pbr_texture_transform_pointer_rejected_when_texture_absent() {
+    // baseColorTexture is absent, so its KHR_texture_transform rows
+    // cannot resolve.
+    let doc = presence_doc(
+        "/materials/0/pbrMetallicRoughness/baseColorTexture/extensions/KHR_texture_transform/offset",
+        "VEC2",
+        &[0.0, 0.0, 1.0, 1.0],
+    );
+    expect_err(&doc, "ExtensionStackAnimationPointerUndefined");
+}
+
+#[test]
+fn material_extension_pointer_rejected_when_block_absent() {
+    // The material carries no KHR_materials_ior extension object.
+    let doc = presence_doc(
+        "/materials/0/extensions/KHR_materials_ior/ior",
+        "SCALAR",
+        &[1.4, 1.6],
+    );
+    expect_err(&doc, "ExtensionStackAnimationPointerUndefined");
+}
+
 #[test]
 fn translation_pointer_on_matrix_form_node_accepted() {
     // "the translation pointer is always defined" — matrix form does

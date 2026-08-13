@@ -428,10 +428,17 @@ framework but usable standalone.
   punctual-lights roster (`ExtensionStackAnimationPointerIndex`),
   plus the Object-Model-documented undefined shapes:
   `/nodes/{}/weights[/{}]` on a node without a morphed mesh (or an
-  element index past the target count) and `/nodes/{}/rotation` /
-  `scale` on a node using the static `matrix` transform form
-  (`ExtensionStackAnimationPointerUndefined`; the translation
-  pointer stays valid per the Object Model's carve-out)
+  element index past the target count), `/nodes/{}/rotation` /
+  `scale` on a node using the static `matrix` transform form (the
+  translation pointer stays valid per the Object Model's carve-out),
+  and the §Operation enclosure/presence rules — the default-less
+  `/cameras/{}/perspective/zfar` / `aspectRatio` when absent, camera
+  rows without the matching projection block, material texture-slot /
+  PBR-block rows (incl. their nested `KHR_texture_transform` rows)
+  when the enclosing object is absent, `KHR_materials_*` extension
+  rows when the material carries no such block, and punctual-light
+  `spot` rows without a `spot` object — all with
+  `ExtensionStackAnimationPointerUndefined`
 - KHR_mesh_quantization (Khronos ratified) decode + encode — quantized
   vertex attributes AND quantized morph-target deltas from
   `docs/3d/gltf/extensions/KHR_mesh_quantization.md`. Base mesh
@@ -1168,9 +1175,13 @@ is implementation, not docs:
   `int` "used as-is" output branch remains structurally unreachable —
   every staged `int` row is read-only, and no staged extension
   re-declares one as mutable — so it stays a no-op until such a row
-  lands. Finer-grained §Operation defined-ness (e.g.
-  `/cameras/{}/perspective/zfar` being invalid when the default-less
-  property is absent) is the remaining increment
+  lands. The §Operation enclosure/presence rules are enforced for
+  every decidable shape (default-less camera properties, projection
+  blocks, material texture slots + PBR block, `KHR_materials_*`
+  extension blocks, punctual-light `spot` blocks); the remaining
+  increment is presence checking for root-extension collections the
+  crate does not model (audio emitters, image-based lights, the
+  ADOBE material tables)
 - KHR_texture_basisu transcode lane — the per-texture
   indirection round-trip (sidecar + §3.12 validation) is in place as
   a pass-through; an actual KTX2 / Basis Universal transcode lane

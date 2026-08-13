@@ -1175,6 +1175,179 @@ fn validate_pointer_target_defined(
             }
         }
     }
+
+    // §Operation enclosure/presence rules — "A property is considered
+    // defined if it is present in the asset explicitly or if it has a
+    // default value and its enclosing object is present. … Pointers to
+    // the asset properties that do not have a spec-defined default
+    // value, such as `/cameras/0/perspective/zfar`, are invalid if the
+    // property is not defined in the asset explicitly."
+    let undefined = |detail: String| -> crate::error::Error {
+        invalid(format!(
+            "ExtensionStackAnimationPointerUndefined: \
+             animations[{ai}].channels[{ci}] pointer {pointer:?} — {detail} \
+             (KHR_animation_pointer §Operation: \"The JSON Pointer MUST point to a \
+             property defined in the asset\")"
+        ))
+    };
+    if head == "cameras" {
+        if let Some(cam) = pointer_index_at(pointer, 1).and_then(|i| root.cameras.get(i)) {
+            let mut toks = pointer.strip_prefix('/').unwrap_or("").split('/').skip(2);
+            let block = toks.next();
+            let prop = toks.next();
+            match block {
+                Some("perspective") => {
+                    let Some(p) = cam.perspective.as_ref() else {
+                        return Err(undefined(
+                            "the camera defines no `perspective` object, so its \
+                             perspective properties are not present"
+                                .into(),
+                        ));
+                    };
+                    // `yfov` / `znear` are required properties;
+                    // `aspectRatio` / `zfar` have NO spec default and
+                    // MUST be explicitly present.
+                    if prop == Some("zfar") && p.zfar.is_none() {
+                        return Err(undefined(
+                            "`perspective.zfar` has no spec-defined default and is not \
+                             explicitly defined"
+                                .into(),
+                        ));
+                    }
+                    if prop == Some("aspectRatio") && p.aspect_ratio.is_none() {
+                        return Err(undefined(
+                            "`perspective.aspectRatio` has no spec-defined default and \
+                             is not explicitly defined"
+                                .into(),
+                        ));
+                    }
+                }
+                // All four orthographic properties are required, so
+                // the block's presence decides all rows.
+                Some("orthographic") if cam.orthographic.is_none() => {
+                    return Err(undefined(
+                        "the camera defines no `orthographic` object, so its \
+                         orthographic properties are not present"
+                            .into(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    if head == "materials" {
+        if let Some(mat) = pointer_index_at(pointer, 1).and_then(|i| root.materials.get(i)) {
+            let mut toks = pointer.strip_prefix('/').unwrap_or("").split('/').skip(2);
+            let slot = toks.next();
+            let sub = toks.next();
+            // Enclosing-object presence for the texture-slot and PBR
+            // rows (the leaf properties all carry spec defaults, so
+            // presence of the enclosing object is the deciding rule).
+            let missing_slot = match slot {
+                Some("normalTexture") => mat.normal_texture.is_none(),
+                Some("occlusionTexture") => mat.occlusion_texture.is_none(),
+                Some("emissiveTexture") => mat.emissive_texture.is_none(),
+                Some("pbrMetallicRoughness") => mat.pbr_metallic_roughness.is_none(),
+                _ => false,
+            };
+            if missing_slot {
+                return Err(undefined(format!(
+                    "the material defines no `{}` object, so its properties are not \
+                     present",
+                    slot.unwrap_or_default()
+                )));
+            }
+            if slot == Some("pbrMetallicRoughness") {
+                if let Some(pbr) = mat.pbr_metallic_roughness.as_ref() {
+                    let missing_tex = match sub {
+                        Some("baseColorTexture") => pbr.base_color_texture.is_none(),
+                        Some("metallicRoughnessTexture") => {
+                            pbr.metallic_roughness_texture.is_none()
+                        }
+                        _ => false,
+                    };
+                    if missing_tex {
+                        return Err(undefined(format!(
+                            "the material's pbrMetallicRoughness defines no `{}` \
+                             object, so its properties are not present",
+                            sub.unwrap_or_default()
+                        )));
+                    }
+                }
+            }
+            if slot == Some("extensions") {
+                // Material-extension rows: the named extension block
+                // is the enclosing object — its leaf factors all have
+                // spec defaults, so block presence decides. Extension
+                // blocks this crate does not model (the ADOBE tables)
+                // are skipped as undecidable.
+                let ext_name = sub.unwrap_or_default();
+                let ext = mat.extensions.as_ref();
+                let missing = match ext_name {
+                    "KHR_materials_anisotropy" => ext
+                        .and_then(|e| e.khr_materials_anisotropy.as_ref())
+                        .is_none(),
+                    "KHR_materials_clearcoat" => ext
+                        .and_then(|e| e.khr_materials_clearcoat.as_ref())
+                        .is_none(),
+                    "KHR_materials_dispersion" => ext
+                        .and_then(|e| e.khr_materials_dispersion.as_ref())
+                        .is_none(),
+                    "KHR_materials_emissive_strength" => ext
+                        .and_then(|e| e.khr_materials_emissive_strength.as_ref())
+                        .is_none(),
+                    "KHR_materials_ior" => ext.and_then(|e| e.khr_materials_ior.as_ref()).is_none(),
+                    "KHR_materials_iridescence" => ext
+                        .and_then(|e| e.khr_materials_iridescence.as_ref())
+                        .is_none(),
+                    "KHR_materials_sheen" => {
+                        ext.and_then(|e| e.khr_materials_sheen.as_ref()).is_none()
+                    }
+                    "KHR_materials_specular" => ext
+                        .and_then(|e| e.khr_materials_specular.as_ref())
+                        .is_none(),
+                    "KHR_materials_transmission" => ext
+                        .and_then(|e| e.khr_materials_transmission.as_ref())
+                        .is_none(),
+                    "KHR_materials_volume" => {
+                        ext.and_then(|e| e.khr_materials_volume.as_ref()).is_none()
+                    }
+                    _ => false,
+                };
+                if missing {
+                    return Err(undefined(format!(
+                        "the material carries no `{ext_name}` extension object, so its \
+                         properties are not present"
+                    )));
+                }
+            }
+        }
+    }
+    if pointer.starts_with("/extensions/KHR_lights_punctual/lights/") {
+        // Spot-cone rows require the light's `spot` object — its two
+        // angle properties carry defaults, so block presence decides.
+        let is_spot_row = pointer
+            .strip_prefix('/')
+            .and_then(|rest| rest.split('/').nth(4))
+            == Some("spot");
+        if is_spot_row {
+            let light = pointer_index_at(pointer, 3).and_then(|i| {
+                root.extensions
+                    .as_ref()
+                    .and_then(|e| e.khr_lights_punctual.as_ref())
+                    .and_then(|l| l.lights.get(i))
+            });
+            if let Some(light) = light {
+                if light.spot.is_none() {
+                    return Err(undefined(
+                        "the punctual light defines no `spot` object, so its cone-angle \
+                         properties are not present"
+                            .into(),
+                    ));
+                }
+            }
+        }
+    }
     Ok(())
 }
 

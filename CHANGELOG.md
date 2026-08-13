@@ -58,8 +58,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declaration error, not a downstream Object-Model diagnostic.
   The `int` "used as-is" output branch remains structurally
   unreachable: every staged `int` row is read-only and no staged
-  extension re-declares one as mutable. 13 new integration tests
-  (`tests/object_model_pointers.rs`) + 5 registry unit tests.
+  extension re-declares one as mutable.
+- **§Operation enclosure/presence rules** — "A property is considered
+  defined if it is present in the asset explicitly or if it has a
+  default value and its enclosing object is present. … Pointers to
+  the asset properties that do not have a spec-defined default value,
+  such as `/cameras/0/perspective/zfar`, are invalid if the property
+  is not defined in the asset explicitly." The decidable shapes are
+  enforced with `ExtensionStackAnimationPointerUndefined`: the
+  default-less `/cameras/{}/perspective/zfar` / `aspectRatio` absent
+  from a present perspective block; any perspective / orthographic
+  row when the camera lacks that projection block; material
+  texture-slot rows (`normalTexture` / `occlusionTexture` /
+  `emissiveTexture` / `pbrMetallicRoughness`, plus
+  `baseColorTexture` / `metallicRoughnessTexture` beneath the PBR
+  block) when the enclosing object is absent — covering their nested
+  `KHR_texture_transform` rows too; `KHR_materials_*` extension rows
+  when the material carries no such extension block (the unmodelled
+  ADOBE tables are skipped as undecidable); and
+  `…/lights/{}/spot/...` rows when the punctual light has no `spot`
+  object. 21 integration tests (`tests/object_model_pointers.rs`) +
+  7 registry unit tests overall.
 
 - **Typed morph-target decode (`Primitive::targets` + `Mesh::weights`)** —
   the decoder now fills the typed `oxideav_mesh3d::Primitive::targets`
