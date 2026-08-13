@@ -11,12 +11,14 @@
 //!     + sum_t weight[t] * primitives[i].targets[t].attribute
 //! ```
 //!
-//! `oxideav_mesh3d::Primitive` doesn't carry a typed `targets` field
-//! (cross-crate change deferred to r5), so this crate stashes them on
-//! `primitive.extras["__morph_targets"]` (and `mesh.weights` on
-//! `primitive[0].extras["__mesh_weights"]`) — same sentinel pattern as
-//! `__mesh_extras`. Tests round-trip a hand-crafted JSON document and
-//! verify the deltas come back through the encoder bit-equal.
+//! The decoder fills the typed `oxideav_mesh3d::Primitive::targets`
+//! field (`MorphTarget { position, normal, tangent }`) and the typed
+//! `Mesh::weights` default-weight vector. Attributes the typed model
+//! has no slot for (TEXCOORD_n / COLOR_n) ride the
+//! `primitive.extras["__morph_targets"]` sidecar, index-aligned with
+//! the typed list. The encoder merges both sources back into the JSON
+//! `targets` array (and still accepts the pre-typed sidecar shape as
+//! a legacy input for hand-authored scenes).
 
 use oxideav_gltf::{GltfDecoder, GltfEncoder};
 use oxideav_mesh3d::{Mesh3DDecoder, Mesh3DEncoder};
@@ -123,27 +125,31 @@ fn one_target_position_round_trip() {
     let mut dec = GltfDecoder::new();
     let scene = dec.decode(&bytes).unwrap();
 
-    let mt = scene.meshes[0].primitives[0]
-        .extras
-        .get("__morph_targets")
-        .expect("__morph_targets sentinel");
-    let arr = mt.as_array().unwrap();
-    assert_eq!(arr.len(), 1);
-    let pos = arr[0].as_object().unwrap().get("POSITION").unwrap();
-    let elems = pos.as_array().unwrap();
-    assert_eq!(elems.len(), 3);
-    let first = elems[0].as_array().unwrap();
-    assert!((first[0].as_f64().unwrap() - 0.1).abs() < 1e-6);
+    let prim = &scene.meshes[0].primitives[0];
+    assert_eq!(prim.targets.len(), 1, "one typed morph target");
+    let pos = prim.targets[0]
+        .position
+        .as_ref()
+        .expect("typed POSITION deltas");
+    assert_eq!(pos.len(), 3);
+    assert!((pos[0][0] - 0.1).abs() < 1e-6);
+    assert!(prim.targets[0].normal.is_none());
+    assert!(prim.targets[0].tangent.is_none());
+    // A pure POSITION/NORMAL/TANGENT morph lives entirely in the typed
+    // field — no residual sidecar.
+    assert!(
+        !prim.extras.contains_key("__morph_targets"),
+        "no residual __morph_targets sidecar for typed-only attributes"
+    );
 
     // Re-encode → decode and verify the deltas survive the round trip.
     let mut enc = GltfEncoder::new();
     let glb = enc.encode(&scene).unwrap();
     let scene2 = dec.decode(&glb).unwrap();
-    let mt2 = scene2.meshes[0].primitives[0]
-        .extras
-        .get("__morph_targets")
-        .expect("__morph_targets sentinel after re-encode");
-    assert_eq!(mt, mt2);
+    assert_eq!(
+        scene.meshes[0].primitives[0].targets, scene2.meshes[0].primitives[0].targets,
+        "typed morph targets survive the round trip"
+    );
 }
 
 #[test]
@@ -159,25 +165,14 @@ fn four_targets_with_mesh_weights() {
     let mut dec = GltfDecoder::new();
     let scene = dec.decode(&bytes).unwrap();
 
-    let mw = scene.meshes[0].primitives[0]
+    // Typed `Mesh::weights` carries the default morph weights.
+    assert_eq!(scene.meshes[0].weights, vec![0.0, 0.5, 0.0, 0.25]);
+    // The pre-typed sidecar is no longer emitted.
+    assert!(!scene.meshes[0].primitives[0]
         .extras
-        .get("__mesh_weights")
-        .expect("__mesh_weights sentinel");
-    let weights: Vec<f64> = mw
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_f64().unwrap())
-        .collect();
-    assert_eq!(weights, vec![0.0, 0.5, 0.0, 0.25]);
+        .contains_key("__mesh_weights"));
 
-    let mt = scene.meshes[0].primitives[0]
-        .extras
-        .get("__morph_targets")
-        .unwrap()
-        .as_array()
-        .unwrap();
-    assert_eq!(mt.len(), 4);
+    assert_eq!(scene.meshes[0].primitives[0].targets.len(), 4);
 
     // Re-encode to .glb and pull the JSON chunk to verify
     // mesh.weights + primitive.targets are emitted at the right paths.
@@ -205,38 +200,112 @@ fn mixed_position_and_normal_target() {
     let bytes = build_morph_doc(targets, None);
     let mut dec = GltfDecoder::new();
     let scene = dec.decode(&bytes).unwrap();
-    let mt = scene.meshes[0].primitives[0]
-        .extras
-        .get("__morph_targets")
-        .unwrap()
-        .as_array()
-        .unwrap();
-    assert_eq!(mt.len(), 1);
-    let obj = mt[0].as_object().unwrap();
-    assert!(obj.contains_key("POSITION"));
-    assert!(obj.contains_key("NORMAL"));
+    let prim = &scene.meshes[0].primitives[0];
+    assert_eq!(prim.targets.len(), 1);
+    let tgt = &prim.targets[0];
+    // POSITION delta first vertex was (0.1, 0, 0).
+    let pos = tgt.position.as_ref().expect("typed POSITION deltas");
+    assert!((pos[0][0] - 0.1).abs() < 1e-6);
+    // NORMAL delta first vertex was (0, 1, 0).
+    let nrm = tgt.normal.as_ref().expect("typed NORMAL deltas");
+    assert!((nrm[0][1] - 1.0).abs() < 1e-6);
 
     // Round-trip through encoder.
     let mut enc = GltfEncoder::new();
     let glb = enc.encode(&scene).unwrap();
     let scene2 = dec.decode(&glb).unwrap();
-    let mt2 = scene2.meshes[0].primitives[0]
+    assert_eq!(
+        prim.targets, scene2.meshes[0].primitives[0].targets,
+        "typed morph targets survive the round trip"
+    );
+}
+
+#[test]
+fn legacy_sidecar_scene_still_encodes() {
+    // Pre-typed callers hand-author `__morph_targets` +
+    // `__mesh_weights` sidecars with an empty typed `targets` field.
+    // The encoder must keep accepting that shape: decode a plain
+    // (no-morph) document, inject the legacy sidecars, and verify the
+    // re-encoded JSON carries `targets` + `mesh.weights`.
+    let bytes = build_morph_doc(r#"[]"#, None);
+    let mut dec = GltfDecoder::new();
+    let mut scene = dec.decode(&bytes).unwrap();
+    assert!(scene.meshes[0].primitives[0].targets.is_empty());
+
+    let prim = &mut scene.meshes[0].primitives[0];
+    prim.extras.insert(
+        "__morph_targets".to_owned(),
+        json!([ { "POSITION": [[0.1, 0.0, 0.0], [0.1, 0.0, 0.0], [0.1, 0.0, 0.0]] } ]),
+    );
+    prim.extras
+        .insert("__mesh_weights".to_owned(), json!([0.75]));
+
+    let mut enc = GltfEncoder::new();
+    let glb = enc.encode(&scene).unwrap();
+    let json_chunk = {
+        let n = u32::from_le_bytes([glb[12], glb[13], glb[14], glb[15]]) as usize;
+        glb[20..20 + n].to_vec()
+    };
+    let v: serde_json::Value = serde_json::from_slice(&json_chunk).unwrap();
+    let mesh = &v["meshes"][0];
+    assert_eq!(mesh["weights"], json!([0.75]));
+    let targets_out = mesh["primitives"][0]["targets"].as_array().unwrap();
+    assert_eq!(targets_out.len(), 1);
+    assert!(targets_out[0].as_object().unwrap().contains_key("POSITION"));
+
+    // And the re-decoded scene surfaces them through the typed fields.
+    let scene2 = dec.decode(&glb).unwrap();
+    assert_eq!(scene2.meshes[0].weights, vec![0.75]);
+    let pos = scene2.meshes[0].primitives[0].targets[0]
+        .position
+        .as_ref()
+        .expect("typed POSITION deltas after legacy round trip");
+    assert!((pos[0][0] - 0.1).abs() < 1e-6);
+}
+
+#[test]
+fn typed_mesh_weights_take_precedence_over_legacy_sidecar() {
+    // When a caller sets BOTH the typed `Mesh::weights` and the legacy
+    // `__mesh_weights` sidecar, the typed field is authoritative.
+    let bytes = build_morph_doc(r#"[ { "POSITION": 1 } ]"#, Some("[0.5]"));
+    let mut dec = GltfDecoder::new();
+    let mut scene = dec.decode(&bytes).unwrap();
+    assert_eq!(scene.meshes[0].weights, vec![0.5]);
+    scene.meshes[0].primitives[0]
         .extras
-        .get("__morph_targets")
-        .unwrap()
-        .as_array()
-        .unwrap();
-    assert_eq!(mt2.len(), 1);
-    let obj2 = mt2[0].as_object().unwrap();
-    // Both keys present after round-trip.
-    assert!(obj2.contains_key("POSITION"));
-    assert!(obj2.contains_key("NORMAL"));
-    // POSITION delta first vertex was (0.1, 0, 0).
-    let pos = obj2["POSITION"].as_array().unwrap();
-    let p0 = pos[0].as_array().unwrap();
-    assert!((p0[0].as_f64().unwrap() - 0.1).abs() < 1e-6);
-    // NORMAL delta first vertex was (0, 1, 0).
-    let nrm = obj2["NORMAL"].as_array().unwrap();
-    let n0 = nrm[0].as_array().unwrap();
-    assert!((n0[1].as_f64().unwrap() - 1.0).abs() < 1e-6);
+        .insert("__mesh_weights".to_owned(), json!([0.125]));
+
+    let mut enc = GltfEncoder::new();
+    let glb = enc.encode(&scene).unwrap();
+    let json_chunk = {
+        let n = u32::from_le_bytes([glb[12], glb[13], glb[14], glb[15]]) as usize;
+        glb[20..20 + n].to_vec()
+    };
+    let v: serde_json::Value = serde_json::from_slice(&json_chunk).unwrap();
+    assert_eq!(v["meshes"][0]["weights"], json!([0.5]));
+}
+
+#[test]
+fn typed_and_sidecar_target_count_mismatch_rejected() {
+    // A sidecar that disagrees with the typed `targets` length is a
+    // caller bug — the encoder refuses rather than guessing an
+    // alignment.
+    let bytes = build_morph_doc(r#"[ { "POSITION": 1 } ]"#, None);
+    let mut dec = GltfDecoder::new();
+    let mut scene = dec.decode(&bytes).unwrap();
+    assert_eq!(scene.meshes[0].primitives[0].targets.len(), 1);
+    scene.meshes[0].primitives[0].extras.insert(
+        "__morph_targets".to_owned(),
+        json!([
+            { "TEXCOORD_0": [[0.1, 0.0], [0.1, 0.0], [0.1, 0.0]] },
+            { "TEXCOORD_0": [[0.2, 0.0], [0.2, 0.0], [0.2, 0.0]] }
+        ]),
+    );
+
+    let mut enc = GltfEncoder::new();
+    let err = enc.encode(&scene).unwrap_err();
+    assert!(
+        format!("{err}").contains("MorphTargetSidecarCount"),
+        "expected MorphTargetSidecarCount, got: {err}"
+    );
 }

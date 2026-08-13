@@ -104,38 +104,33 @@ fn decode_short_normalized_morph_position_dequantises_via_spec_equation() {
     let mut dec = GltfDecoder::new();
     let scene = dec.decode(&doc).expect("decode quantized morph POSITION");
 
-    // Pull the morph-target sentinel: the delta values must come back
+    // Pull the typed morph target: the delta values must come back
     // as f32 in [-1, 1] range per §Decoding Quantized Data:
     //   f = max(c / 32767.0, -1.0)
-    let mt = scene.meshes[0].primitives[0]
-        .extras
-        .get("__morph_targets")
-        .expect("__morph_targets sentinel populated");
-    let targets = mt.as_array().expect("targets array");
+    let targets = &scene.meshes[0].primitives[0].targets;
     assert_eq!(targets.len(), 1, "one morph target");
     let pos = targets[0]
-        .as_object()
-        .and_then(|o| o.get("POSITION"))
-        .and_then(|v| v.as_array())
-        .expect("POSITION delta array");
+        .position
+        .as_ref()
+        .expect("typed POSITION delta array");
     assert_eq!(pos.len(), 3);
 
     // Vertex 0: [32767, 0, 0] -> [1.0, 0.0, 0.0]
-    let v0 = pos[0].as_array().unwrap();
-    assert!((v0[0].as_f64().unwrap() - 1.0).abs() < 1.0 / 32767.0);
-    assert!(v0[1].as_f64().unwrap().abs() < 1e-6);
-    assert!(v0[2].as_f64().unwrap().abs() < 1e-6);
+    let v0 = pos[0];
+    assert!((v0[0] as f64 - 1.0).abs() < 1.0 / 32767.0);
+    assert!((v0[1] as f64).abs() < 1e-6);
+    assert!((v0[2] as f64).abs() < 1e-6);
 
     // Vertex 1: [-32767, 16383, 0] -> [-1.0, ~0.5, 0.0]
-    let v1 = pos[1].as_array().unwrap();
-    assert!((v1[0].as_f64().unwrap() + 1.0).abs() < 1.0 / 32767.0);
-    assert!((v1[1].as_f64().unwrap() - (16383.0 / 32767.0)).abs() < 1e-6);
+    let v1 = pos[1];
+    assert!((v1[0] as f64 + 1.0).abs() < 1.0 / 32767.0);
+    assert!((v1[1] as f64 - (16383.0 / 32767.0)).abs() < 1e-6);
 
     // Vertex 2: [0, -32768, 100] -> [0.0, -1.0 (clamped), ~0.003]
-    let v2 = pos[2].as_array().unwrap();
-    assert!(v2[0].as_f64().unwrap().abs() < 1e-6);
+    let v2 = pos[2];
+    assert!((v2[0] as f64).abs() < 1e-6);
     assert!(
-        (v2[1].as_f64().unwrap() + 1.0).abs() < 1e-6,
+        (v2[1] as f64 + 1.0).abs() < 1e-6,
         "-32768 clamps to -1.0 per the spec equation"
     );
 
@@ -281,16 +276,12 @@ fn quantized_morph_position_byte_round_trip_via_glb() {
 
     // Verify the decoder dequantised correctly:
     //   [127, 0, 0] -> [1.0, 0.0, 0.0] (f = max(c/127, -1))
-    let mt = scene.meshes[0].primitives[0]
-        .extras
-        .get("__morph_targets")
-        .unwrap()
-        .as_array()
-        .unwrap();
-    let v0 = mt[0].as_object().unwrap()["POSITION"].as_array().unwrap()[0]
-        .as_array()
-        .unwrap();
-    assert!((v0[0].as_f64().unwrap() - 1.0).abs() < 1e-6);
+    let pos_a = scene.meshes[0].primitives[0].targets[0]
+        .position
+        .as_ref()
+        .expect("typed POSITION deltas")
+        .clone();
+    assert!((pos_a[0][0] as f64 - 1.0).abs() < 1e-6);
 
     // Round-trip through GLB and confirm the morph accessor still
     // carries BYTE-normalized.
@@ -319,20 +310,14 @@ fn quantized_morph_position_byte_round_trip_via_glb() {
 
     // Re-decoded deltas should match the first decode to within the
     // BYTE-normalized precision floor (1/127).
-    let mt2 = scene2.meshes[0].primitives[0]
-        .extras
-        .get("__morph_targets")
-        .unwrap()
-        .as_array()
-        .unwrap();
-    let v0a = mt[0].as_object().unwrap()["POSITION"].as_array().unwrap();
-    let v0b = mt2[0].as_object().unwrap()["POSITION"].as_array().unwrap();
-    assert_eq!(v0a.len(), v0b.len());
-    for (a, b) in v0a.iter().zip(v0b.iter()) {
-        let ca = a.as_array().unwrap();
-        let cb = b.as_array().unwrap();
-        for (x, y) in ca.iter().zip(cb.iter()) {
-            let dx = (x.as_f64().unwrap() - y.as_f64().unwrap()).abs();
+    let pos_b = scene2.meshes[0].primitives[0].targets[0]
+        .position
+        .as_ref()
+        .expect("typed POSITION deltas after round trip");
+    assert_eq!(pos_a.len(), pos_b.len());
+    for (a, b) in pos_a.iter().zip(pos_b.iter()) {
+        for (x, y) in a.iter().zip(b.iter()) {
+            let dx = (*x as f64 - *y as f64).abs();
             assert!(dx < 1.0 / 127.0 + 1e-6, "delta drift {dx} > 1/127");
         }
     }

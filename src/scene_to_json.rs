@@ -144,19 +144,24 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
             .primitives
             .first()
             .and_then(|p| p.extras.get("__mesh_extras").cloned());
-        // Mesh-level morph weights default vector (§3.7.2.2) lives on
-        // primitive[0]'s extras under `__mesh_weights`.
-        let mesh_weights = mesh
-            .primitives
-            .first()
-            .and_then(|p| p.extras.get("__mesh_weights"))
-            .and_then(|v| {
-                v.as_array().map(|arr| {
-                    arr.iter()
-                        .filter_map(|x| x.as_f64().map(|f| f as f32))
-                        .collect::<Vec<f32>>()
+        // Mesh-level morph weights default vector (§3.7.2.2) — the
+        // typed `Mesh::weights` field is authoritative; the pre-typed
+        // `primitive[0].extras["__mesh_weights"]` sidecar is still
+        // accepted as a legacy input for hand-authored scenes.
+        let mesh_weights = if !mesh.weights.is_empty() {
+            Some(mesh.weights.clone())
+        } else {
+            mesh.primitives
+                .first()
+                .and_then(|p| p.extras.get("__mesh_weights"))
+                .and_then(|v| {
+                    v.as_array().map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_f64().map(|f| f as f32))
+                            .collect::<Vec<f32>>()
+                    })
                 })
-            });
+        };
         // KHR_xmp_json_ld — the decoder stashes a mesh-level packet
         // reference under primitive[0].extras["__mesh_xmp_packet"] as a
         // bare JSON number (no payload because the packets live at
@@ -1210,29 +1215,32 @@ fn encode_primitive(
             None
         };
 
-    // Re-emit morph targets as accessors per §3.7.2.2. Two paths feed
-    // this:
+    // Re-emit morph targets as accessors per §3.7.2.2. Two sources
+    // feed this and are MERGED per target index:
     //
-    // * Typed `Primitive.targets` (mesh3d ≥ 0.0.3) — preferred when
-    //   present. The decoder lifts a glTF document's targets into this
-    //   field for forward compat; the legacy extras sentinel keeps
-    //   round-tripping for older callers.
-    // * `__morph_targets` extras sentinel — only consulted when the
-    //   typed field is empty (round 2 compatibility).
+    // * Typed `Primitive.targets` — POSITION / NORMAL / TANGENT
+    //   deltas. The decoder fills this field; callers building a
+    //   `Scene3D` by hand use it directly.
+    // * `__morph_targets` extras sidecar — the attributes the typed
+    //   `MorphTarget` has no slot for (TEXCOORD_n / COLOR_n /
+    //   application-specific), index-aligned with the typed list. A
+    //   legacy sidecar carrying POSITION / NORMAL / TANGENT (from a
+    //   hand-authored scene with an empty typed field) still
+    //   round-trips; on a per-attribute collision the typed field
+    //   wins and the sidecar copy is ignored.
     //
-    // Both paths produce the same `attribute name → accessor index` map
-    // the JSON expects; we write the deltas into the binary buffer the
-    // same way standard attributes are written.
-    let targets = if !p.targets.is_empty() {
-        encode_typed_morph_targets(&p.targets, morph_quant_extra.as_ref(), root, bin)?
-    } else {
-        decode_morph_targets_extra(
-            morph_targets_extra.as_ref(),
-            morph_quant_extra.as_ref(),
-            root,
-            bin,
-        )?
-    };
+    // Both sources produce the same `attribute name → accessor index`
+    // map the JSON expects; the deltas are written into the binary
+    // buffer the same way standard attributes are written.
+    let typed_targets =
+        encode_typed_morph_targets(&p.targets, morph_quant_extra.as_ref(), root, bin)?;
+    let targets = merge_sidecar_morph_targets(
+        typed_targets,
+        morph_targets_extra.as_ref(),
+        morph_quant_extra.as_ref(),
+        root,
+        bin,
+    )?;
 
     Ok(gj::Primitive {
         attributes,
@@ -1307,17 +1315,28 @@ fn encode_typed_morph_targets(
     Ok(out)
 }
 
-/// Pull morph-target deltas out of the `__morph_targets` sentinel and
-/// emit them back into the JSON document as accessors. Returns the
-/// per-target attribute → accessor-index roster ready for inclusion in
+/// Pull morph-target deltas out of the `__morph_targets` sidecar,
+/// emit them back into the JSON document as accessors, and merge the
+/// resulting rosters into the typed-target rosters produced by
+/// [`encode_typed_morph_targets`]. Returns the per-target
+/// attribute → accessor-index roster ready for inclusion in
 /// `gj::Primitive::targets`.
+///
+/// The sidecar is index-aligned with the typed `Primitive::targets`
+/// list (the decoder emits one sidecar object per target, empty when
+/// a target carries only typed attributes). When both sources are
+/// non-empty their lengths MUST agree. A sidecar attribute whose name
+/// is already present in the same target's typed roster is skipped —
+/// the typed field is authoritative and no orphan accessor is
+/// emitted.
 ///
 /// When the per-primitive `__morph_attr_quant` sentinel carries a
 /// quantised entry for `<target-index>.<attribute>`, the accessor is
 /// re-emitted through the spec float→int table per
 /// `docs/3d/gltf/extensions/KHR_mesh_quantization.md` §Extending Morph
 /// Target Attributes; otherwise the FLOAT path is used.
-fn decode_morph_targets_extra(
+fn merge_sidecar_morph_targets(
+    typed: Vec<HashMap<String, u32>>,
     sentinel: Option<&serde_json::Value>,
     morph_quant_extra: Option<&serde_json::Value>,
     root: &mut GltfRoot,
@@ -1330,17 +1349,33 @@ fn decode_morph_targets_extra(
                 "primitive.extras[__morph_targets]: expected JSON array",
             ));
         }
-        None => return Ok(Vec::new()),
+        None => return Ok(typed),
     };
-    let mut out = Vec::with_capacity(arr.len());
+    if !typed.is_empty() && !arr.is_empty() && typed.len() != arr.len() {
+        return Err(invalid(format!(
+            "MorphTargetSidecarCount: primitive.extras[__morph_targets] holds {} target \
+             object(s) but the typed Primitive::targets list holds {} — the sidecar is \
+             index-aligned with the typed targets, so the lengths must agree",
+            arr.len(),
+            typed.len()
+        )));
+    }
+    let mut out = typed;
     for (ti, target_val) in arr.iter().enumerate() {
         let obj = target_val.as_object().ok_or_else(|| {
             invalid(format!(
                 "primitive.extras[__morph_targets][{ti}]: expected object"
             ))
         })?;
-        let mut tgt: HashMap<String, u32> = HashMap::new();
+        if out.len() <= ti {
+            out.push(HashMap::new());
+        }
         for (name, vals) in obj {
+            if out[ti].contains_key(name) {
+                // Typed roster already carries this attribute for
+                // this target — the typed field wins.
+                continue;
+            }
             let arr = vals.as_array().ok_or_else(|| {
                 invalid(format!(
                     "morph target {name:?}: expected array of [f32; N] elements"
@@ -1402,9 +1437,8 @@ fn decode_morph_targets_extra(
                     quant_spec,
                 )?
             };
-            tgt.insert(name.clone(), acc_idx);
+            out[ti].insert(name.clone(), acc_idx);
         }
-        out.push(tgt);
     }
     Ok(out)
 }
@@ -2484,6 +2518,17 @@ fn encode_node(n: &Node, _scene: &Scene3D) -> gj::Node {
     // decoder explicitly carried it through (the latter so a literal
     // `{"visible": true}` round-trips).
     let mut effective_extras = n.extras.clone();
+    // `node.weights` (§5.25.9) — the decoder stashes the per-instance
+    // morph-weight override under `Node::extras["__node_weights"]`
+    // (the published typed `Node` has no `weights` field yet); lift
+    // it back into the JSON `weights` property.
+    let node_weights = effective_extras.remove("__node_weights").and_then(|v| {
+        v.as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_f64().map(|f| f as f32))
+                .collect::<Vec<f32>>()
+        })
+    });
     let visibility = effective_extras
         .remove("KHR_node_visibility")
         .and_then(|v| v.as_bool());
@@ -2518,6 +2563,7 @@ fn encode_node(n: &Node, _scene: &Scene3D) -> gj::Node {
         translation,
         rotation,
         scale,
+        weights: node_weights,
         name: n.name.clone(),
         extensions,
         extras,

@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Typed morph-target decode (`Primitive::targets` + `Mesh::weights`)** —
+  the decoder now fills the typed `oxideav_mesh3d::Primitive::targets`
+  field (`MorphTarget { position, normal, tangent }` vertex deltas per
+  spec §3.7.2.2) and the typed `Mesh::weights` default-weight vector,
+  retiring the `primitive.extras["__morph_targets"]` /
+  `primitive[0].extras["__mesh_weights"]` sidecars as the primary
+  surface. Attributes the typed `MorphTarget` has no slot for
+  (TEXCOORD_n VEC2 / COLOR_n VEC3 deltas) still ride a reduced
+  `__morph_targets` sidecar, index-aligned with the typed list (one
+  object per target, empty when a target is fully typed; the sidecar
+  is omitted entirely when no target carries a residual attribute).
+  The encoder merges the two sources into one per-target accessor
+  roster — the typed field wins on a per-attribute collision, and a
+  length disagreement between a non-empty typed list and a non-empty
+  sidecar is rejected with `MorphTargetSidecarCount`. The pre-typed
+  sidecar shapes remain accepted as legacy encoder inputs for
+  hand-authored scenes (covered by dedicated back-compat tests). The
+  `__morph_attr_quant` KHR_mesh_quantization storage-form sentinel is
+  unchanged and applies to both sources.
+- **`node.weights` support (spec §5.25.9)** — the per-instance
+  morph-weight override of the referenced mesh's default
+  `mesh.weights` (§3.7.2.2: "When an instantiated mesh has morph
+  targets, it MUST use morph weights specified with the node.weights
+  property. When the latter is undefined, mesh.weights property MUST
+  be used instead."). Previously the property was not parsed and a
+  round-trip silently dropped it. The JSON `Node` model now carries
+  `weights`; the decoder parks the vector on
+  `Node::extras["__node_weights"]` (the published
+  `oxideav_mesh3d::Node` has no typed `weights` field yet) and the
+  encoder lifts it back into the JSON `node.weights` property.
+  `validate_morph_weights` polices the §5.25.9 MUSTs on decode:
+  `weights` without `mesh` → `NodeWeightsWithoutMesh` ("When defined,
+  mesh MUST also be defined"); length differing from the referenced
+  mesh's morph-target count → `NodeWeightsLength`; a
+  declared-but-empty array → `NodeWeightsEmpty` (schema A.29
+  `minItems: 1`), with the sibling `MeshWeightsEmpty` enforcing the
+  same `minItems: 1` on a declared-but-empty `mesh.weights` (schema
+  A.26). Migrating the sidecar to the typed `Node::weights` /
+  `Scene3D::effective_morph_weights` surface awaits the next published
+  `oxideav-mesh3d` release (the field exists on that crate's master
+  but not in the published 0.0.4).
+
 - **Buffer `data:`-URI mediatype validation (spec §3.9.1)** — a new
   `validate_buffers` pass rejects any buffer whose `data:` URI carries a
   mediatype other than `application/octet-stream` or
@@ -269,9 +311,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   case.
 - Mesh-morph-weights length validation (`validate_morph_weights`) per
   glTF 2.0 §5.23.2 — `mesh.weights` array length MUST match the mesh's
-  morph-target count (`MeshWeightsLength`). (`node.weights` carries the
-  same §5.25.9 rule but is not retained in the parsed model, so only the
-  modelled `mesh.weights` is policed.)
+  morph-target count (`MeshWeightsLength`). (The `node.weights` §5.25.9
+  companion rules landed later in this release once the field entered
+  the parsed model — see the typed morph-surface entry above.)
 
 - Animation-sampler structural validation per glTF 2.0 §3.11 + Appendix C
   — `validate_animation_channels` now enforces the sampler MUSTs the

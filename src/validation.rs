@@ -4469,33 +4469,82 @@ pub fn validate_materials(materials: &[Material]) -> Result<()> {
     Ok(())
 }
 
-/// Validate `mesh.weights` array length per spec §5.23.2 — "The number
-/// of array elements MUST match the number of morph targets." All
-/// primitives in a mesh share the same target count (§3.7.2.2 "All
-/// primitives MUST have the same number of morph targets in the same
-/// order"), so the first primitive's target count is the mesh's target
-/// count. A `mesh.weights` whose length disagrees is rejected with
-/// `MeshWeightsLength`.
+/// Validate the morph-weight array MUSTs on both scopes that may carry
+/// one:
 ///
-/// (`node.weights` carries the same §5.25.9 rule but is not retained in
-/// this crate's parsed model — it is dropped at decode and re-derived
-/// from the mesh on encode — so only the modelled `mesh.weights` is
-/// policed here.)
-pub fn validate_morph_weights(meshes: &[Mesh]) -> Result<()> {
+/// * `mesh.weights` per spec §5.23.2 — "The number of array elements
+///   MUST match the number of morph targets." All primitives in a mesh
+///   share the same target count (§3.7.2.2 "All primitives MUST have
+///   the same number of morph targets in the same order"), so the
+///   first primitive's target count is the mesh's target count. A
+///   `mesh.weights` whose length disagrees is rejected with
+///   `MeshWeightsLength`; an explicitly-declared empty array violates
+///   the schema's `minItems: 1` (spec A.26) and is rejected with
+///   `MeshWeightsEmpty`.
+/// * `node.weights` per spec §5.25.9 — "The number of array elements
+///   MUST match the number of morph targets of the referenced mesh.
+///   When defined, `mesh` MUST also be defined." A `node.weights`
+///   without `node.mesh` is rejected with `NodeWeightsWithoutMesh`; a
+///   length disagreeing with the referenced mesh's morph-target count
+///   with `NodeWeightsLength`; an empty array (schema `minItems: 1`,
+///   spec A.29) with `NodeWeightsEmpty`. An out-of-range `node.mesh`
+///   index is left to `validate_index_references` (`NodeMeshIndex`).
+pub fn validate_morph_weights(meshes: &[Mesh], nodes: &[Node]) -> Result<()> {
+    let mesh_target_count = |mi: usize| {
+        meshes[mi]
+            .primitives
+            .first()
+            .map(|p| p.targets.len())
+            .unwrap_or(0)
+    };
     for (mi, mesh) in meshes.iter().enumerate() {
         let Some(weights) = mesh.weights.as_ref() else {
             continue;
         };
-        let target_count = mesh
-            .primitives
-            .first()
-            .map(|p| p.targets.len())
-            .unwrap_or(0);
+        if weights.is_empty() {
+            return Err(invalid(format!(
+                "MeshWeightsEmpty: meshes[{mi}].weights is declared but empty — the schema \
+                 requires at least one element (`minItems: 1`, spec A.26)"
+            )));
+        }
+        let target_count = mesh_target_count(mi);
         if weights.len() != target_count {
             return Err(invalid(format!(
                 "MeshWeightsLength: meshes[{mi}].weights has {} element(s) but the mesh \
                  declares {target_count} morph target(s) — the lengths MUST match \
                  (spec §5.23.2)",
+                weights.len()
+            )));
+        }
+    }
+    for (ni, node) in nodes.iter().enumerate() {
+        let Some(weights) = node.weights.as_ref() else {
+            continue;
+        };
+        if weights.is_empty() {
+            return Err(invalid(format!(
+                "NodeWeightsEmpty: nodes[{ni}].weights is declared but empty — the schema \
+                 requires at least one element (`minItems: 1`, spec A.29)"
+            )));
+        }
+        let Some(mesh_idx) = node.mesh else {
+            return Err(invalid(format!(
+                "NodeWeightsWithoutMesh: nodes[{ni}].weights is defined but the node has no \
+                 `mesh` — \"When defined, mesh MUST also be defined\" (spec §5.25.9)"
+            )));
+        };
+        let mi = mesh_idx as usize;
+        if mi >= meshes.len() {
+            // Dangling `node.mesh` — rejected by
+            // `validate_index_references` with `NodeMeshIndex`.
+            continue;
+        }
+        let target_count = mesh_target_count(mi);
+        if weights.len() != target_count {
+            return Err(invalid(format!(
+                "NodeWeightsLength: nodes[{ni}].weights has {} element(s) but the referenced \
+                 meshes[{mi}] declares {target_count} morph target(s) — the lengths MUST \
+                 match (spec §5.25.9)",
                 weights.len()
             )));
         }
@@ -8138,18 +8187,78 @@ mod tests {
 
     #[test]
     fn morph_weights_accept_matching_length() {
-        validate_morph_weights(&[mesh_with(2, Some(vec![0.0, 1.0]))]).unwrap();
+        validate_morph_weights(&[mesh_with(2, Some(vec![0.0, 1.0]))], &[]).unwrap();
     }
 
     #[test]
     fn morph_weights_accept_absent() {
-        validate_morph_weights(&[mesh_with(2, None)]).unwrap();
+        validate_morph_weights(&[mesh_with(2, None)], &[]).unwrap();
     }
 
     #[test]
     fn morph_weights_reject_length_mismatch() {
-        let err = validate_morph_weights(&[mesh_with(2, Some(vec![0.0, 1.0, 0.5]))]).unwrap_err();
+        let err =
+            validate_morph_weights(&[mesh_with(2, Some(vec![0.0, 1.0, 0.5]))], &[]).unwrap_err();
         assert!(format!("{err}").contains("MeshWeightsLength"));
+    }
+
+    #[test]
+    fn morph_weights_reject_declared_empty_mesh_weights() {
+        let err = validate_morph_weights(&[mesh_with(0, Some(vec![]))], &[]).unwrap_err();
+        assert!(format!("{err}").contains("MeshWeightsEmpty"));
+    }
+
+    fn node_with(mesh: Option<u32>, weights: Option<Vec<f32>>) -> Node {
+        Node {
+            mesh,
+            weights,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn node_weights_accept_matching_length() {
+        validate_morph_weights(
+            &[mesh_with(2, None)],
+            &[node_with(Some(0), Some(vec![0.5, 0.25]))],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn node_weights_reject_without_mesh() {
+        let err = validate_morph_weights(
+            &[mesh_with(2, None)],
+            &[node_with(None, Some(vec![0.5, 0.25]))],
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("NodeWeightsWithoutMesh"));
+    }
+
+    #[test]
+    fn node_weights_reject_length_mismatch() {
+        let err = validate_morph_weights(
+            &[mesh_with(2, None)],
+            &[node_with(Some(0), Some(vec![0.5]))],
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("NodeWeightsLength"));
+    }
+
+    #[test]
+    fn node_weights_reject_declared_empty() {
+        let err =
+            validate_morph_weights(&[mesh_with(2, None)], &[node_with(Some(0), Some(vec![]))])
+                .unwrap_err();
+        assert!(format!("{err}").contains("NodeWeightsEmpty"));
+    }
+
+    #[test]
+    fn node_weights_defer_dangling_mesh_index_to_reference_pass() {
+        // Out-of-range node.mesh is NodeMeshIndex territory
+        // (validate_index_references); this pass must not panic or
+        // double-report.
+        validate_morph_weights(&[], &[node_with(Some(7), Some(vec![0.5]))]).unwrap();
     }
 
     // ---- validate_morph_targets (§3.7.2.2) ----

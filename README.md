@@ -715,12 +715,35 @@ framework but usable standalone.
 - Textures with samplers + images (buffer-view-backed images via
   `BufferViewAsset` for zero-copy slicing into the `.glb` BIN chunk;
   `data:` URI base64 inlining; external URI passthrough)
-- Morph targets per spec §3.7.2.2 — POSITION / NORMAL / TANGENT
-  vertex-delta accessors round-trip through
-  `primitive.extras["__morph_targets"]` (mesh.weights via
-  `primitive[0].extras["__mesh_weights"]`); the typed
-  `oxideav_mesh3d::Primitive` model lacks a dedicated `targets` field
-  pending a cross-crate followup
+- Morph targets per spec §3.7.2.2 — the decoder fills the typed
+  `oxideav_mesh3d::Primitive::targets` field
+  (`MorphTarget { position, normal, tangent }` vertex deltas) and the
+  typed `Mesh::weights` default-weight vector; attributes the typed
+  model has no slot for (TEXCOORD_n VEC2 / COLOR_n VEC3 deltas) ride
+  the `primitive.extras["__morph_targets"]` sidecar, index-aligned
+  with the typed list. The encoder merges both sources back into one
+  per-target accessor roster (typed wins on a per-attribute
+  collision; a length disagreement between the two is rejected with
+  `MorphTargetSidecarCount`) and still accepts the pre-typed
+  `__morph_targets` / `__mesh_weights` sidecar shapes as legacy
+  inputs for hand-authored scenes
+- `node.weights` per spec §5.25.9 — the per-instance morph-weight
+  override of the referenced mesh's default `mesh.weights`
+  (§3.7.2.2: "When an instantiated mesh has morph targets, it MUST
+  use morph weights specified with the node.weights property").
+  The published `oxideav_mesh3d::Node` does not yet carry a typed
+  `weights` field, so the decoder parks the vector on
+  `Node::extras["__node_weights"]` and the encoder lifts it back
+  into the JSON `node.weights` property (previously the override was
+  silently dropped on decode). The §5.25.9 MUSTs are policed on
+  decode: a `node.weights` without `node.mesh` is rejected
+  (`NodeWeightsWithoutMesh`), a length disagreeing with the
+  referenced mesh's morph-target count is rejected
+  (`NodeWeightsLength`), and the schema's `minItems: 1` rejects a
+  declared-but-empty array (`NodeWeightsEmpty`, with the sibling
+  `MeshWeightsEmpty` on `mesh.weights`). Typed `Node::weights` /
+  `Scene3D::effective_morph_weights` adoption awaits the next
+  published `oxideav-mesh3d` release
 - Accessor `min` / `max` bounds per spec §3.6.2.1.5 — encoder fills
   missing POSITION min/max from the data; decoder validates declared
   bounds and rejects mismatches with an `AccessorBoundsMismatch`-prefixed

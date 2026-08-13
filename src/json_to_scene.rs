@@ -177,7 +177,7 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
 
     // Spec §5.23.2 — mesh.weights length MUST match the mesh's morph
     // target count.
-    validate_morph_weights(&root.meshes)?;
+    validate_morph_weights(&root.meshes, &root.nodes)?;
 
     // Spec §3.7.2.2 — morph-target structural MUSTs: all primitives in a
     // mesh declare the same number of targets; each morphed attribute has
@@ -340,21 +340,12 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
                 .insert("__mesh_extras".to_owned(), extras.clone());
         }
         // Mesh-level `weights` (default morph weights per §3.7.2.2):
-        // mesh3d's `Mesh` has no `weights` field, so stash on
-        // primitive[0].extras["__mesh_weights"] in the same style as
-        // the morph-targets sentinel.
-        if let (Some(weights), Some(prim0)) = (&m.weights, mesh.primitives.first_mut()) {
-            let arr: Vec<serde_json::Value> = weights
-                .iter()
-                .map(|&w| {
-                    serde_json::Number::from_f64(w as f64)
-                        .map(serde_json::Value::Number)
-                        .unwrap_or(serde_json::Value::Null)
-                })
-                .collect();
-            prim0
-                .extras
-                .insert("__mesh_weights".to_owned(), serde_json::Value::Array(arr));
+        // fills the typed `oxideav_mesh3d::Mesh::weights` field. (The
+        // pre-typed `primitive[0].extras["__mesh_weights"]` sidecar is
+        // no longer emitted; the encoder still accepts it as a legacy
+        // input.)
+        if let Some(weights) = &m.weights {
+            mesh.weights = weights.clone();
         }
         // KHR_xmp_json_ld — per-mesh packet reference per
         // `docs/3d/gltf/extensions/KHR_xmp_json_ld.md` §"Instantiating
@@ -415,6 +406,27 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
         }
         if let Some(s) = n.skin {
             node.skin = skin_id_map.get(&s).copied();
+        }
+        // `node.weights` (§5.25.9) — per-instance morph-weight
+        // override of the referenced mesh's default `mesh.weights`.
+        // The published `oxideav_mesh3d::Node` does not yet carry a
+        // typed `weights` field, so the vector rides the
+        // `Node::extras["__node_weights"]` sidecar (same sentinel
+        // style as `__morph_targets` before its typed migration);
+        // the encoder lifts it back into the JSON `node.weights`
+        // property so the override round-trips instead of being
+        // silently dropped.
+        if let Some(w) = &n.weights {
+            let arr: Vec<Value> = w
+                .iter()
+                .map(|&x| {
+                    serde_json::Number::from_f64(x as f64)
+                        .map(Value::Number)
+                        .unwrap_or(Value::Null)
+                })
+                .collect();
+            node.extras
+                .insert("__node_weights".to_owned(), Value::Array(arr));
         }
         if let Some(ext) = &n.extensions {
             if let Some(lr) = &ext.khr_lights_punctual {
@@ -2452,12 +2464,17 @@ fn convert_primitive(
         );
     }
 
-    // Morph targets (§3.7.2.2). The typed `oxideav_mesh3d::Primitive`
-    // model doesn't carry a dedicated field, so we serialise the
-    // resolved per-target attribute deltas into a JSON sentinel under
-    // `prim.extras["__morph_targets"]` — encoder pulls them back out
-    // and re-emits as accessors. Format: an array of objects, one per
-    // target, mapping attribute name → array of [f32; N] values.
+    // Morph targets (§3.7.2.2). POSITION / NORMAL / TANGENT deltas
+    // fill the typed `oxideav_mesh3d::Primitive::targets` field
+    // (`MorphTarget { position, normal, tangent }`). Deltas the typed
+    // model has no slot for (TEXCOORD_n VEC2, COLOR_n VEC3,
+    // application-specific semantics) are serialised into a JSON
+    // sidecar under `prim.extras["__morph_targets"]` — an array with
+    // one object per target (kept index-aligned with the typed
+    // `targets` list, so residual-free targets contribute an empty
+    // object), mapping attribute name → array of [f32; N] values. The
+    // encoder merges the typed targets and the sidecar residuals back
+    // into one per-target accessor roster.
     //
     // POSITION / NORMAL / TANGENT use VEC3 (TANGENT handedness W is
     // dropped per spec §3.7.2.2) and TEXCOORD_n uses VEC2. When
@@ -2472,6 +2489,7 @@ fn convert_primitive(
         let mut targets_json = Vec::with_capacity(p.targets.len());
         let mut morph_quant = serde_json::Map::new();
         for (ti, tgt) in p.targets.iter().enumerate() {
+            let mut typed = oxideav_mesh3d::MorphTarget::new();
             let mut obj = serde_json::Map::new();
             let mut per_target_quant = serde_json::Map::new();
             for (name, &acc_idx) in tgt {
@@ -2532,15 +2550,23 @@ fn convert_primitive(
                 }
 
                 // Dequantise into f32 deltas. FLOAT passes through
-                // unchanged via the same helper.
-                let arr_value = if kind == "VEC2" {
+                // unchanged via the same helper. POSITION / NORMAL /
+                // TANGENT go into the typed `MorphTarget` slots; any
+                // other semantic rides the JSON sidecar.
+                if kind == "VEC2" {
                     let deltas = quantization::dequantize_vec2(acc, &view)?;
-                    deltas_to_json(&deltas)
+                    obj.insert(name.clone(), deltas_to_json(&deltas));
                 } else {
                     let deltas = quantization::dequantize_vec3(acc, &view)?;
-                    deltas_to_json(&deltas)
-                };
-                obj.insert(name.clone(), arr_value);
+                    match name.as_str() {
+                        "POSITION" => typed.position = Some(deltas),
+                        "NORMAL" => typed.normal = Some(deltas),
+                        "TANGENT" => typed.tangent = Some(deltas),
+                        _ => {
+                            obj.insert(name.clone(), deltas_to_json(&deltas));
+                        }
+                    }
+                }
 
                 // Record the storage form so the encoder can re-emit
                 // in the same quantised type. Only record non-FLOAT —
@@ -2558,15 +2584,24 @@ fn convert_primitive(
                     per_target_quant.insert(name.clone(), serde_json::Value::Object(entry));
                 }
             }
+            prim.targets.push(typed);
             targets_json.push(serde_json::Value::Object(obj));
             if !per_target_quant.is_empty() {
                 morph_quant.insert(ti.to_string(), serde_json::Value::Object(per_target_quant));
             }
         }
-        prim.extras.insert(
-            "__morph_targets".to_owned(),
-            serde_json::Value::Array(targets_json),
-        );
+        // Only carry the sidecar when at least one target holds a
+        // residual (non-typed) attribute — plain POSITION / NORMAL /
+        // TANGENT morphs live entirely in the typed `targets` field.
+        if targets_json
+            .iter()
+            .any(|t| t.as_object().is_some_and(|o| !o.is_empty()))
+        {
+            prim.extras.insert(
+                "__morph_targets".to_owned(),
+                serde_json::Value::Array(targets_json),
+            );
+        }
         if !morph_quant.is_empty() {
             prim.extras.insert(
                 quantization::MORPH_ATTR_QUANT_KEY.to_owned(),

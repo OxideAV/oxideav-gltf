@@ -187,6 +187,13 @@ pub struct Node {
     pub rotation: Option<[f32; 4]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale: Option<[f32; 3]>,
+    /// Per-instance morph-target weights per spec §5.25.9 — override
+    /// the referenced mesh's default `weights` for this node's
+    /// instantiation. "The number of array elements MUST match the
+    /// number of morph targets of the referenced mesh. When defined,
+    /// `mesh` MUST also be defined."
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weights: Option<Vec<f32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
