@@ -408,25 +408,19 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
             node.skin = skin_id_map.get(&s).copied();
         }
         // `node.weights` (§5.25.9) — per-instance morph-weight
-        // override of the referenced mesh's default `mesh.weights`.
-        // The published `oxideav_mesh3d::Node` does not yet carry a
-        // typed `weights` field, so the vector rides the
-        // `Node::extras["__node_weights"]` sidecar (same sentinel
-        // style as `__morph_targets` before its typed migration);
-        // the encoder lifts it back into the JSON `node.weights`
-        // property so the override round-trips instead of being
-        // silently dropped.
+        // override of the referenced mesh's default `mesh.weights`
+        // (§3.7.2.2: "When an instantiated mesh has morph targets, it
+        // MUST use morph weights specified with the node.weights
+        // property. When the latter is undefined, mesh.weights
+        // property MUST be used instead."). Decodes into the typed
+        // `oxideav_mesh3d::Node::weights`;
+        // `Scene3D::effective_morph_weights` then resolves the static
+        // node > mesh half of the §3.7.4 precedence chain and an
+        // animated `MorphWeights` channel beats both at runtime. The
+        // §5.25.9 MUSTs (mesh required, length match, `minItems: 1`)
+        // were policed by `validate_morph_weights` before conversion.
         if let Some(w) = &n.weights {
-            let arr: Vec<Value> = w
-                .iter()
-                .map(|&x| {
-                    serde_json::Number::from_f64(x as f64)
-                        .map(Value::Number)
-                        .unwrap_or(Value::Null)
-                })
-                .collect();
-            node.extras
-                .insert("__node_weights".to_owned(), Value::Array(arr));
+            node.weights = w.clone();
         }
         if let Some(ext) = &n.extensions {
             if let Some(lr) = &ext.khr_lights_punctual {

@@ -2560,17 +2560,25 @@ fn encode_node(n: &Node, _scene: &Scene3D) -> gj::Node {
     // decoder explicitly carried it through (the latter so a literal
     // `{"visible": true}` round-trips).
     let mut effective_extras = n.extras.clone();
-    // `node.weights` (§5.25.9) — the decoder stashes the per-instance
-    // morph-weight override under `Node::extras["__node_weights"]`
-    // (the published typed `Node` has no `weights` field yet); lift
-    // it back into the JSON `weights` property.
-    let node_weights = effective_extras.remove("__node_weights").and_then(|v| {
+    // `node.weights` (§5.25.9) — the typed `Node::weights` override is
+    // the primary source (non-empty = override declared, matching the
+    // typed field's own contract). The pre-typed
+    // `Node::extras["__node_weights"]` sidecar stays accepted as a
+    // legacy input for hand-authored scenes; the typed field wins when
+    // both are present, and the sidecar key is consumed either way so
+    // it never leaks into the emitted JSON `extras`.
+    let legacy_weights = effective_extras.remove("__node_weights").and_then(|v| {
         v.as_array().map(|arr| {
             arr.iter()
                 .filter_map(|x| x.as_f64().map(|f| f as f32))
                 .collect::<Vec<f32>>()
         })
     });
+    let node_weights = if n.weights.is_empty() {
+        legacy_weights
+    } else {
+        Some(n.weights.clone())
+    };
     let visibility = effective_extras
         .remove("KHR_node_visibility")
         .and_then(|v| v.as_bool());

@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Typed `Node::weights` (`oxideav-mesh3d` 0.0.5 adoption, part 3)** —
+  the §5.25.9 per-instance morph-weight override now decodes into the
+  typed `oxideav_mesh3d::Node::weights` field instead of the
+  `Node::extras["__node_weights"]` sidecar, so two nodes sharing one
+  mesh hold independent static blend states and
+  `Scene3D::effective_morph_weights` resolves the static node > mesh
+  half of the §3.7.4 *animation > node > mesh* precedence chain
+  directly on the decoded scene (an animated `MorphWeights` channel
+  beats both at runtime — carried unchanged by this crate's §3.11
+  animation path). The encoder emits the typed vector back into the
+  JSON `node.weights` property; the pre-typed sidecar stays accepted
+  as a legacy encoder input (typed wins on a collision; the key is
+  consumed either way). The §5.25.9 decode-time MUSTs
+  (`NodeWeightsWithoutMesh` / `NodeWeightsLength` /
+  `NodeWeightsEmpty` / `MeshWeightsEmpty`) are unchanged. Test suite
+  grows to 11 (`tests/node_weights.rs`): typed round-trip +
+  precedence resolution, mesh-default fallback, shared-mesh distinct
+  overrides, typed-vs-legacy precedence, and a full
+  animation-channel + node-override + mesh-default coexistence
+  round trip.
+
 - **Typed `KHR_texture_transform` (`oxideav-mesh3d` 0.0.5 adoption,
   part 2)** — the five core PBR texture slots now decode their
   `KHR_texture_transform` block into the typed
@@ -160,10 +181,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declared-but-empty array → `NodeWeightsEmpty` (schema A.29
   `minItems: 1`), with the sibling `MeshWeightsEmpty` enforcing the
   same `minItems: 1` on a declared-but-empty `mesh.weights` (schema
-  A.26). Migrating the sidecar to the typed `Node::weights` /
-  `Scene3D::effective_morph_weights` surface awaits the next published
-  `oxideav-mesh3d` release (the field exists on that crate's master
-  but not in the published 0.0.4).
+  A.26). (The sidecar was subsequently migrated to the typed
+  `Node::weights` surface within this same release once
+  `oxideav-mesh3d` 0.0.5 published — see the adoption entry above.)
 
 - **Buffer `data:`-URI mediatype validation (spec §3.9.1)** — a new
   `validate_buffers` pass rejects any buffer whose `data:` URI carries a
