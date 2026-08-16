@@ -752,7 +752,13 @@ framework but usable standalone.
   scene index is honoured on both decode and encode
 - Textures with samplers + images (buffer-view-backed images via
   `BufferViewAsset` for zero-copy slicing into the `.glb` BIN chunk;
-  `data:` URI base64 inlining; external URI passthrough)
+  `data:` URI base64 inlining; external URI passthrough). Sampler
+  state is round-trip exact: `magFilter` / `minFilter` have no spec
+  default (§3.8.4.1), so an undefined filter decodes to the typed
+  `Option::None` and re-encodes as an absent key rather than being
+  coerced to LINEAR / trilinear; REPEAT wraps (the §5.26 default) are
+  omitted on the wire, and a texture carrying the glTF default sampler
+  state (`Sampler::default_sampler()`) emits no sampler object at all
 - Morph targets per spec §3.7.2.2 — the decoder fills the typed
   `oxideav_mesh3d::Primitive::targets` field
   (`MorphTarget { position, normal, tangent }` vertex deltas) and the

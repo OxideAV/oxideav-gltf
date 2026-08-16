@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Typed sampler fidelity (`oxideav-mesh3d` 0.0.5 adoption, part 1)** —
+  the published `oxideav_mesh3d::Sampler` now keeps `mag_filter` /
+  `min_filter` `Option`-shaped because glTF gives the two filters NO
+  default (§3.8.4.1: an undefined filter is the runtime's choice).
+  The decoder previously coerced an absent `magFilter` to LINEAR and
+  an absent `minFilter` to trilinear, and the encoder re-emitted those
+  manufactured values as explicit choices; both directions now
+  preserve the undefined state. On encode: an undefined filter emits
+  no key, a REPEAT wrap mode (the §5.26.3/§5.26.4 spec default) is
+  omitted, and a texture whose sampler state equals
+  `Sampler::default_sampler()` (repeat wrapping + both filters
+  undefined — exactly the samplerless-texture state) emits **no**
+  sampler object and no `texture.sampler` reference at all, so a
+  samplerless source document round-trips shape-exact instead of
+  gaining an all-defaults sampler. 11 new tests
+  (`tests/sampler_roundtrip.rs`) cover undefined-vs-explicit filter
+  distinguishability, all six `minFilter` enums, wrap-mode defaults,
+  sampler dedup with the default state excluded, and a 21-combination
+  encode→decode sweep.
+
 - **Full Object Model pointer-template registry** — `object_model.rs`
   now transcribes the entire staged
   `docs/3d/gltf/ObjectModel.md` (its arrival closes the round-269

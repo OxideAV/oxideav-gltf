@@ -1528,18 +1528,26 @@ fn convert_sampler_index(root: &GltfRoot, idx: Option<u32>) -> Sampler {
         },
         None => return Sampler::default_sampler(),
     };
+    // glTF gives `magFilter` / `minFilter` NO default (§3.8.4.1 — an
+    // undefined filter leaves the choice to the runtime), so an absent
+    // filter maps to `None` rather than being silently coerced to an
+    // explicit LINEAR / trilinear choice. Out-of-set integers never
+    // reach this point — `validate_samplers` (§5.26) rejected them —
+    // so the wildcard arms are unreachable and conservatively map to
+    // the undefined state.
     let mag_filter = match s.mag_filter {
-        Some(gj::MAG_FILTER_NEAREST) => MagFilter::Nearest,
-        _ => MagFilter::Linear,
+        Some(gj::MAG_FILTER_NEAREST) => Some(MagFilter::Nearest),
+        Some(gj::MAG_FILTER_LINEAR) => Some(MagFilter::Linear),
+        _ => None,
     };
     let min_filter = match s.min_filter {
-        Some(gj::MIN_FILTER_NEAREST) => MinFilter::Nearest,
-        Some(gj::MIN_FILTER_LINEAR) => MinFilter::Linear,
-        Some(gj::MIN_FILTER_NEAREST_MIPMAP_NEAREST) => MinFilter::NearestMipNearest,
-        Some(gj::MIN_FILTER_LINEAR_MIPMAP_NEAREST) => MinFilter::LinearMipNearest,
-        Some(gj::MIN_FILTER_NEAREST_MIPMAP_LINEAR) => MinFilter::NearestMipLinear,
-        Some(gj::MIN_FILTER_LINEAR_MIPMAP_LINEAR) | None => MinFilter::LinearMipLinear,
-        Some(_) => MinFilter::LinearMipLinear,
+        Some(gj::MIN_FILTER_NEAREST) => Some(MinFilter::Nearest),
+        Some(gj::MIN_FILTER_LINEAR) => Some(MinFilter::Linear),
+        Some(gj::MIN_FILTER_NEAREST_MIPMAP_NEAREST) => Some(MinFilter::NearestMipNearest),
+        Some(gj::MIN_FILTER_LINEAR_MIPMAP_NEAREST) => Some(MinFilter::LinearMipNearest),
+        Some(gj::MIN_FILTER_NEAREST_MIPMAP_LINEAR) => Some(MinFilter::NearestMipLinear),
+        Some(gj::MIN_FILTER_LINEAR_MIPMAP_LINEAR) => Some(MinFilter::LinearMipLinear),
+        _ => None,
     };
     let wrap_s = wrap_mode(s.wrap_s);
     let wrap_t = wrap_mode(s.wrap_t);
@@ -1650,10 +1658,9 @@ fn convert_material(
             mat.base_color = c;
         }
         mat.base_color_texture = p.base_color_texture.as_ref().and_then(|t| {
-            texture_id_map.get(&t.index).map(|&id| TextureRef {
-                texture: id,
-                uv_set: t.tex_coord.unwrap_or(0),
-            })
+            texture_id_map
+                .get(&t.index)
+                .map(|&id| TextureRef::new(id).with_uv_set(t.tex_coord.unwrap_or(0)))
         });
         if let Some(v) = p.metallic_factor {
             mat.metallic = v;
@@ -1662,26 +1669,23 @@ fn convert_material(
             mat.roughness = v;
         }
         mat.metallic_roughness_texture = p.metallic_roughness_texture.as_ref().and_then(|t| {
-            texture_id_map.get(&t.index).map(|&id| TextureRef {
-                texture: id,
-                uv_set: t.tex_coord.unwrap_or(0),
-            })
+            texture_id_map
+                .get(&t.index)
+                .map(|&id| TextureRef::new(id).with_uv_set(t.tex_coord.unwrap_or(0)))
         });
     }
     if let Some(n) = &m.normal_texture {
-        mat.normal_texture = texture_id_map.get(&n.index).map(|&id| TextureRef {
-            texture: id,
-            uv_set: n.tex_coord.unwrap_or(0),
-        });
+        mat.normal_texture = texture_id_map
+            .get(&n.index)
+            .map(|&id| TextureRef::new(id).with_uv_set(n.tex_coord.unwrap_or(0)));
         if let Some(s) = n.scale {
             mat.normal_scale = s;
         }
     }
     if let Some(o) = &m.occlusion_texture {
-        mat.occlusion_texture = texture_id_map.get(&o.index).map(|&id| TextureRef {
-            texture: id,
-            uv_set: o.tex_coord.unwrap_or(0),
-        });
+        mat.occlusion_texture = texture_id_map
+            .get(&o.index)
+            .map(|&id| TextureRef::new(id).with_uv_set(o.tex_coord.unwrap_or(0)));
         if let Some(s) = o.strength {
             mat.occlusion_strength = s;
         }
@@ -1690,10 +1694,9 @@ fn convert_material(
         mat.emissive_factor = e;
     }
     if let Some(e) = &m.emissive_texture {
-        mat.emissive_texture = texture_id_map.get(&e.index).map(|&id| TextureRef {
-            texture: id,
-            uv_set: e.tex_coord.unwrap_or(0),
-        });
+        mat.emissive_texture = texture_id_map
+            .get(&e.index)
+            .map(|&id| TextureRef::new(id).with_uv_set(e.tex_coord.unwrap_or(0)));
     }
     // KHR_texture_transform — a `textureInfo.extensions` block carrying
     // offset / rotation / scale / texCoord per

@@ -2283,7 +2283,17 @@ fn encode_textures(scene: &Scene3D, root: &mut GltfRoot, bin: &mut Vec<u8>) -> R
         let image = encode_image(tex, root, bin)?;
         root.images.push(image);
 
-        let s_idx = resolve_sampler(&mut sampler_index, tex.sampler);
+        // The glTF default sampler state (repeat wrapping, both
+        // filters undefined — `Sampler::default_sampler()`) is exactly
+        // what a texture without a `sampler` property gets, so a
+        // texture carrying that state emits NO sampler reference at
+        // all: the samplerless source shape round-trips instead of
+        // gaining a redundant all-defaults sampler object.
+        let s_idx = if tex.sampler == Sampler::default_sampler() {
+            None
+        } else {
+            Some(resolve_sampler(&mut sampler_index, tex.sampler))
+        };
         let from_basisu = basisu_set.contains(&(i as u32));
         let (source, extensions) = if from_basisu {
             // Per `docs/3d/gltf/extensions/KHR_texture_basisu.md`
@@ -2306,7 +2316,7 @@ fn encode_textures(scene: &Scene3D, root: &mut GltfRoot, bin: &mut Vec<u8>) -> R
         };
         root.textures.push(gj::Texture {
             source,
-            sampler: Some(s_idx),
+            sampler: s_idx,
             name: tex.name.clone(),
             extensions,
         });
@@ -2363,25 +2373,31 @@ fn encode_image(tex: &Texture, root: &mut GltfRoot, bin: &mut Vec<u8>) -> Result
 }
 
 fn encode_sampler(s: Sampler) -> gj::Sampler {
-    let mag = match s.mag_filter {
+    // The two filters have NO spec default (§3.8.4.1): an undefined
+    // filter stays undefined on the wire — emitting a concrete value
+    // for it would silently commit the runtime to a choice the source
+    // never made. The wrap modes DO have a spec default (REPEAT,
+    // §5.26.3 / §5.26.4), so the default value is omitted for a
+    // compact document and non-default modes are emitted explicitly.
+    let mag = s.mag_filter.map(|m| match m {
         MagFilter::Nearest => gj::MAG_FILTER_NEAREST,
         MagFilter::Linear => gj::MAG_FILTER_LINEAR,
-    };
-    let min = match s.min_filter {
+    });
+    let min = s.min_filter.map(|m| match m {
         MinFilter::Nearest => gj::MIN_FILTER_NEAREST,
         MinFilter::Linear => gj::MIN_FILTER_LINEAR,
         MinFilter::NearestMipNearest => gj::MIN_FILTER_NEAREST_MIPMAP_NEAREST,
         MinFilter::LinearMipNearest => gj::MIN_FILTER_LINEAR_MIPMAP_NEAREST,
         MinFilter::NearestMipLinear => gj::MIN_FILTER_NEAREST_MIPMAP_LINEAR,
         MinFilter::LinearMipLinear => gj::MIN_FILTER_LINEAR_MIPMAP_LINEAR,
-    };
-    let wrap_s = wrap_to_int(s.wrap_s);
-    let wrap_t = wrap_to_int(s.wrap_t);
+    });
+    let wrap_s = (s.wrap_s != WrapMode::Repeat).then(|| wrap_to_int(s.wrap_s));
+    let wrap_t = (s.wrap_t != WrapMode::Repeat).then(|| wrap_to_int(s.wrap_t));
     gj::Sampler {
-        mag_filter: Some(mag),
-        min_filter: Some(min),
-        wrap_s: Some(wrap_s),
-        wrap_t: Some(wrap_t),
+        mag_filter: mag,
+        min_filter: min,
+        wrap_s,
+        wrap_t,
         name: None,
     }
 }
