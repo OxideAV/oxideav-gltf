@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Cross-surface adoption integration suite**
+  (`tests/mesh3d_adoption_integration.rs`) — one document carrying
+  all three typed surfaces adopted from `oxideav-mesh3d` 0.0.5 at
+  once (explicit + default-state samplers, a texCoord-overriding
+  `KHR_texture_transform`, and the full §3.7.4
+  *animation > node > mesh* morph-weight chain), round-tripped
+  through BOTH container flavours with a semantic fixed-point check:
+  the second encode must produce the identical JSON document value
+  and BIN payload, so none of the surfaces drifts or accretes across
+  decode → encode cycles.
+
 - **Typed `Node::weights` (`oxideav-mesh3d` 0.0.5 adoption, part 3)** —
   the §5.25.9 per-instance morph-weight override now decodes into the
   typed `oxideav_mesh3d::Node::weights` field instead of the
