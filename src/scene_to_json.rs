@@ -17,7 +17,7 @@ use std::io::Read;
 use oxideav_mesh3d::{
     AlphaMode, Animation, AnimationProperty, AnimationValues, Camera, ImageData, Indices,
     Interpolation, Light, MagFilter, Material, Mesh, MinFilter, Node, Primitive, Sampler, Scene3D,
-    Skin, Texture, Topology, Transform, WrapMode,
+    Skin, Texture, TextureRef, TextureTransform, Topology, Transform, WrapMode,
 };
 
 use crate::accessor::{
@@ -1971,15 +1971,19 @@ fn widen_u16(v: &[u16]) -> Vec<u32> {
 }
 
 fn encode_material(m: &Material) -> gj::Material {
-    // KHR_texture_transform — the decoder parks the per-slot transform
-    // in extras under the key `KHR_texture_transform:<slot>` where
-    // `<slot>` is one of `baseColor`, `metallicRoughness`, `normal`,
-    // `occlusion`, `emissive`. Lift each back into the typed
-    // textureInfo extensions block so the round-trip emits the spec
-    // object rather than a surplus `extras` key
+    // KHR_texture_transform — the typed `TextureRef::transform` is
+    // the primary source: the decoder fills it for each of the five
+    // core PBR texture slots, and the encoder emits it back into the
+    // textureInfo `extensions` block
     // (docs/3d/gltf/extensions/KHR_texture_transform.md §glTF Schema
-    // Updates). Helper closure consumes the matching extras entry and
-    // wraps it into the [`gj::TextureInfoExtensions`] shape.
+    // Updates), writing only the fields that differ from the spec
+    // defaults (a typed identity transform re-emits the declared bare
+    // `{}`). The pre-typed `extras["KHR_texture_transform:<slot>"]`
+    // sidecar (slot ∈ `baseColor` / `metallicRoughness` / `normal` /
+    // `occlusion` / `emissive`) stays accepted as a legacy input for
+    // hand-authored scenes; the typed field wins when both are
+    // present, and the extras key is consumed either way so it never
+    // leaks into the emitted JSON `extras`.
     let mut effective_extras = m.extras.clone();
     let mut take_transform = |slot: &str| -> Option<gj::TextureInfoExtensions> {
         let key = format!("KHR_texture_transform:{slot}");
@@ -1989,11 +1993,33 @@ fn encode_material(m: &Material) -> gj::Material {
             khr_texture_transform: Some(t),
         })
     };
-    let base_color_ext = take_transform("baseColor");
-    let metallic_roughness_ext = take_transform("metallicRoughness");
-    let normal_ext = take_transform("normal");
-    let occlusion_ext = take_transform("occlusion");
-    let emissive_ext = take_transform("emissive");
+    let slot_ext = |r: Option<TextureRef>, legacy: Option<gj::TextureInfoExtensions>| {
+        r.and_then(|r| r.transform)
+            .map(|tt| gj::TextureInfoExtensions {
+                khr_texture_transform: Some(encode_texture_transform(&tt)),
+            })
+            .or(legacy)
+    };
+    let base_color_ext = {
+        let legacy = take_transform("baseColor");
+        slot_ext(m.base_color_texture, legacy)
+    };
+    let metallic_roughness_ext = {
+        let legacy = take_transform("metallicRoughness");
+        slot_ext(m.metallic_roughness_texture, legacy)
+    };
+    let normal_ext = {
+        let legacy = take_transform("normal");
+        slot_ext(m.normal_texture, legacy)
+    };
+    let occlusion_ext = {
+        let legacy = take_transform("occlusion");
+        slot_ext(m.occlusion_texture, legacy)
+    };
+    let emissive_ext = {
+        let legacy = take_transform("emissive");
+        slot_ext(m.emissive_texture, legacy)
+    };
 
     let pbr = gj::PbrMetallicRoughness {
         base_color_factor: Some(m.base_color),
@@ -2715,6 +2741,22 @@ fn texture_info_extensions_from_value(v: &serde_json::Value) -> Option<gj::Textu
 // [`gj::TextureTransform`]. All four spec-defined fields (`offset`,
 // `rotation`, `scale`, `texCoord`) are optional; we accept partial
 // objects and silently ignore unknown keys.
+// Render the typed `oxideav_mesh3d::TextureTransform` back to the
+// on-wire `KHR_texture_transform` object, emitting only the fields
+// that differ from the spec defaults
+// (docs/3d/gltf/extensions/KHR_texture_transform.md §glTF Schema
+// Updates: `offset = [0, 0]`, `rotation = 0`, `scale = [1, 1]`, and
+// `texCoord` absent = the parent textureInfo's set). The typed
+// identity therefore emits the declared bare `{}` block.
+fn encode_texture_transform(tt: &TextureTransform) -> gj::TextureTransform {
+    gj::TextureTransform {
+        offset: (tt.offset != [0.0, 0.0]).then_some(tt.offset),
+        rotation: (tt.rotation != 0.0).then_some(tt.rotation),
+        scale: (tt.scale != [1.0, 1.0]).then_some(tt.scale),
+        tex_coord: tt.uv_set,
+    }
+}
+
 fn texture_transform_from_value(v: &serde_json::Value) -> Option<gj::TextureTransform> {
     let obj = v.as_object()?;
     let offset = obj.get("offset").and_then(|x| x.as_array()).and_then(|a| {

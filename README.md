@@ -245,17 +245,22 @@ framework but usable standalone.
   (`ExtensionStackUsedNotDeclared`)
 - KHR_texture_transform extension (Khronos ratified) — per-textureInfo
   affine UV transform (offset / rotation / scale / texCoord) from
-  `docs/3d/gltf/extensions/KHR_texture_transform.md`. The decoder lifts
-  the `materials[i].…Texture.extensions.KHR_texture_transform` object
-  from each of the five core PBR texture slots into
-  `oxideav_mesh3d::Material::extras["KHR_texture_transform:<slot>"]`
-  (slot ∈ `baseColor` / `metallicRoughness` / `normal` / `occlusion` /
-  `emissive`) as a JSON `Value::Object` carrying any of the four
-  spec-defined keys (`offset`, `rotation`, `scale`, `texCoord`); a bare
-  `{}` resolves to the spec defaults `offset = [0, 0]`, `rotation = 0`,
-  `scale = [1, 1]` (materialised at use time). The encoder lifts each
-  slot's transform back into the typed textureInfo extensions block and
-  appends `KHR_texture_transform` to `extensionsUsed`. Per the spec the
+  `docs/3d/gltf/extensions/KHR_texture_transform.md`. On the five core
+  PBR texture slots (`baseColor` / `metallicRoughness` / `normal` /
+  `occlusion` / `emissive`) the decoder fills the typed
+  `oxideav_mesh3d::TextureRef::transform`
+  (`Option<TextureTransform>`), materialising the spec defaults
+  `offset = [0, 0]`, `rotation = 0`, `scale = [1, 1]` for absent
+  fields and carrying the `texCoord` override in
+  `TextureTransform::uv_set` (so `TextureRef::effective_uv_set`
+  resolves the override-vs-base chain); `None` keeps "no transform
+  declared" distinguishable from a declared bare `{}`, which decodes
+  to the typed identity and re-encodes as the declared `{}` block.
+  The encoder emits the typed transform back into the textureInfo
+  extensions block (writing only non-default fields) and appends
+  `KHR_texture_transform` to `extensionsUsed`; the pre-typed
+  `Material::extras["KHR_texture_transform:<slot>"]` sidecar stays
+  accepted as a legacy encoder input (typed wins on a collision). Per the spec the
   transform "may be defined on `textureInfo` structures" — **any**
   textureInfo, not just the five core PBR slots — so the transform also
   rides every textureInfo nested inside a material extension

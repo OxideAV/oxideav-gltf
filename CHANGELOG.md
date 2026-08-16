@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Typed `KHR_texture_transform` (`oxideav-mesh3d` 0.0.5 adoption,
+  part 2)** — the five core PBR texture slots now decode their
+  `KHR_texture_transform` block into the typed
+  `oxideav_mesh3d::TextureRef::transform` (`Option<TextureTransform>`)
+  instead of the `Material::extras["KHR_texture_transform:<slot>"]`
+  JSON sidecar. Absent fields materialise the spec defaults
+  (`offset = [0, 0]`, `rotation = 0`, `scale = [1, 1]`); the
+  `texCoord` override lands in `TextureTransform::uv_set` so
+  `TextureRef::effective_uv_set()` resolves the §glTF-Schema-Updates
+  override chain; and `None` stays distinguishable from a declared
+  bare `{}` (the typed identity), which re-encodes as the declared
+  `{}` block with `KHR_texture_transform` in `extensionsUsed`. The
+  encoder writes only non-default fields, and the legacy extras
+  sidecar remains accepted as an encoder input for hand-authored
+  scenes (the typed field wins on a collision; the sidecar key is
+  consumed either way). Transforms nested on material-**extension**
+  textureInfos (`KHR_materials_specular.specularTexture`, …) keep
+  their verbatim ride inside the extension's extras object — those
+  textureInfos are not `TextureRef`-typed. Test suite grows to 19
+  (`tests/khr_texture_transform.rs`): typed round-trips on all five
+  slots, declared-identity vs undeclared, texCoord-override
+  resolution, negative-scale mirror, typed-vs-legacy precedence.
+
 - **Typed sampler fidelity (`oxideav-mesh3d` 0.0.5 adoption, part 1)** —
   the published `oxideav_mesh3d::Sampler` now keeps `mag_filter` /
   `min_filter` `Option`-shaped because glTF gives the two filters NO

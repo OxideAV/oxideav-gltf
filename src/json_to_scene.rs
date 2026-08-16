@@ -22,7 +22,7 @@ use oxideav_mesh3d::{
     AlphaMode, Animation, AnimationChannel, AnimationProperty, AnimationSampler, AnimationTarget,
     AnimationValues, Camera, ImageData, Indices, Interpolation, Light, MagFilter, Material,
     MaterialId, Mesh, MinFilter, Node, NodeId, Primitive, Sampler, Scene3D, Skeleton, Skin, SkinId,
-    Texture, TextureId, TextureRef, Topology, Transform, WrapMode,
+    Texture, TextureId, TextureRef, TextureTransform, Topology, Transform, WrapMode,
 };
 use serde_json::Value;
 
@@ -1653,39 +1653,55 @@ fn convert_material(
 ) -> Result<Material> {
     let mut mat = Material::new();
     mat.name = m.name.clone();
+    // Each of the five core PBR texture slots decodes into the typed
+    // `TextureRef` carrying its base `texCoord` in `uv_set` and, when
+    // the textureInfo declares a `KHR_texture_transform` extension
+    // block, the typed `TextureRef::transform`
+    // (docs/3d/gltf/extensions/KHR_texture_transform.md §glTF Schema
+    // Updates). Absent extension = `None` — kept distinguishable from
+    // a declared bare `{}`, which resolves to the typed identity (all
+    // four spec defaults: `offset = [0, 0]`, `rotation = 0`,
+    // `scale = [1, 1]`, `texCoord` unset) so the encoder re-emits the
+    // declared block.
+    let make_ref = |index: u32,
+                    tex_coord: Option<u32>,
+                    ext: Option<&gj::TextureInfoExtensions>|
+     -> Option<TextureRef> {
+        texture_id_map.get(&index).map(|&id| {
+            let mut r = TextureRef::new(id).with_uv_set(tex_coord.unwrap_or(0));
+            r.transform = ext
+                .and_then(|e| e.khr_texture_transform.as_ref())
+                .map(typed_texture_transform);
+            r
+        })
+    };
     if let Some(p) = &m.pbr_metallic_roughness {
         if let Some(c) = p.base_color_factor {
             mat.base_color = c;
         }
-        mat.base_color_texture = p.base_color_texture.as_ref().and_then(|t| {
-            texture_id_map
-                .get(&t.index)
-                .map(|&id| TextureRef::new(id).with_uv_set(t.tex_coord.unwrap_or(0)))
-        });
+        mat.base_color_texture = p
+            .base_color_texture
+            .as_ref()
+            .and_then(|t| make_ref(t.index, t.tex_coord, t.extensions.as_ref()));
         if let Some(v) = p.metallic_factor {
             mat.metallic = v;
         }
         if let Some(v) = p.roughness_factor {
             mat.roughness = v;
         }
-        mat.metallic_roughness_texture = p.metallic_roughness_texture.as_ref().and_then(|t| {
-            texture_id_map
-                .get(&t.index)
-                .map(|&id| TextureRef::new(id).with_uv_set(t.tex_coord.unwrap_or(0)))
-        });
+        mat.metallic_roughness_texture = p
+            .metallic_roughness_texture
+            .as_ref()
+            .and_then(|t| make_ref(t.index, t.tex_coord, t.extensions.as_ref()));
     }
     if let Some(n) = &m.normal_texture {
-        mat.normal_texture = texture_id_map
-            .get(&n.index)
-            .map(|&id| TextureRef::new(id).with_uv_set(n.tex_coord.unwrap_or(0)));
+        mat.normal_texture = make_ref(n.index, n.tex_coord, n.extensions.as_ref());
         if let Some(s) = n.scale {
             mat.normal_scale = s;
         }
     }
     if let Some(o) = &m.occlusion_texture {
-        mat.occlusion_texture = texture_id_map
-            .get(&o.index)
-            .map(|&id| TextureRef::new(id).with_uv_set(o.tex_coord.unwrap_or(0)));
+        mat.occlusion_texture = make_ref(o.index, o.tex_coord, o.extensions.as_ref());
         if let Some(s) = o.strength {
             mat.occlusion_strength = s;
         }
@@ -1694,52 +1710,8 @@ fn convert_material(
         mat.emissive_factor = e;
     }
     if let Some(e) = &m.emissive_texture {
-        mat.emissive_texture = texture_id_map
-            .get(&e.index)
-            .map(|&id| TextureRef::new(id).with_uv_set(e.tex_coord.unwrap_or(0)));
+        mat.emissive_texture = make_ref(e.index, e.tex_coord, e.extensions.as_ref());
     }
-    // KHR_texture_transform — a `textureInfo.extensions` block carrying
-    // offset / rotation / scale / texCoord per
-    // `docs/3d/gltf/extensions/KHR_texture_transform.md` §glTF Schema
-    // Updates. We surface it through `Material::extras` under the key
-    // `KHR_texture_transform:<slot>` (one entry per the five core PBR
-    // texture slots) so downstream raster consumers can apply the affine
-    // UV transform without us widening `oxideav_mesh3d::TextureRef`.
-    // Bare `{}` resolves to all four spec defaults (`offset = [0, 0]`,
-    // `rotation = 0`, `scale = [1, 1]`, `texCoord` unset).
-    if let Some(p) = &m.pbr_metallic_roughness {
-        stash_texture_transform(&mut mat, "baseColor", p.base_color_texture.as_ref());
-        stash_texture_transform(
-            &mut mat,
-            "metallicRoughness",
-            p.metallic_roughness_texture.as_ref(),
-        );
-    }
-    if let Some(n) = &m.normal_texture {
-        if let Some(tt) = n
-            .extensions
-            .as_ref()
-            .and_then(|e| e.khr_texture_transform.as_ref())
-        {
-            mat.extras.insert(
-                "KHR_texture_transform:normal".to_owned(),
-                texture_transform_to_json(tt),
-            );
-        }
-    }
-    if let Some(o) = &m.occlusion_texture {
-        if let Some(tt) = o
-            .extensions
-            .as_ref()
-            .and_then(|e| e.khr_texture_transform.as_ref())
-        {
-            mat.extras.insert(
-                "KHR_texture_transform:occlusion".to_owned(),
-                texture_transform_to_json(tt),
-            );
-        }
-    }
-    stash_texture_transform(&mut mat, "emissive", m.emissive_texture.as_ref());
     mat.alpha_mode = match m.alpha_mode.as_deref() {
         Some("MASK") => AlphaMode::Mask {
             cutoff: m.alpha_cutoff.unwrap_or(0.5),
@@ -3085,24 +3057,21 @@ fn topology_from_mode(mode: u32) -> Result<Topology> {
     })
 }
 
-// Stash a `KHR_texture_transform` block, if present on the given
-// textureInfo, into `mat.extras["KHR_texture_transform:<slot>"]`. A
-// no-op when the texture isn't set or has no transform. The slot key
-// pairs the transform back to the right textureInfo on the encoder
-// side. See `docs/3d/gltf/extensions/KHR_texture_transform.md`.
-fn stash_texture_transform(mat: &mut Material, slot: &str, info: Option<&gj::TextureInfo>) {
-    let Some(info) = info else { return };
-    let Some(tt) = info
-        .extensions
-        .as_ref()
-        .and_then(|e| e.khr_texture_transform.as_ref())
-    else {
-        return;
-    };
-    mat.extras.insert(
-        format!("KHR_texture_transform:{slot}"),
-        texture_transform_to_json(tt),
-    );
+// Convert an on-wire `KHR_texture_transform` extension object into
+// the typed `oxideav_mesh3d::TextureTransform`, materialising the
+// spec defaults for absent fields (`offset = [0, 0]`, `rotation = 0`,
+// `scale = [1, 1]`; `texCoord` stays an optional override). See
+// `docs/3d/gltf/extensions/KHR_texture_transform.md` §glTF Schema
+// Updates. A bare `{}` therefore becomes the typed identity —
+// `TextureTransform::IDENTITY` — which stays distinguishable from an
+// undeclared transform (`TextureRef::transform == None`).
+fn typed_texture_transform(t: &gj::TextureTransform) -> TextureTransform {
+    TextureTransform {
+        offset: t.offset.unwrap_or([0.0, 0.0]),
+        rotation: t.rotation.unwrap_or(0.0),
+        scale: t.scale.unwrap_or([1.0, 1.0]),
+        uv_set: t.tex_coord,
+    }
 }
 
 // Render a `TextureInfo` (texture index + optional texCoord) back to a

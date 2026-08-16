@@ -4,48 +4,42 @@
 //! `docs/3d/gltf/extensions/KHR_texture_transform.md` §glTF Schema
 //! Updates.
 //!
-//! All four fields are optional. The decoder surfaces the per-slot
-//! transform through `Material::extras["KHR_texture_transform:<slot>"]`
-//! as a JSON object so downstream raster consumers can apply the
-//! transform without us widening `oxideav_mesh3d::TextureRef`. The five
-//! recognised slot names mirror the core PBR textureInfo keys:
-//! `baseColor`, `metallicRoughness`, `normal`, `occlusion`,
-//! `emissive`.
+//! All four fields are optional. On the five core PBR texture slots
+//! (`baseColorTexture`, `metallicRoughnessTexture`, `normalTexture`,
+//! `occlusionTexture`, `emissiveTexture`) the decoder fills the typed
+//! `oxideav_mesh3d::TextureRef::transform`
+//! (`Option<TextureTransform>`), materialising the spec defaults for
+//! absent fields; `None` keeps "no transform declared"
+//! distinguishable from a declared bare `{}` (the typed identity).
+//! The encoder emits the typed transform back into the textureInfo
+//! `extensions` block, writing only the non-default fields. The
+//! pre-typed `Material::extras["KHR_texture_transform:<slot>"]`
+//! sidecar stays accepted as a legacy encoder input for hand-authored
+//! scenes (typed wins on a collision).
 
 use oxideav_gltf::{GltfDecoder, GltfEncoder};
-use oxideav_mesh3d::{Material, Mesh3DDecoder, Mesh3DEncoder, Scene3D, Texture, TextureRef};
+use oxideav_mesh3d::{
+    Material, Mesh3DDecoder, Mesh3DEncoder, Scene3D, Texture, TextureRef, TextureTransform,
+};
 use serde_json::Value;
 
 fn dummy_texture() -> Texture {
     Texture::from_encoded("image/png".to_owned(), vec![0xFFu8; 16])
 }
 
-fn transform_object<'a>(m: &'a Material, slot: &str) -> Option<&'a serde_json::Map<String, Value>> {
-    m.extras
-        .get(&format!("KHR_texture_transform:{slot}"))
-        .and_then(|v| v.as_object())
-}
-
-fn scene_with_emissive_transform(offset: [f64; 2], rotation: f64, scale: [f64; 2]) -> Scene3D {
+fn scene_with_emissive_transform(offset: [f32; 2], rotation: f32, scale: [f32; 2]) -> Scene3D {
     let mut scene = Scene3D::new();
     let tex_id = scene.add_texture(dummy_texture());
 
     let mut mat = Material::new();
     mat.emissive_factor = [1.0, 1.0, 1.0];
-    mat.emissive_texture = Some(TextureRef::new(tex_id));
-    let mut obj = serde_json::Map::new();
-    obj.insert(
-        "offset".to_owned(),
-        Value::Array(vec![Value::from(offset[0]), Value::from(offset[1])]),
-    );
-    obj.insert("rotation".to_owned(), Value::from(rotation));
-    obj.insert(
-        "scale".to_owned(),
-        Value::Array(vec![Value::from(scale[0]), Value::from(scale[1])]),
-    );
-    mat.extras.insert(
-        "KHR_texture_transform:emissive".to_owned(),
-        Value::Object(obj),
+    mat.emissive_texture = Some(
+        TextureRef::new(tex_id).with_transform(
+            TextureTransform::new()
+                .with_offset(offset)
+                .with_rotation(rotation)
+                .with_scale(scale),
+        ),
     );
     scene.add_material(mat);
     scene
@@ -71,24 +65,20 @@ fn texture_transform_roundtrips_via_glb() {
 
     assert_eq!(decoded.materials.len(), 1);
     let m = &decoded.materials[0];
-    let obj = transform_object(m, "emissive").expect("transform survives round-trip");
-
-    let offset = obj
-        .get("offset")
-        .and_then(|v| v.as_array())
-        .expect("offset present");
-    assert_eq!(offset[0].as_f64().unwrap(), 0.25);
-    assert_eq!(offset[1].as_f64().unwrap(), 0.5);
-
-    let rotation = obj.get("rotation").and_then(|v| v.as_f64()).unwrap();
-    assert!((rotation - 1.25).abs() < 1e-5);
-
-    let scale = obj
-        .get("scale")
-        .and_then(|v| v.as_array())
-        .expect("scale present");
-    assert_eq!(scale[0].as_f64().unwrap(), 2.0);
-    assert_eq!(scale[1].as_f64().unwrap(), 4.0);
+    let tt = m
+        .emissive_texture
+        .and_then(|r| r.transform)
+        .expect("typed transform survives round-trip");
+    assert_eq!(tt.offset, [0.25, 0.5]);
+    assert!((tt.rotation - 1.25).abs() < 1e-5);
+    assert_eq!(tt.scale, [2.0, 4.0]);
+    assert_eq!(tt.uv_set, None);
+    assert!(
+        m.extras
+            .keys()
+            .all(|k| !k.starts_with("KHR_texture_transform:")),
+        "the typed surface replaces the extras sidecar on decode"
+    );
 }
 
 #[test]
@@ -145,8 +135,9 @@ fn bare_extension_object_decodes_to_empty_transform() {
     // Per the spec §glTF Schema Updates, all four fields (`offset`,
     // `rotation`, `scale`, `texCoord`) are optional with defaults
     // `[0, 0]`, `0`, `[1, 1]`, and the parent texCoord respectively —
-    // so a bare `{}` extension object resolves to an empty record on
-    // our side (consumers materialise the defaults at use time).
+    // so a bare `{}` extension object resolves to the typed identity
+    // transform (the defaults materialised), still distinguishable
+    // from an undeclared transform (`None`).
     let json = br#"{
         "asset": { "version": "2.0" },
         "extensionsUsed": ["KHR_texture_transform"],
@@ -170,12 +161,178 @@ fn bare_extension_object_decodes_to_empty_transform() {
     let augmented = serde_json::to_vec(&json_obj).unwrap();
     let scene = GltfDecoder::new().decode(&augmented).unwrap();
     assert_eq!(scene.materials.len(), 1);
-    let obj = transform_object(&scene.materials[0], "emissive")
-        .expect("bare transform still surfaces on the slot key");
-    assert!(
-        obj.is_empty(),
-        "bare {{}} extension object decodes as an empty map (defaults applied at use time), got {obj:?}"
+    let tt = scene.materials[0]
+        .emissive_texture
+        .and_then(|r| r.transform)
+        .expect("bare {} still surfaces as a declared transform");
+    assert_eq!(
+        tt,
+        TextureTransform::IDENTITY,
+        "bare {{}} materialises the four spec defaults — the typed identity"
     );
+    assert!(tt.is_identity());
+}
+
+#[test]
+fn declared_identity_reencodes_as_bare_object() {
+    // `Some(IDENTITY)` means the source declared the extension block
+    // with all-default fields — the encoder must re-emit the declared
+    // `{}` (and the `extensionsUsed` entry), NOT drop the block, so
+    // declared-vs-undeclared survives the round trip.
+    let mut scene = Scene3D::new();
+    let tex_id = scene.add_texture(dummy_texture());
+    let mut mat = Material::new();
+    mat.emissive_texture = Some(TextureRef::new(tex_id).with_transform(TextureTransform::IDENTITY));
+    scene.add_material(mat);
+
+    let glb = GltfEncoder::new().encode(&scene).unwrap();
+    let json_bytes = extract_json_chunk(&glb);
+    let json: Value = serde_json::from_slice(&json_bytes).unwrap();
+    let block = &json["materials"][0]["emissiveTexture"]["extensions"]["KHR_texture_transform"];
+    assert_eq!(
+        block,
+        &serde_json::json!({}),
+        "identity transform emits the bare declared block"
+    );
+
+    let decoded = GltfDecoder::new().decode(&glb).unwrap();
+    assert_eq!(
+        decoded.materials[0]
+            .emissive_texture
+            .and_then(|r| r.transform),
+        Some(TextureTransform::IDENTITY)
+    );
+}
+
+#[test]
+fn undeclared_transform_stays_none() {
+    let mut scene = Scene3D::new();
+    let tex_id = scene.add_texture(dummy_texture());
+    let mut mat = Material::new();
+    mat.emissive_texture = Some(TextureRef::new(tex_id));
+    scene.add_material(mat);
+
+    let glb = GltfEncoder::new().encode(&scene).unwrap();
+    let decoded = GltfDecoder::new().decode(&glb).unwrap();
+    assert_eq!(
+        decoded.materials[0]
+            .emissive_texture
+            .and_then(|r| r.transform),
+        None,
+        "no declared block decodes to None, not to an identity"
+    );
+}
+
+#[test]
+fn tex_coord_override_roundtrips_and_resolves() {
+    // The transform's `texCoord` overrides the parent textureInfo's
+    // set: `TextureRef::effective_uv_set` must resolve the chain, and
+    // both values must survive the round trip independently.
+    let mut scene = Scene3D::new();
+    let tex_id = scene.add_texture(dummy_texture());
+    let mut mat = Material::new();
+    mat.base_color_texture = Some(
+        TextureRef::new(tex_id)
+            .with_uv_set(0)
+            .with_transform(TextureTransform::new().with_uv_set(1)),
+    );
+    scene.add_material(mat);
+
+    let glb = GltfEncoder::new().encode(&scene).unwrap();
+    let json_bytes = extract_json_chunk(&glb);
+    let json: Value = serde_json::from_slice(&json_bytes).unwrap();
+    let info = &json["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"];
+    assert!(
+        info.get("texCoord").is_none(),
+        "base texCoord 0 stays omitted"
+    );
+    assert_eq!(info["extensions"]["KHR_texture_transform"]["texCoord"], 1);
+
+    let decoded = GltfDecoder::new().decode(&glb).unwrap();
+    let r = decoded.materials[0].base_color_texture.unwrap();
+    assert_eq!(r.uv_set, 0);
+    let tt = r.transform.expect("transform present");
+    assert_eq!(tt.uv_set, Some(1));
+    assert_eq!(r.effective_uv_set(), 1, "override wins over the base set");
+    assert!(
+        !tt.is_identity(),
+        "a texCoord-only override is not an identity"
+    );
+}
+
+#[test]
+fn typed_transform_wins_over_legacy_sidecar() {
+    // Both the typed field and the legacy extras key present: the
+    // typed value is emitted, and the extras key is consumed (it must
+    // not leak into the document's `extras`).
+    let mut scene = Scene3D::new();
+    let tex_id = scene.add_texture(dummy_texture());
+    let mut mat = Material::new();
+    mat.emissive_texture =
+        Some(TextureRef::new(tex_id).with_transform(TextureTransform::new().with_rotation(0.25)));
+    mat.extras.insert(
+        "KHR_texture_transform:emissive".to_owned(),
+        serde_json::json!({ "rotation": 0.75 }),
+    );
+    scene.add_material(mat);
+
+    let glb = GltfEncoder::new().encode(&scene).unwrap();
+    let json_bytes = extract_json_chunk(&glb);
+    let raw = std::str::from_utf8(&json_bytes).unwrap();
+    assert!(
+        !raw.contains("KHR_texture_transform:emissive"),
+        "legacy sidecar key consumed, got: {raw}"
+    );
+    let decoded = GltfDecoder::new().decode(&glb).unwrap();
+    let tt = decoded.materials[0]
+        .emissive_texture
+        .and_then(|r| r.transform)
+        .unwrap();
+    assert!(
+        (tt.rotation - 0.25).abs() < 1e-6,
+        "typed value wins, got {}",
+        tt.rotation
+    );
+}
+
+#[test]
+fn negative_scale_mirror_roundtrips() {
+    // Negative scale components are legal (axis mirror — the spec's
+    // bottom-left-origin T-axis flip is `scale: [1, -1]` with
+    // `offset: [0, 1]`).
+    let scene = scene_with_emissive_transform([0.0, 1.0], 0.0, [1.0, -1.0]);
+    let glb = GltfEncoder::new().encode(&scene).unwrap();
+    let decoded = GltfDecoder::new().decode(&glb).unwrap();
+    let tt = decoded.materials[0]
+        .emissive_texture
+        .and_then(|r| r.transform)
+        .unwrap();
+    assert_eq!(tt.offset, [0.0, 1.0]);
+    assert_eq!(tt.scale, [1.0, -1.0]);
+}
+
+#[test]
+fn all_five_core_slots_carry_independent_typed_transforms() {
+    let mut scene = Scene3D::new();
+    let tex_id = scene.add_texture(dummy_texture());
+    let mut mat = Material::new();
+    let tr = |rot: f32| TextureTransform::new().with_rotation(rot);
+    mat.base_color_texture = Some(TextureRef::new(tex_id).with_transform(tr(0.1)));
+    mat.metallic_roughness_texture = Some(TextureRef::new(tex_id).with_transform(tr(0.2)));
+    mat.normal_texture = Some(TextureRef::new(tex_id).with_transform(tr(0.3)));
+    mat.occlusion_texture = Some(TextureRef::new(tex_id).with_transform(tr(0.4)));
+    mat.emissive_texture = Some(TextureRef::new(tex_id).with_transform(tr(0.5)));
+    scene.add_material(mat);
+
+    let glb = GltfEncoder::new().encode(&scene).unwrap();
+    let decoded = GltfDecoder::new().decode(&glb).unwrap();
+    let m = &decoded.materials[0];
+    let rot = |r: Option<TextureRef>| r.and_then(|r| r.transform).map(|t| t.rotation).unwrap();
+    assert!((rot(m.base_color_texture) - 0.1).abs() < 1e-6);
+    assert!((rot(m.metallic_roughness_texture) - 0.2).abs() < 1e-6);
+    assert!((rot(m.normal_texture) - 0.3).abs() < 1e-6);
+    assert!((rot(m.occlusion_texture) - 0.4).abs() < 1e-6);
+    assert!((rot(m.emissive_texture) - 0.5).abs() < 1e-6);
 }
 
 #[test]
@@ -204,20 +361,22 @@ fn explicit_transform_decodes_with_all_fields() {
         ]
     }"#;
     let scene = GltfDecoder::new().decode(json).unwrap();
-    let obj = transform_object(&scene.materials[0], "emissive").expect("transform present");
-    let offset = obj.get("offset").and_then(|v| v.as_array()).unwrap();
-    assert_eq!(offset[0].as_f64().unwrap(), 0.0);
-    assert_eq!(offset[1].as_f64().unwrap(), 1.0);
-    // The spec example rotates 90° (π/2 radians); the stored value
-    // round-trips through the extension's `f32` field, so compare
-    // against the same quarter-turn expressed without spelling out the
-    // approximate constant (which clippy flags).
-    let quarter_turn = (std::f64::consts::PI / 2.0) as f32 as f64;
-    assert!((obj.get("rotation").and_then(|v| v.as_f64()).unwrap() - quarter_turn).abs() < 1e-5);
-    let scale = obj.get("scale").and_then(|v| v.as_array()).unwrap();
-    assert_eq!(scale[0].as_f64().unwrap(), 0.5);
-    assert_eq!(scale[1].as_f64().unwrap(), 0.5);
-    assert_eq!(obj.get("texCoord").and_then(|v| v.as_u64()).unwrap(), 1);
+    let tt = scene.materials[0]
+        .emissive_texture
+        .and_then(|r| r.transform)
+        .expect("transform present");
+    assert_eq!(tt.offset, [0.0, 1.0]);
+    // The spec example rotates 90° (π/2 radians).
+    assert!((tt.rotation - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+    assert_eq!(tt.scale, [0.5, 0.5]);
+    assert_eq!(tt.uv_set, Some(1));
+    assert_eq!(
+        scene.materials[0]
+            .emissive_texture
+            .unwrap()
+            .effective_uv_set(),
+        1
+    );
 }
 
 #[test]
@@ -249,7 +408,11 @@ fn texture_transform_data_block_without_extensions_used_is_rejected() {
 }
 
 #[test]
-fn transform_on_base_color_slot_roundtrips() {
+fn legacy_sidecar_input_on_base_color_slot_roundtrips() {
+    // Pre-typed hand-authored scenes park the transform under
+    // `Material::extras["KHR_texture_transform:<slot>"]` — the encoder
+    // still lifts that legacy shape; the decode side of the round trip
+    // now surfaces it through the typed field.
     let mut scene = Scene3D::new();
     let tex_id = scene.add_texture(dummy_texture());
     let mut mat = Material::new();
@@ -265,10 +428,11 @@ fn transform_on_base_color_slot_roundtrips() {
     let glb = GltfEncoder::new().encode(&scene).unwrap();
     let decoded = GltfDecoder::new().decode(&glb).unwrap();
 
-    let obj = transform_object(&decoded.materials[0], "baseColor")
-        .expect("baseColor slot transform survives round-trip");
-    let rotation = obj.get("rotation").and_then(|v| v.as_f64()).unwrap();
-    assert!((rotation - 0.6).abs() < 1e-5);
+    let tt = decoded.materials[0]
+        .base_color_texture
+        .and_then(|r| r.transform)
+        .expect("legacy sidecar input surfaces typed after the round trip");
+    assert!((tt.rotation - 0.6).abs() < 1e-5);
 }
 
 // --- KHR_texture_transform on material-EXTENSION texture slots -------
@@ -488,17 +652,10 @@ fn transform_on_normal_slot_roundtrips_with_scale_too() {
     let mut scene = Scene3D::new();
     let tex_id = scene.add_texture(dummy_texture());
     let mut mat = Material::new();
-    mat.normal_texture = Some(TextureRef::new(tex_id));
+    mat.normal_texture = Some(
+        TextureRef::new(tex_id).with_transform(TextureTransform::new().with_offset([0.1, 0.2])),
+    );
     mat.normal_scale = 1.5; // distinct from the default to confirm both round-trip
-    let mut obj = serde_json::Map::new();
-    obj.insert(
-        "offset".to_owned(),
-        Value::Array(vec![Value::from(0.1_f64), Value::from(0.2_f64)]),
-    );
-    mat.extras.insert(
-        "KHR_texture_transform:normal".to_owned(),
-        Value::Object(obj),
-    );
     scene.add_material(mat);
 
     let glb = GltfEncoder::new().encode(&scene).unwrap();
@@ -510,8 +667,10 @@ fn transform_on_normal_slot_roundtrips_with_scale_too() {
         "normal scale survives transform integration, got {}",
         dm.normal_scale
     );
-    let obj = transform_object(dm, "normal").expect("normal slot transform present");
-    let offset = obj.get("offset").and_then(|v| v.as_array()).unwrap();
-    assert!((offset[0].as_f64().unwrap() - 0.1).abs() < 1e-6);
-    assert!((offset[1].as_f64().unwrap() - 0.2).abs() < 1e-6);
+    let tt = dm
+        .normal_texture
+        .and_then(|r| r.transform)
+        .expect("normal slot transform present");
+    assert!((tt.offset[0] - 0.1).abs() < 1e-6);
+    assert!((tt.offset[1] - 0.2).abs() < 1e-6);
 }
