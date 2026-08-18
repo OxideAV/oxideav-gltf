@@ -30,11 +30,11 @@ fn scene_with_morph_and_rotation() -> Scene3D {
     // declare at least one morph target (spec §3.11). Add a zero-delta
     // POSITION target so the encoder-side validator (and the
     // round-trip decoder) both accept the document.
-    prim.targets.push(MorphTarget {
-        position: Some(vec![[0.0, 0.0, 0.0]; 3]),
-        normal: None,
-        tangent: None,
-    });
+    prim.targets.push(MorphTarget::with_deltas(
+        Some(vec![[0.0, 0.0, 0.0]; 3]),
+        None,
+        None,
+    ));
     let mut mesh = Mesh::new(Some("m".to_owned()));
     mesh.primitives.push(prim);
     let mid = scene.add_mesh(mesh);
@@ -222,11 +222,11 @@ fn scene_with_signed_rotation() -> Scene3D {
     prim.positions = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
     // r7: a `weights` animation channel requires the mesh to declare
     // at least one morph target (spec §3.11).
-    prim.targets.push(MorphTarget {
-        position: Some(vec![[0.0, 0.0, 0.0]; 3]),
-        normal: None,
-        tangent: None,
-    });
+    prim.targets.push(MorphTarget::with_deltas(
+        Some(vec![[0.0, 0.0, 0.0]; 3]),
+        None,
+        None,
+    ));
     let mut mesh = Mesh::new(Some("m".to_owned()));
     mesh.primitives.push(prim);
     let mid = scene.add_mesh(mesh);
@@ -391,11 +391,11 @@ fn quantize_ibyte_reserves_minus_128_slot() {
     prim.positions = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
     // r7: a `weights` animation channel requires the mesh to declare
     // at least one morph target (spec §3.11).
-    prim.targets.push(MorphTarget {
-        position: Some(vec![[0.0, 0.0, 0.0]; 3]),
-        normal: None,
-        tangent: None,
-    });
+    prim.targets.push(MorphTarget::with_deltas(
+        Some(vec![[0.0, 0.0, 0.0]; 3]),
+        None,
+        None,
+    ));
     let mut mesh = Mesh::new(Some("m".to_owned()));
     mesh.primitives.push(prim);
     let mid = scene.add_mesh(mesh);

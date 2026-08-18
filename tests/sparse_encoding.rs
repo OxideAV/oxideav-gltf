@@ -24,11 +24,11 @@ fn mostly_zero_morph_scene() -> Scene3D {
     // morph targets (spec §3.11). Four zero-delta POSITION targets
     // match the 4-morph-target stride below.
     for _ in 0..4 {
-        prim.targets.push(MorphTarget {
-            position: Some(vec![[0.0, 0.0, 0.0]; 3]),
-            normal: None,
-            tangent: None,
-        });
+        prim.targets.push(MorphTarget::with_deltas(
+            Some(vec![[0.0, 0.0, 0.0]; 3]),
+            None,
+            None,
+        ));
     }
     let mut mesh = Mesh::new(Some("morph_target_mesh".to_owned()));
     mesh.primitives.push(prim);

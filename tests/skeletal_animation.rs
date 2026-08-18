@@ -224,16 +224,16 @@ fn morph_weights_channel_roundtrip() {
     // r7: a `weights` animation channel requires the mesh to declare
     // morph targets (spec §3.11). Two zero-delta POSITION targets
     // match the 2-weight-per-keyframe stride below.
-    prim.targets.push(MorphTarget {
-        position: Some(vec![[0.0, 0.0, 0.0]; 3]),
-        normal: None,
-        tangent: None,
-    });
-    prim.targets.push(MorphTarget {
-        position: Some(vec![[0.0, 0.0, 0.0]; 3]),
-        normal: None,
-        tangent: None,
-    });
+    prim.targets.push(MorphTarget::with_deltas(
+        Some(vec![[0.0, 0.0, 0.0]; 3]),
+        None,
+        None,
+    ));
+    prim.targets.push(MorphTarget::with_deltas(
+        Some(vec![[0.0, 0.0, 0.0]; 3]),
+        None,
+        None,
+    ));
     let mut mesh = Mesh::new(Some("morphy".to_owned()));
     mesh.primitives.push(prim);
     let mid = scene.add_mesh(mesh);

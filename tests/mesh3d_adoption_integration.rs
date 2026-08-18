@@ -67,11 +67,11 @@ fn build_scene() -> Scene3D {
         vec![[0.5, 0.5], [0.75, 0.5], [0.5, 0.75]],
     ];
     prim.material = Some(mat_id);
-    prim.targets = vec![MorphTarget {
-        position: Some(vec![[0.1, 0.0, 0.0], [0.1, 0.0, 0.0], [0.1, 0.0, 0.0]]),
-        normal: None,
-        tangent: None,
-    }];
+    prim.targets = vec![MorphTarget::with_deltas(
+        Some(vec![[0.1, 0.0, 0.0], [0.1, 0.0, 0.0], [0.1, 0.0, 0.0]]),
+        None,
+        None,
+    )];
     let mut mesh = Mesh::new(Some("morphed".to_owned()));
     mesh.primitives.push(prim);
     mesh.weights = vec![0.5];
