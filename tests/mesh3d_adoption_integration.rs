@@ -25,6 +25,21 @@ use oxideav_mesh3d::{
     TextureTransform, Topology, WrapMode,
 };
 
+// Constructs a MorphTarget compatibly with both the published 0.0.5
+// surface (plain struct) and newer non_exhaustive revisions: named
+// constructor + public-field assignment, never a struct literal.
+fn morph_target(
+    position: Option<Vec<[f32; 3]>>,
+    normal: Option<Vec<[f32; 3]>>,
+    tangent: Option<Vec<[f32; 3]>>,
+) -> MorphTarget {
+    let mut t = MorphTarget::new();
+    t.position = position;
+    t.normal = normal;
+    t.tangent = tangent;
+    t
+}
+
 fn build_scene() -> Scene3D {
     let mut scene = Scene3D::new();
 
@@ -67,7 +82,7 @@ fn build_scene() -> Scene3D {
         vec![[0.5, 0.5], [0.75, 0.5], [0.5, 0.75]],
     ];
     prim.material = Some(mat_id);
-    prim.targets = vec![MorphTarget::with_deltas(
+    prim.targets = vec![morph_target(
         Some(vec![[0.1, 0.0, 0.0], [0.1, 0.0, 0.0], [0.1, 0.0, 0.0]]),
         None,
         None,

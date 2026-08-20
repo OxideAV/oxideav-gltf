@@ -16,6 +16,21 @@ use oxideav_mesh3d::{
 /// Build a minimal rigged scene: one mesh node, two joint nodes, two
 /// IBM matrices, three animation channels covering all paths +
 /// interpolations.
+// Constructs a MorphTarget compatibly with both the published 0.0.5
+// surface (plain struct) and newer non_exhaustive revisions: named
+// constructor + public-field assignment, never a struct literal.
+fn morph_target(
+    position: Option<Vec<[f32; 3]>>,
+    normal: Option<Vec<[f32; 3]>>,
+    tangent: Option<Vec<[f32; 3]>>,
+) -> MorphTarget {
+    let mut t = MorphTarget::new();
+    t.position = position;
+    t.normal = normal;
+    t.tangent = tangent;
+    t
+}
+
 fn rigged_scene() -> Scene3D {
     let mut scene = Scene3D::new();
 
@@ -224,16 +239,10 @@ fn morph_weights_channel_roundtrip() {
     // r7: a `weights` animation channel requires the mesh to declare
     // morph targets (spec §3.11). Two zero-delta POSITION targets
     // match the 2-weight-per-keyframe stride below.
-    prim.targets.push(MorphTarget::with_deltas(
-        Some(vec![[0.0, 0.0, 0.0]; 3]),
-        None,
-        None,
-    ));
-    prim.targets.push(MorphTarget::with_deltas(
-        Some(vec![[0.0, 0.0, 0.0]; 3]),
-        None,
-        None,
-    ));
+    prim.targets
+        .push(morph_target(Some(vec![[0.0, 0.0, 0.0]; 3]), None, None));
+    prim.targets
+        .push(morph_target(Some(vec![[0.0, 0.0, 0.0]; 3]), None, None));
     let mut mesh = Mesh::new(Some("morphy".to_owned()));
     mesh.primitives.push(prim);
     let mid = scene.add_mesh(mesh);

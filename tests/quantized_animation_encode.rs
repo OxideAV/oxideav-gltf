@@ -22,6 +22,21 @@ use oxideav_mesh3d::{
     Primitive, Scene3D, Topology,
 };
 
+// Constructs a MorphTarget compatibly with both the published 0.0.5
+// surface (plain struct) and newer non_exhaustive revisions: named
+// constructor + public-field assignment, never a struct literal.
+fn morph_target(
+    position: Option<Vec<[f32; 3]>>,
+    normal: Option<Vec<[f32; 3]>>,
+    tangent: Option<Vec<[f32; 3]>>,
+) -> MorphTarget {
+    let mut t = MorphTarget::new();
+    t.position = position;
+    t.normal = normal;
+    t.tangent = tangent;
+    t
+}
+
 fn scene_with_morph_and_rotation() -> Scene3D {
     let mut scene = Scene3D::new();
     let mut prim = Primitive::new(Topology::Triangles);
@@ -30,11 +45,8 @@ fn scene_with_morph_and_rotation() -> Scene3D {
     // declare at least one morph target (spec §3.11). Add a zero-delta
     // POSITION target so the encoder-side validator (and the
     // round-trip decoder) both accept the document.
-    prim.targets.push(MorphTarget::with_deltas(
-        Some(vec![[0.0, 0.0, 0.0]; 3]),
-        None,
-        None,
-    ));
+    prim.targets
+        .push(morph_target(Some(vec![[0.0, 0.0, 0.0]; 3]), None, None));
     let mut mesh = Mesh::new(Some("m".to_owned()));
     mesh.primitives.push(prim);
     let mid = scene.add_mesh(mesh);
@@ -222,11 +234,8 @@ fn scene_with_signed_rotation() -> Scene3D {
     prim.positions = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
     // r7: a `weights` animation channel requires the mesh to declare
     // at least one morph target (spec §3.11).
-    prim.targets.push(MorphTarget::with_deltas(
-        Some(vec![[0.0, 0.0, 0.0]; 3]),
-        None,
-        None,
-    ));
+    prim.targets
+        .push(morph_target(Some(vec![[0.0, 0.0, 0.0]; 3]), None, None));
     let mut mesh = Mesh::new(Some("m".to_owned()));
     mesh.primitives.push(prim);
     let mid = scene.add_mesh(mesh);
@@ -391,11 +400,8 @@ fn quantize_ibyte_reserves_minus_128_slot() {
     prim.positions = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
     // r7: a `weights` animation channel requires the mesh to declare
     // at least one morph target (spec §3.11).
-    prim.targets.push(MorphTarget::with_deltas(
-        Some(vec![[0.0, 0.0, 0.0]; 3]),
-        None,
-        None,
-    ));
+    prim.targets
+        .push(morph_target(Some(vec![[0.0, 0.0, 0.0]; 3]), None, None));
     let mut mesh = Mesh::new(Some("m".to_owned()));
     mesh.primitives.push(prim);
     let mid = scene.add_mesh(mesh);

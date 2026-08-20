@@ -16,6 +16,21 @@ use oxideav_mesh3d::{
 /// Build a scene with a morph-weights animation that's mostly zero —
 /// 8 keyframes of 4 morph targets, only 2 of the 32 weight slots are
 /// non-zero. Sparse encoding should kick in at any threshold <= 30/32.
+// Constructs a MorphTarget compatibly with both the published 0.0.5
+// surface (plain struct) and newer non_exhaustive revisions: named
+// constructor + public-field assignment, never a struct literal.
+fn morph_target(
+    position: Option<Vec<[f32; 3]>>,
+    normal: Option<Vec<[f32; 3]>>,
+    tangent: Option<Vec<[f32; 3]>>,
+) -> MorphTarget {
+    let mut t = MorphTarget::new();
+    t.position = position;
+    t.normal = normal;
+    t.tangent = tangent;
+    t
+}
+
 fn mostly_zero_morph_scene() -> Scene3D {
     let mut scene = Scene3D::new();
     let mut prim = Primitive::new(Topology::Triangles);
@@ -24,11 +39,8 @@ fn mostly_zero_morph_scene() -> Scene3D {
     // morph targets (spec §3.11). Four zero-delta POSITION targets
     // match the 4-morph-target stride below.
     for _ in 0..4 {
-        prim.targets.push(MorphTarget::with_deltas(
-            Some(vec![[0.0, 0.0, 0.0]; 3]),
-            None,
-            None,
-        ));
+        prim.targets
+            .push(morph_target(Some(vec![[0.0, 0.0, 0.0]; 3]), None, None));
     }
     let mut mesh = Mesh::new(Some("morph_target_mesh".to_owned()));
     mesh.primitives.push(prim);
