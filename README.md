@@ -776,6 +776,24 @@ framework but usable standalone.
   `MorphTargetSidecarCount`) and still accepts the pre-typed
   `__morph_targets` / `__mesh_weights` sidecar shapes as legacy
   inputs for hand-authored scenes
+- `mesh.extras.targetNames` per the spec's §3.7.2.2 implementation
+  note (the de-facto morph-target naming convention: "most tools use
+  an array of strings, `mesh.extras.targetNames`"). The decoder lifts
+  a convention-shaped array (non-empty, all strings) out of the opaque
+  mesh `extras` into the typed `oxideav_mesh3d::Mesh::target_names`
+  field — `Mesh::target_name(i)` / `Mesh::find_target(name)` then
+  resolve a named pose to the weight slot to drive through
+  `Mesh::weights` / `Node::weights` / a sampled `MorphWeights` frame —
+  and any other `extras` key stays opaque; the encoder writes the typed
+  names back under the same key (typed wins over a stale
+  `targetNames` riding the legacy `__mesh_extras` stash). The note's
+  length rule ("The `targetNames` array and all primitive `targets`
+  arrays must have the same length") is policed on decode and encode
+  (`MeshTargetNamesLength`), matching mesh3d's own
+  `Scene3D::validate` (`MorphTargetNameCountMismatch`) so a decoded
+  scene validates and a validating scene encodes. A `targetNames`
+  value of any other shape (numbers, a string, an empty array) is not
+  the convention and round-trips untouched as opaque `extras`
 - `node.weights` per spec §5.25.9 — the per-instance morph-weight
   override of the referenced mesh's default `mesh.weights`
   (§3.7.2.2: "When an instantiated mesh has morph targets, it MUST

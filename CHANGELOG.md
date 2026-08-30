@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mesh.extras.targetNames` ↔ `Mesh::target_names`** — adoption of
+  the typed morph-target names `oxideav-mesh3d` 0.0.6 introduced. The
+  decoder lifts the §3.7.2.2 implementation-note convention (a
+  non-empty all-string array) out of the opaque mesh `extras` into the
+  typed field and leaves sibling keys (and non-convention shapes under
+  the same key) opaque; the encoder writes the typed names back under
+  `mesh.extras.targetNames` (typed wins over a stale key in the legacy
+  `__mesh_extras` stash). The note's length rule is enforced on both
+  sides as `MeshTargetNamesLength` (new
+  `validation::validate_morph_target_names`), so decoded scenes pass
+  mesh3d's `MorphTargetNameCountMismatch` rule and only validating
+  scenes are written. Fixed-point round-trip + rejection tests in
+  `tests/target_names.rs`.
 - **Cross-surface adoption integration suite**
   (`tests/mesh3d_adoption_integration.rs`) — one document carrying
   all three typed surfaces adopted from `oxideav-mesh3d` 0.0.5 at

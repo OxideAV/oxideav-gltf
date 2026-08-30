@@ -4872,6 +4872,40 @@ pub fn validate_materials(materials: &[Material]) -> Result<()> {
     Ok(())
 }
 
+/// Validate the `mesh.extras.targetNames` convention per the spec's
+/// §3.7.2.2 implementation note: "most tools use an array of strings,
+/// `mesh.extras.targetNames` … The `targetNames` array and all
+/// primitive `targets` arrays must have the same length." Only a
+/// non-empty all-string array is the convention (and gets lifted into
+/// the typed `Mesh::target_names`); any other shape under that key is
+/// opaque `extras` and is not examined. A convention-shaped array whose
+/// length disagrees with any primitive's `targets` length is rejected
+/// with `MeshTargetNamesLength`.
+pub fn validate_morph_target_names(meshes: &[Mesh]) -> Result<()> {
+    for (mi, mesh) in meshes.iter().enumerate() {
+        let Some(names) = mesh
+            .extras
+            .as_ref()
+            .and_then(|e| e.get("targetNames"))
+            .and_then(crate::json_to_scene::target_names_from_value)
+        else {
+            continue;
+        };
+        for (pi, p) in mesh.primitives.iter().enumerate() {
+            if p.targets.len() != names.len() {
+                return Err(invalid(format!(
+                    "MeshTargetNamesLength: meshes[{mi}].extras.targetNames has {} element(s) \
+                     but primitives[{pi}] declares {} morph target(s) — the lengths must match \
+                     (spec §3.7.2.2 implementation note)",
+                    names.len(),
+                    p.targets.len()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Validate the morph-weight array MUSTs on both scopes that may carry
 /// one:
 ///
@@ -8603,6 +8637,36 @@ mod tests {
         let err =
             validate_morph_weights(&[mesh_with(2, Some(vec![0.0, 1.0, 0.5]))], &[]).unwrap_err();
         assert!(format!("{err}").contains("MeshWeightsLength"));
+    }
+
+    #[test]
+    fn target_names_accept_matching_length() {
+        let mut m = mesh_with(2, None);
+        m.extras = Some(serde_json::json!({ "targetNames": ["smile", "frown"] }));
+        validate_morph_target_names(&[m]).unwrap();
+    }
+
+    #[test]
+    fn target_names_reject_length_mismatch() {
+        let mut m = mesh_with(2, None);
+        m.extras = Some(serde_json::json!({ "targetNames": ["smile"] }));
+        let err = validate_morph_target_names(&[m]).unwrap_err();
+        assert!(format!("{err}").contains("MeshTargetNamesLength"));
+    }
+
+    #[test]
+    fn target_names_non_convention_shapes_are_opaque() {
+        // Not the "array of strings" convention → not examined.
+        for v in [
+            serde_json::json!({ "targetNames": [1, 2, 3] }),
+            serde_json::json!({ "targetNames": "smile" }),
+            serde_json::json!({ "targetNames": [] }),
+            serde_json::json!({ "targetNames": null }),
+        ] {
+            let mut m = mesh_with(2, None);
+            m.extras = Some(v);
+            validate_morph_target_names(&[m]).unwrap();
+        }
     }
 
     #[test]

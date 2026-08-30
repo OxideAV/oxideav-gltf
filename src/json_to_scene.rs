@@ -41,11 +41,12 @@ use crate::validation::{
     validate_bufferview_data_kind, validate_bufferview_fits_buffer, validate_cameras,
     validate_color0_range, validate_extension_stack, validate_images, validate_index_no_restart,
     validate_index_references, validate_index_value_bound, validate_inverse_bind_matrices,
-    validate_materials, validate_morph_targets, validate_morph_weights, validate_nodes,
-    validate_primitive_index_count, validate_primitive_indices_accessors, validate_samplers,
-    validate_skinning_attributes, validate_skinning_weights, validate_skins,
-    validate_sparse_indices_buffer_views, validate_sparse_values_buffer_views,
-    validate_structural_minimums, validate_tangent_w, validate_textures,
+    validate_materials, validate_morph_target_names, validate_morph_targets,
+    validate_morph_weights, validate_nodes, validate_primitive_index_count,
+    validate_primitive_indices_accessors, validate_samplers, validate_skinning_attributes,
+    validate_skinning_weights, validate_skins, validate_sparse_indices_buffer_views,
+    validate_sparse_values_buffer_views, validate_structural_minimums, validate_tangent_w,
+    validate_textures,
 };
 
 /// Decode a parsed [`GltfRoot`] into a [`Scene3D`], using `glb_bin`
@@ -178,6 +179,10 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
     // Spec §5.23.2 — mesh.weights length MUST match the mesh's morph
     // target count.
     validate_morph_weights(&root.meshes, &root.nodes)?;
+    // Spec §3.7.2.2 implementation note — a `mesh.extras.targetNames`
+    // string array must be exactly as long as the primitives' `targets`
+    // arrays.
+    validate_morph_target_names(&root.meshes)?;
 
     // Spec §3.7.2.2 — morph-target structural MUSTs: all primitives in a
     // mesh declare the same number of targets; each morphed attribute has
@@ -330,11 +335,31 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
             mesh.primitives
                 .push(convert_primitive(root, p, &buffers, &material_id_map)?);
         }
-        // Mesh-level `extras` (glTF allows it but mesh3d's Mesh has no
-        // extras field): stash on the first primitive under the
-        // sentinel key `__mesh_extras` so the encoder can lift it back
-        // up. No primitives → drop silently.
-        if let (Some(extras), Some(prim0)) = (&m.extras, mesh.primitives.first_mut()) {
+        // `mesh.extras.targetNames` — the de-facto morph-target naming
+        // convention the spec's §3.7.2.2 implementation note records
+        // ("most tools use an array of strings,
+        // `mesh.extras.targetNames`"; "The `targetNames` array and all
+        // primitive `targets` arrays must have the same length"). A
+        // well-formed string array is lifted out of the opaque extras
+        // stash into the typed `oxideav_mesh3d::Mesh::target_names`
+        // field (the length rule was policed up front by
+        // `validate_morph_target_names`); anything else under that key
+        // is not the convention and stays opaque in `extras`.
+        let mut mesh_extras = m.extras.clone();
+        if let Some(Value::Object(obj)) = mesh_extras.as_mut() {
+            if let Some(names) = obj.get("targetNames").and_then(target_names_from_value) {
+                mesh.target_names = names;
+                obj.remove("targetNames");
+                if obj.is_empty() {
+                    mesh_extras = None;
+                }
+            }
+        }
+        // Remaining mesh-level `extras` (glTF allows it but mesh3d's
+        // Mesh has no extras field): stash on the first primitive under
+        // the sentinel key `__mesh_extras` so the encoder can lift it
+        // back up. No primitives → drop silently.
+        if let (Some(extras), Some(prim0)) = (&mesh_extras, mesh.primitives.first_mut()) {
             prim0
                 .extras
                 .insert("__mesh_extras".to_owned(), extras.clone());
@@ -3059,6 +3084,21 @@ fn topology_from_mode(mode: u32) -> Result<Topology> {
 // Updates. A bare `{}` therefore becomes the typed identity —
 // `TextureTransform::IDENTITY` — which stays distinguishable from an
 // undeclared transform (`TextureRef::transform == None`).
+/// Read a `mesh.extras.targetNames` value as the §3.7.2.2
+/// implementation-note convention: a non-empty JSON array whose every
+/// element is a string. Anything else (`null`, an object, a number, a
+/// mixed array, an empty array) is not the convention and yields
+/// `None` so the value stays opaque in `extras`.
+pub(crate) fn target_names_from_value(v: &Value) -> Option<Vec<String>> {
+    let arr = v.as_array()?;
+    if arr.is_empty() {
+        return None;
+    }
+    arr.iter()
+        .map(|e| e.as_str().map(str::to_owned))
+        .collect::<Option<Vec<String>>>()
+}
+
 fn typed_texture_transform(t: &gj::TextureTransform) -> TextureTransform {
     TextureTransform {
         offset: t.offset.unwrap_or([0.0, 0.0]),

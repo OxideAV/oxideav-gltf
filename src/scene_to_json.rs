@@ -97,7 +97,7 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
             break;
         }
     }
-    for mesh in &scene.meshes {
+    for (mi, mesh) in scene.meshes.iter().enumerate() {
         let primitives = mesh
             .primitives
             .iter()
@@ -140,10 +140,48 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
         }
         // Lift primitive[0]'s `__mesh_extras` sentinel back to mesh-level
         // extras (matches the decoder's stash; loss-tolerant if absent).
-        let mesh_extras = mesh
+        let mut mesh_extras = mesh
             .primitives
             .first()
             .and_then(|p| p.extras.get("__mesh_extras").cloned());
+        // Typed morph-target names (`oxideav_mesh3d::Mesh::target_names`)
+        // → `mesh.extras.targetNames`, the §3.7.2.2 implementation-note
+        // convention the decoder lifts from. The typed field is
+        // authoritative: it overwrites a same-named key riding the
+        // legacy `__mesh_extras` stash. The implementation note's
+        // length rule ("The `targetNames` array and all primitive
+        // `targets` arrays must have the same length") is policed here
+        // against the primitives' emitted target rosters so the
+        // document we write is one we would read back.
+        if !mesh.target_names.is_empty() {
+            for (pi, p) in primitives.iter().enumerate() {
+                if p.targets.len() != mesh.target_names.len() {
+                    return Err(invalid(format!(
+                        "MeshTargetNamesLength: meshes[{mi}] carries {} target name(s) but \
+                         primitives[{pi}] declares {} morph target(s) — the lengths must \
+                         match (spec §3.7.2.2 implementation note)",
+                        mesh.target_names.len(),
+                        p.targets.len()
+                    )));
+                }
+            }
+            let names = serde_json::Value::Array(
+                mesh.target_names
+                    .iter()
+                    .map(|n| serde_json::Value::String(n.clone()))
+                    .collect(),
+            );
+            match mesh_extras.as_mut() {
+                Some(serde_json::Value::Object(obj)) => {
+                    obj.insert("targetNames".to_owned(), names);
+                }
+                _ => {
+                    let mut obj = serde_json::Map::new();
+                    obj.insert("targetNames".to_owned(), names);
+                    mesh_extras = Some(serde_json::Value::Object(obj));
+                }
+            }
+        }
         // Mesh-level morph weights default vector (§3.7.2.2) — the
         // typed `Mesh::weights` field is authoritative; the pre-typed
         // `primitive[0].extras["__mesh_weights"]` sidecar is still
