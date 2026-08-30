@@ -793,6 +793,13 @@ framework but usable standalone.
   disagrees with the mesh (`AnimationSamplerOutputCount`) or that
   drives a meshless node (`AnimationChannelWeightsNoMesh`) rather than
   writing a document the decoder would refuse
+- Typed in-between shapes (`oxideav_mesh3d::MorphTarget::inbetweens`)
+  have no glTF 2.0 wire form — §3.7.2.2 morph targets are
+  single-station linear deltas — so they are not transported: the
+  encoder writes the primary deltas only and a decoded roster carries
+  none (pinned in `tests/morph_weights_channel.rs`); they remain a
+  runtime-side surface for content that arrives from formats that
+  encode them
 - `mesh.extras.targetNames` per the spec's §3.7.2.2 implementation
   note (the de-facto morph-target naming convention: "most tools use
   an array of strings, `mesh.extras.targetNames`"). The decoder lifts

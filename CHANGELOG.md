@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Documented + pinned stance on `MorphTarget::inbetweens`
+  (`oxideav-mesh3d` 0.0.6): glTF 2.0 has no in-between wire form, so
+  the encoder transports the primary deltas only and decoded targets
+  carry no in-betweens.
 - **Sampled `MorphWeights` channels via the typed synthesis path** —
   adoption of the `oxideav-mesh3d` 0.0.6 constructors + read-back. The
   decoder builds `weights` channels through

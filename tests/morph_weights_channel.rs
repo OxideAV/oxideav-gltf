@@ -266,3 +266,32 @@ fn encode_rejects_weights_channel_on_meshless_node() {
         "unexpected error: {err}"
     );
 }
+
+#[test]
+fn inbetween_shapes_have_no_gltf_form_and_are_not_transported() {
+    // glTF 2.0 morph targets are single-station linear deltas
+    // (§3.7.2.2); the typed `MorphTarget::inbetweens` surface (USD
+    // blend-shape in-betweens) has no wire representation here. The
+    // encoder writes the primary deltas and the in-betweens do not
+    // reach the document; the decoded roster carries none.
+    let (mut scene, _n) = morph_scene(1);
+    let target = &mut scene.meshes[0].primitives[0].targets[0];
+    target.inbetweens.push(
+        oxideav_mesh3d::Inbetween::new(0.5)
+            .with_name("half")
+            .with_position(vec![[0.03, 0.0, 0.0]; 3]),
+    );
+    scene.validate().expect("authored scene validates");
+    let (decoded, glb) = round_trip(&scene);
+    let json = glb_json(&glb);
+    assert_eq!(
+        json["meshes"][0]["primitives"][0]["targets"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let t = &decoded.meshes[0].primitives[0].targets[0];
+    assert!(t.inbetweens.is_empty());
+    assert_eq!(t.position.as_deref(), Some(&[[0.1f32, 0.0, 0.0]; 3][..]));
+}
