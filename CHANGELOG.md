@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Sampled `MorphWeights` channels via the typed synthesis path** —
+  adoption of the `oxideav-mesh3d` 0.0.6 constructors + read-back. The
+  decoder builds `weights` channels through
+  `AnimationSampler::morph_weights` / `morph_weights_cubic` with the
+  stride pinned to the driven mesh's morph-target count (§3.11), and
+  the encoder emits them from `morph_weight_frames` /
+  `morph_weight_cubic_frame` re-flattened in §3.6 wire order. The
+  read-back is lossless (Linear / Step / CubicSpline round-trips and
+  the GLB fixed point are pinned in `tests/morph_weights_channel.rs`).
+  Encode now rejects a weights sampler that does not regroup into
+  frames or whose stride disagrees with the mesh
+  (`AnimationSamplerOutputCount`), and one driving a meshless node
+  (`AnimationChannelWeightsNoMesh`) — both documents the decoder
+  would have refused.
 - **`mesh.extras.targetNames` ↔ `Mesh::target_names`** — adoption of
   the typed morph-target names `oxideav-mesh3d` 0.0.6 introduced. The
   decoder lifts the §3.7.2.2 implementation-note convention (a

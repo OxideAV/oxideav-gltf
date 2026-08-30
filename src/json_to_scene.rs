@@ -19,10 +19,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use oxideav_mesh3d::{
-    AlphaMode, Animation, AnimationChannel, AnimationProperty, AnimationSampler, AnimationTarget,
-    AnimationValues, Camera, ImageData, Indices, Interpolation, Light, MagFilter, Material,
-    MaterialId, Mesh, MinFilter, Node, NodeId, Primitive, Sampler, Scene3D, Skeleton, Skin, SkinId,
-    Texture, TextureId, TextureRef, TextureTransform, Topology, Transform, WrapMode,
+    AlphaMode, Animation, AnimationChannel, AnimationProperty, AnimationSampler, AnimationValues,
+    Camera, ImageData, Indices, Interpolation, Light, MagFilter, Material, MaterialId, Mesh,
+    MinFilter, Node, NodeId, Primitive, Sampler, Scene3D, Skeleton, Skin, SkinId, Texture,
+    TextureId, TextureRef, TextureTransform, Topology, Transform, WrapMode,
 };
 use serde_json::Value;
 
@@ -939,19 +939,105 @@ fn convert_animation(
         let out_bytes = materialise_accessor(output_acc, &root.buffer_views, buffers)?;
         let out_view = view_from_materialised(output_acc, &out_bytes)?;
         let values = decode_animation_output(property, output_acc, &out_view)?;
-        anim.channels.push(AnimationChannel {
-            target: AnimationTarget {
-                node: target_node,
-                property,
-            },
-            sampler: AnimationSampler {
+        let sampler = if property == AnimationProperty::MorphWeights {
+            // Morph-weight channels are built through the typed
+            // sampled-`MorphWeights` constructors: the flat SCALAR
+            // stream is regrouped into per-keyframe weight vectors
+            // whose stride is the driven mesh's morph-target count
+            // (§3.11 "A morph target animation frame is defined by a
+            // sequence of scalars of length equal to the number of
+            // targets"; `validate_animation_channels` already pinned
+            // the output count to keyframes × targets, × 3 for
+            // CUBICSPLINE). The constructors return the same flat
+            // row-major layout `AnimationSampler::sample` reads, so the
+            // wire values survive verbatim and
+            // `AnimationSampler::morph_weight_frames` reads the
+            // authored frames back losslessly.
+            let AnimationValues::Scalar(flat) = values else {
+                return Err(invalid(format!(
+                    "animations[{anim_idx}].channels[{ci}]: weights output is not SCALAR"
+                )));
+            };
+            let stride = morph_target_count_for_node(root, target_node.0).ok_or_else(|| {
+                invalid(format!(
+                    "AnimationChannelWeightsNoMesh: animations[{anim_idx}].channels[{ci}] \
+                     targets node {} with path=\"weights\" but the node has no mesh (spec §3.11)",
+                    target_node.0
+                ))
+            })?;
+            morph_weights_sampler(keyframes, flat, stride, interpolation).ok_or_else(|| {
+                invalid(format!(
+                    "AnimationSamplerOutputCount: animations[{anim_idx}].channels[{ci}] \
+                     weights output does not regroup into keyframe × {stride}-weight frames \
+                     (spec §3.11)"
+                ))
+            })?
+        } else {
+            AnimationSampler {
                 keyframes,
                 values,
                 interpolation,
-            },
-        });
+            }
+        };
+        anim.channels
+            .push(AnimationChannel::new(target_node, property, sampler));
     }
     Ok((anim, pointer_channels))
+}
+
+/// Morph-target count of the mesh instantiated by `nodes[node_idx]`
+/// — the per-keyframe stride of a `weights` channel driving that
+/// node (§3.11). All primitives of a mesh carry the same target count
+/// (§3.7.2.2), so the first primitive's roster is the mesh's.
+/// `None` when the node is out of range or has no mesh.
+fn morph_target_count_for_node(root: &GltfRoot, node_idx: u32) -> Option<usize> {
+    let mesh_idx = root.nodes.get(node_idx as usize)?.mesh?;
+    let mesh = root.meshes.get(mesh_idx as usize)?;
+    Some(mesh.primitives.first().map_or(0, |p| p.targets.len()))
+}
+
+/// Regroup a flat `weights` output stream into `stride`-wide
+/// per-keyframe frames and build the sampler through the typed
+/// `AnimationSampler::morph_weights` / `morph_weights_cubic`
+/// constructors. For `CubicSpline` the stream holds the §3.6
+/// interleaved `(in_tangent, value, out_tangent)` triple per keyframe,
+/// each element `stride` wide. `None` when the stream is not an exact
+/// `keyframes × stride` (× 3) multiple, `stride` is zero, or the
+/// keyframes fail the constructors' §3.6 rules.
+fn morph_weights_sampler(
+    keyframes: Vec<f32>,
+    flat: Vec<f32>,
+    stride: usize,
+    interpolation: Interpolation,
+) -> Option<AnimationSampler> {
+    if stride == 0 {
+        return None;
+    }
+    let n = keyframes.len();
+    match interpolation {
+        Interpolation::CubicSpline => {
+            if flat.len() != n * 3 * stride {
+                return None;
+            }
+            let mut in_t = Vec::with_capacity(n);
+            let mut val = Vec::with_capacity(n);
+            let mut out_t = Vec::with_capacity(n);
+            for k in 0..n {
+                let base = k * 3 * stride;
+                in_t.push(flat[base..base + stride].to_vec());
+                val.push(flat[base + stride..base + 2 * stride].to_vec());
+                out_t.push(flat[base + 2 * stride..base + 3 * stride].to_vec());
+            }
+            AnimationSampler::morph_weights_cubic(keyframes, in_t, val, out_t)
+        }
+        _ => {
+            if flat.len() != n * stride {
+                return None;
+            }
+            let frames = flat.chunks_exact(stride).map(<[f32]>::to_vec).collect();
+            AnimationSampler::morph_weights(keyframes, frames, interpolation)
+        }
+    }
 }
 
 /// Decode every output element of a `KHR_animation_pointer` channel

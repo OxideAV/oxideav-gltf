@@ -519,7 +519,7 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     let mut has_pointer = false;
     for (ai, a) in scene.animations.iter().enumerate() {
         let extras_ptrs = pointer_channels_by_anim.remove(&(ai as u32));
-        let mut a_json = encode_animation(a, &mut root, &mut bin, opts)?;
+        let mut a_json = encode_animation(a, scene, &mut root, &mut bin, opts)?;
         if let Some(ptrs) = extras_ptrs {
             for pc in ptrs {
                 has_pointer = true;
@@ -3200,8 +3200,75 @@ fn encode_skin(
     })
 }
 
+/// Read a `MorphWeights` channel's sampler back through the typed
+/// frame accessors and re-flatten it in §3.6 wire order, checking the
+/// per-keyframe stride against the driven mesh's morph-target count.
+fn morph_weights_wire_values(
+    ch: &oxideav_mesh3d::AnimationChannel,
+    a: &Animation,
+    nodes: &[Node],
+    meshes: &[Mesh],
+) -> Result<Vec<f32>> {
+    let s = &ch.sampler;
+    let name = a.name.as_deref().unwrap_or("");
+    let stride = s.morph_weight_stride().ok_or_else(|| {
+        invalid(format!(
+            "AnimationSamplerOutputCount: animation {name:?} weights channel on node {} \
+             does not regroup into per-keyframe weight frames (spec §3.11)",
+            ch.target.node.0
+        ))
+    })?;
+    let target_count = nodes
+        .get(ch.target.node.0 as usize)
+        .and_then(|n| n.mesh)
+        .and_then(|m| meshes.get(m.0 as usize))
+        .map(|m| m.primitives.first().map_or(0, |p| p.targets.len()));
+    match target_count {
+        None => {
+            return Err(invalid(format!(
+                "AnimationChannelWeightsNoMesh: animation {name:?} weights channel targets \
+                 node {} which instantiates no mesh (spec §3.11)",
+                ch.target.node.0
+            )));
+        }
+        Some(tc) if tc != stride => {
+            return Err(invalid(format!(
+                "AnimationSamplerOutputCount: animation {name:?} weights channel on node {} \
+                 carries {stride} weight(s) per keyframe but the mesh declares {tc} morph \
+                 target(s) (spec §3.11)",
+                ch.target.node.0
+            )));
+        }
+        Some(_) => {}
+    }
+    let n = s.keyframes.len();
+    let mut out = Vec::with_capacity(n * stride * 3);
+    if matches!(s.interpolation, Interpolation::CubicSpline) {
+        for k in 0..n {
+            let (in_t, val, out_t) = s.morph_weight_cubic_frame(k).ok_or_else(|| {
+                invalid(format!(
+                    "animation {name:?} weights channel: cubic frame {k} unreadable"
+                ))
+            })?;
+            out.extend_from_slice(in_t);
+            out.extend_from_slice(val);
+            out.extend_from_slice(out_t);
+        }
+    } else {
+        for frame in s.morph_weight_frames().ok_or_else(|| {
+            invalid(format!(
+                "animation {name:?} weights channel: frames unreadable"
+            ))
+        })? {
+            out.extend_from_slice(frame);
+        }
+    }
+    Ok(out)
+}
+
 fn encode_animation(
     a: &Animation,
+    scene: &Scene3D,
     root: &mut GltfRoot,
     bin: &mut Vec<u8>,
     opts: &EncodeOptions,
@@ -3217,6 +3284,27 @@ fn encode_animation(
         if s.values.is_empty() {
             return Err(invalid("animation channel: sampler has no values"));
         }
+        // Morph-weight channels go out through the typed
+        // sampled-`MorphWeights` read-back: the sampler must regroup
+        // into per-keyframe frames (`morph_weight_stride`) whose width
+        // is the driven mesh's morph-target count — §3.11's "final
+        // size is equal to the number of morph targets times the
+        // number of animation frames" — and the frames (cubic: the
+        // `(in_tangent, value, out_tangent)` triples) are re-flattened
+        // in §3.6 wire order. The read-back is lossless, so a sampler
+        // authored through `AnimationSampler::morph_weights` /
+        // `morph_weights_cubic` writes exactly the values it was given.
+        let weights_out: Option<Vec<f32>> = if ch.target.property == AnimationProperty::MorphWeights
+        {
+            Some(morph_weights_wire_values(
+                ch,
+                a,
+                &scene.nodes,
+                &scene.meshes,
+            )?)
+        } else {
+            None
+        };
         // Input — keyframe times. spec §3.11: input accessor MUST have
         // min/max defined.
         let input_acc = push_scalar_f32_accessor_with_minmax(root, bin, &s.keyframes, "input")?;
@@ -3271,7 +3359,8 @@ fn encode_animation(
                     )?,
                 }
             }
-            AnimationValues::Scalar(v) => {
+            AnimationValues::Scalar(raw) => {
+                let v = weights_out.as_ref().unwrap_or(raw);
                 // Quantisation and sparse are mutually exclusive: a
                 // zero-base sparse accessor with overrides as
                 // normalised ints would mix two different value

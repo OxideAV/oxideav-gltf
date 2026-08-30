@@ -776,6 +776,23 @@ framework but usable standalone.
   `MorphTargetSidecarCount`) and still accepts the pre-typed
   `__morph_targets` / `__mesh_weights` sidecar shapes as legacy
   inputs for hand-authored scenes
+- Sampled `MorphWeights` animation channels through the typed
+  `oxideav-mesh3d` synthesis path: the decoder builds every `weights`
+  channel with `AnimationSampler::morph_weights` /
+  `morph_weights_cubic` + `AnimationChannel::new`, regrouping the flat
+  SCALAR stream into per-keyframe frames whose stride is the driven
+  mesh's morph-target count (§3.11; CUBICSPLINE keeps the §3.6
+  `(in_tangent, value, out_tangent)` triple per keyframe), so
+  `morph_weight_stride` / `morph_weight_frame(k)` /
+  `morph_weight_frames` / `morph_weight_cubic_frame(k)` and
+  `Animation::channel_for` work directly on the decoded scene. The
+  encoder writes the channel from that same read-back (frames
+  re-flattened in wire order — lossless, so a channel authored purely
+  through the typed constructors writes exactly the frames it was
+  given), and rejects a sampler that does not regroup or whose stride
+  disagrees with the mesh (`AnimationSamplerOutputCount`) or that
+  drives a meshless node (`AnimationChannelWeightsNoMesh`) rather than
+  writing a document the decoder would refuse
 - `mesh.extras.targetNames` per the spec's §3.7.2.2 implementation
   note (the de-facto morph-target naming convention: "most tools use
   an array of strings, `mesh.extras.targetNames`"). The decoder lifts
