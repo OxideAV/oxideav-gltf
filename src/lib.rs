@@ -39,6 +39,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_debug_implementations)]
 
+// internal — decoder/encoder plumbing; not part of the stable API
+#[doc(hidden)]
 pub mod accessor;
 pub mod asset_source;
 pub mod decoder;
@@ -46,10 +48,14 @@ pub mod encoder;
 pub mod error;
 pub mod glb;
 pub mod json_model;
+// internal — decoder/encoder plumbing; not part of the stable API
+#[doc(hidden)]
 pub mod json_to_scene;
 pub mod meshopt;
 pub mod object_model;
 pub mod quantization;
+// internal — decoder/encoder plumbing; not part of the stable API
+#[doc(hidden)]
 pub mod scene_to_json;
 pub mod splatting;
 pub mod validation;
