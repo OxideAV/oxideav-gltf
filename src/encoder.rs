@@ -11,9 +11,9 @@
 
 use oxideav_mesh3d::{Mesh3DEncoder, Scene3D};
 
-use crate::error::{invalid, Result};
+use crate::error::{Result, invalid};
 use crate::glb;
-use crate::scene_to_json::{convert_with_options, EncodeOptions, EncodedScene};
+use crate::scene_to_json::{EncodeOptions, EncodedScene, convert_with_options};
 
 /// Container flavour for [`GltfEncoder::encode`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

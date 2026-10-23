@@ -37,7 +37,7 @@
 //! before JSON or between JSON and BIN therefore violates §4.4.3.2 /
 //! §4.4.3.3.
 
-use crate::error::{invalid, Error, Result};
+use crate::error::{Error, Result, invalid};
 
 pub const GLB_MAGIC: u32 = 0x46546C67;
 pub const GLB_VERSION: u32 = 2;
@@ -120,7 +120,7 @@ pub fn parse(bytes: &[u8]) -> Result<GlbPayload<'_>> {
         // to a 4-byte boundary. The header is already 4-byte aligned
         // and each chunk starts with two u32s, so the alignment of the
         // *next* chunk reduces to "chunkLength MUST be a multiple of 4".
-        if chunk_len % 4 != 0 {
+        if !chunk_len.is_multiple_of(4) {
             return Err(invalid(format!(
                 "GlbChunkAlignment: chunk {chunk_index} (type 0x{chunk_type:08X}) length \
                  {chunk_len} is not a multiple of 4 (spec §4.4.3.1)"

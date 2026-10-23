@@ -33,7 +33,7 @@ use oxideav_gltf::{GltfDecoder, GltfEncoder};
 use oxideav_mesh3d::{
     Mesh, Mesh3DDecoder, Mesh3DEncoder, Node, NodeId, Primitive, Scene3D, Topology,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Build a minimal `Scene3D` with one POINTS primitive (the required
 /// topology for the spec's `"ellipse"` kernel) instanced through a
@@ -736,9 +736,11 @@ fn splatting_opacity_normalized_ubyte_accepted() {
         16,
     )
     .expect("normalized unsigned-byte OPACITY must validate");
-    assert!(scene.meshes[0].primitives[0]
-        .extras
-        .contains_key("KHR_gaussian_splatting"));
+    assert!(
+        scene.meshes[0].primitives[0]
+            .extras
+            .contains_key("KHR_gaussian_splatting")
+    );
 }
 
 #[test]
@@ -760,9 +762,11 @@ fn splatting_rotation_normalized_short_accepted() {
         16,
     )
     .expect("normalized signed-short ROTATION must validate");
-    assert!(scene.meshes[0].primitives[0]
-        .extras
-        .contains_key("KHR_gaussian_splatting"));
+    assert!(
+        scene.meshes[0].primitives[0]
+            .extras
+            .contains_key("KHR_gaussian_splatting")
+    );
 }
 
 #[test]
@@ -864,9 +868,11 @@ fn splatting_sh_full_degree_three_accepted() {
         Value::Object(extra),
     )
     .expect("full degree-3 spherical harmonics must validate");
-    assert!(scene.meshes[0].primitives[0]
-        .extras
-        .contains_key("KHR_gaussian_splatting"));
+    assert!(
+        scene.meshes[0].primitives[0]
+            .extras
+            .contains_key("KHR_gaussian_splatting")
+    );
 }
 
 #[test]
@@ -900,9 +906,11 @@ fn splatting_vendor_kernel_skips_attribute_checks() {
     let scene = dec
         .decode(raw.as_bytes())
         .expect("vendor kernel must skip ellipse attribute checks");
-    assert!(scene.meshes[0].primitives[0]
-        .extras
-        .contains_key("KHR_gaussian_splatting"));
+    assert!(
+        scene.meshes[0].primitives[0]
+            .extras
+            .contains_key("KHR_gaussian_splatting")
+    );
 }
 
 // ---------------------------------------------------------------------

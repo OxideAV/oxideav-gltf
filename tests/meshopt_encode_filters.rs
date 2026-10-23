@@ -10,7 +10,7 @@
 //! (ULP) in terms of the decoded data". The tests assert exactly that
 //! contract.
 
-use oxideav_gltf::meshopt::{decode, encode, Filter, Mode};
+use oxideav_gltf::meshopt::{Filter, Mode, decode, encode};
 
 /// Pack a slice of f32 into little-endian bytes.
 fn f32_bytes(vals: &[f32]) -> Vec<u8> {

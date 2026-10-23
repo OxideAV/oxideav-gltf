@@ -20,7 +20,7 @@
 
 use oxideav_gltf::{GltfDecoder, GltfEncoder};
 use oxideav_mesh3d::{Material, Mesh, Mesh3DDecoder, Mesh3DEncoder, Node, Primitive, Scene3D};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn extract_json_chunk(glb: &[u8]) -> Vec<u8> {
     assert_eq!(&glb[0..4], b"glTF", "magic");

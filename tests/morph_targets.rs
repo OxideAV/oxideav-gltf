@@ -168,9 +168,11 @@ fn four_targets_with_mesh_weights() {
     // Typed `Mesh::weights` carries the default morph weights.
     assert_eq!(scene.meshes[0].weights, vec![0.0, 0.5, 0.0, 0.25]);
     // The pre-typed sidecar is no longer emitted.
-    assert!(!scene.meshes[0].primitives[0]
-        .extras
-        .contains_key("__mesh_weights"));
+    assert!(
+        !scene.meshes[0].primitives[0]
+            .extras
+            .contains_key("__mesh_weights")
+    );
 
     assert_eq!(scene.meshes[0].primitives[0].targets.len(), 4);
 

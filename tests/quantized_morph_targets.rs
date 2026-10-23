@@ -21,7 +21,7 @@
 //! storage form when re-encoding the scene.
 
 use base64::Engine as _;
-use oxideav_gltf::{json_encoder, GltfDecoder, GltfEncoder};
+use oxideav_gltf::{GltfDecoder, GltfEncoder, json_encoder};
 use oxideav_mesh3d::{Mesh3DDecoder, Mesh3DEncoder};
 
 /// Construct a small glTF document carrying one mesh with a single

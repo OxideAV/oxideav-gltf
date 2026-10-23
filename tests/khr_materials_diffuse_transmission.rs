@@ -25,7 +25,7 @@
 
 use oxideav_gltf::{GltfDecoder, GltfEncoder};
 use oxideav_mesh3d::{Material, Mesh3DDecoder, Mesh3DEncoder, Scene3D};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn dt_of(m: &Material) -> Option<&serde_json::Map<String, Value>> {
     m.extras

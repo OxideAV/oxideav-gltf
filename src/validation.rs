@@ -162,15 +162,15 @@
 //! `oxideav_core::Error` enum can't gain a new variant from a sibling
 //! crate).
 
-use crate::error::{invalid, Result};
+use crate::error::{Result, invalid};
 use crate::json_model::{
-    component_size, type_components, Accessor, Animation, Buffer, BufferView, Camera, GltfRoot,
-    Material, Mesh, Node, Scene, Skin, Texture, COMPONENT_TYPE_BYTE, COMPONENT_TYPE_FLOAT,
+    Accessor, Animation, Buffer, BufferView, COMPONENT_TYPE_BYTE, COMPONENT_TYPE_FLOAT,
     COMPONENT_TYPE_SHORT, COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_INT,
-    COMPONENT_TYPE_UNSIGNED_SHORT, TARGET_ARRAY_BUFFER, TARGET_ELEMENT_ARRAY_BUFFER,
+    COMPONENT_TYPE_UNSIGNED_SHORT, Camera, GltfRoot, Material, Mesh, Node, Scene, Skin,
+    TARGET_ARRAY_BUFFER, TARGET_ELEMENT_ARRAY_BUFFER, Texture, component_size, type_components,
 };
 use crate::object_model::{
-    pointer_data_type, pointer_entry, pointer_index_at, ObjectModelDataType,
+    ObjectModelDataType, pointer_data_type, pointer_entry, pointer_index_at,
 };
 use std::collections::HashMap;
 
@@ -277,13 +277,13 @@ pub fn validate_alignment(
         ))
     })?;
     let acc_off = accessor.byte_offset.unwrap_or(0);
-    if acc_off % csize != 0 {
+    if !acc_off.is_multiple_of(csize) {
         return Err(invalid(format!(
             "VertexAttributeAlignment: {label}: accessor.byteOffset {acc_off} not multiple of \
              component size {csize} (spec §3.6.2.4)"
         )));
     }
-    if is_vertex_attribute && acc_off % 4 != 0 {
+    if is_vertex_attribute && !acc_off.is_multiple_of(4) {
         return Err(invalid(format!(
             "VertexAttributeAlignment: {label}: accessor.byteOffset {acc_off} not multiple of 4 \
              for vertex attribute (spec §3.6.2.4)"
@@ -310,15 +310,14 @@ pub fn validate_alignment(
              ({combined}) not multiple of component size {csize} (spec §3.6.2.4)"
         )));
     }
-    if is_vertex_attribute {
-        if let Some(stride) = bv.byte_stride {
-            if stride % 4 != 0 {
-                return Err(invalid(format!(
-                    "VertexAttributeAlignment: {label}: bufferView.byteStride {stride} not \
+    if is_vertex_attribute
+        && let Some(stride) = bv.byte_stride
+        && stride % 4 != 0
+    {
+        return Err(invalid(format!(
+            "VertexAttributeAlignment: {label}: bufferView.byteStride {stride} not \
                      multiple of 4 (spec §3.6.2.4)"
-                )));
-            }
-        }
+        )));
     }
     Ok(())
 }
@@ -557,8 +556,8 @@ pub fn validate_index_no_restart(accessor: &Accessor, indices: &[u32]) -> Result
 /// `topology_from_mode`, so it cannot reach here.
 pub fn validate_primitive_index_count(mode: u32, num_indices: u64) -> Result<()> {
     use crate::json_model::{
-        MODE_LINES, MODE_LINE_LOOP, MODE_LINE_STRIP, MODE_POINTS, MODE_TRIANGLES,
-        MODE_TRIANGLE_FAN, MODE_TRIANGLE_STRIP,
+        MODE_LINE_LOOP, MODE_LINE_STRIP, MODE_LINES, MODE_POINTS, MODE_TRIANGLE_FAN,
+        MODE_TRIANGLE_STRIP, MODE_TRIANGLES,
     };
 
     // `name` is the spec's topology label; `rule` is the human-readable
@@ -580,10 +579,10 @@ pub fn validate_primitive_index_count(mode: u32, num_indices: u64) -> Result<()>
         MODE_TRIANGLE_FAN if num_indices < 3 => {
             fail("triangle fans", "the count MUST be 3 or greater")
         }
-        MODE_LINES if num_indices == 0 || num_indices % 2 != 0 => {
+        MODE_LINES if num_indices == 0 || !num_indices.is_multiple_of(2) => {
             fail("lines", "the count MUST be divisible by 2 and non-zero")
         }
-        MODE_TRIANGLES if num_indices == 0 || num_indices % 3 != 0 => {
+        MODE_TRIANGLES if num_indices == 0 || !num_indices.is_multiple_of(3) => {
             fail("triangles", "the count MUST be divisible by 3 and non-zero")
         }
         // All conforming counts, plus any other mode (unreachable in
@@ -765,7 +764,7 @@ fn validate_gaussian_splatting_attributes(
                 )));
             }
             let ok = allowed.iter().any(|&(ct, norm)| {
-                acc.component_type == ct && norm.map_or(true, |n| acc.normalized == n)
+                acc.component_type == ct && norm.is_none_or(|n| acc.normalized == n)
             });
             if !ok {
                 return Err(invalid(format!(
@@ -862,12 +861,11 @@ fn validate_gaussian_splatting_attributes(
     // Highest degree any coefficient references.
     let mut max_degree = 0u32;
     for name in prim.attributes.keys() {
-        if let Some(rest) = name.strip_prefix("KHR_gaussian_splatting:SH_DEGREE_") {
-            if let Some((deg_str, _)) = rest.split_once("_COEF_") {
-                if let Ok(l) = deg_str.parse::<u32>() {
-                    max_degree = max_degree.max(l);
-                }
-            }
+        if let Some(rest) = name.strip_prefix("KHR_gaussian_splatting:SH_DEGREE_")
+            && let Some((deg_str, _)) = rest.split_once("_COEF_")
+            && let Ok(l) = deg_str.parse::<u32>()
+        {
+            max_degree = max_degree.max(l);
         }
     }
     for l in 0..=max_degree {
@@ -927,25 +925,25 @@ pub fn validate_khr_lights_punctual(root: &GltfRoot) -> Result<()> {
             )));
         }
 
-        if let Some(c) = light.color {
-            if let Some(bad) = c.iter().find(|v| !v.is_finite()) {
-                return Err(invalid(format!(
-                    "ExtensionStackLightColorFinite: extensions \
+        if let Some(c) = light.color
+            && let Some(bad) = c.iter().find(|v| !v.is_finite())
+        {
+            return Err(invalid(format!(
+                "ExtensionStackLightColorFinite: extensions \
                      .KHR_lights_punctual.lights[{li}].color contains a \
                      non-finite component {bad} (KHR_lights_punctual §Light \
                      Types)"
-                )));
-            }
+            )));
         }
 
-        if let Some(i) = light.intensity {
-            if !(i.is_finite() && i >= 0.0) {
-                return Err(invalid(format!(
-                    "ExtensionStackLightIntensity: extensions \
+        if let Some(i) = light.intensity
+            && !(i.is_finite() && i >= 0.0)
+        {
+            return Err(invalid(format!(
+                "ExtensionStackLightIntensity: extensions \
                      .KHR_lights_punctual.lights[{li}].intensity = {i} must be \
                      finite and >= 0 (KHR_lights_punctual §Light Types)"
-                )));
-            }
+            )));
         }
 
         // `range` is allowed only on point/spot lights and MUST be > 0.
@@ -1082,15 +1080,15 @@ fn validate_pointer_target_defined(
         .and_then(|rest| rest.split('/').next())
         .unwrap_or("");
     let index_bound = |i: Option<usize>, len: usize, what: &str| -> Result<()> {
-        if let Some(i) = i {
-            if i >= len {
-                return Err(invalid(format!(
-                    "ExtensionStackAnimationPointerIndex: animations[{ai}].channels[{ci}] \
+        if let Some(i) = i
+            && i >= len
+        {
+            return Err(invalid(format!(
+                "ExtensionStackAnimationPointerIndex: animations[{ai}].channels[{ci}] \
                      pointer {pointer:?} indexes {what}[{i}] but the asset defines {len} — \
                      \"The JSON Pointer MUST point to a property defined in the asset\" \
                      (KHR_animation_pointer §Operation)"
-                )));
-            }
+            )));
         }
         Ok(())
     };
@@ -1118,61 +1116,61 @@ fn validate_pointer_target_defined(
         _ => {}
     }
 
-    if head == "nodes" {
-        if let Some(node) = pointer_index_at(pointer, 1).and_then(|ni| root.nodes.get(ni)) {
-            let prop = pointer
-                .strip_prefix('/')
-                .and_then(|rest| rest.split('/').nth(2));
-            match prop {
-                Some("weights") => {
-                    // ObjectModel §"Core Pointers": "If the node
-                    // instantiates no mesh or if the mesh has no morph
-                    // targets, these pointers are undefined."
-                    let target_count = node
-                        .mesh
-                        .and_then(|mi| root.meshes.get(mi as usize))
-                        .and_then(|m| m.primitives.first())
-                        .map(|p| p.targets.len())
-                        .unwrap_or(0);
-                    if target_count == 0 {
-                        return Err(invalid(format!(
-                            "ExtensionStackAnimationPointerUndefined: \
+    if head == "nodes"
+        && let Some(node) = pointer_index_at(pointer, 1).and_then(|ni| root.nodes.get(ni))
+    {
+        let prop = pointer
+            .strip_prefix('/')
+            .and_then(|rest| rest.split('/').nth(2));
+        match prop {
+            Some("weights") => {
+                // ObjectModel §"Core Pointers": "If the node
+                // instantiates no mesh or if the mesh has no morph
+                // targets, these pointers are undefined."
+                let target_count = node
+                    .mesh
+                    .and_then(|mi| root.meshes.get(mi as usize))
+                    .and_then(|m| m.primitives.first())
+                    .map(|p| p.targets.len())
+                    .unwrap_or(0);
+                if target_count == 0 {
+                    return Err(invalid(format!(
+                        "ExtensionStackAnimationPointerUndefined: \
                              animations[{ai}].channels[{ci}] pointer {pointer:?} targets \
                              the morph weights of a node that instantiates no mesh with \
                              morph targets — the Object Model defines these pointers only \
                              for nodes whose mesh declares targets \
                              (docs ObjectModel §\"Core Pointers\")"
-                        )));
-                    }
-                    if let Some(wi) = pointer_index_at(pointer, 3) {
-                        if wi >= target_count {
-                            return Err(invalid(format!(
-                                "ExtensionStackAnimationPointerUndefined: \
+                    )));
+                }
+                if let Some(wi) = pointer_index_at(pointer, 3)
+                    && wi >= target_count
+                {
+                    return Err(invalid(format!(
+                        "ExtensionStackAnimationPointerUndefined: \
                                  animations[{ai}].channels[{ci}] pointer {pointer:?} \
                                  indexes morph weight {wi} but the instantiated mesh \
                                  declares {target_count} morph target(s) \
                                  (docs ObjectModel §\"Core Pointers\")"
-                            )));
-                        }
-                    }
+                    )));
                 }
-                Some("rotation") | Some("scale") if node.matrix.is_some() => {
-                    // ObjectModel §"Core Pointers": "If the static
-                    // `matrix` property is defined on the node object
-                    // in JSON, the corresponding rotation and scale
-                    // pointers are undefined; the translation pointer
-                    // is always defined."
-                    return Err(invalid(format!(
-                        "ExtensionStackAnimationPointerUndefined: \
+            }
+            Some("rotation") | Some("scale") if node.matrix.is_some() => {
+                // ObjectModel §"Core Pointers": "If the static
+                // `matrix` property is defined on the node object
+                // in JSON, the corresponding rotation and scale
+                // pointers are undefined; the translation pointer
+                // is always defined."
+                return Err(invalid(format!(
+                    "ExtensionStackAnimationPointerUndefined: \
                          animations[{ai}].channels[{ci}] pointer {pointer:?} targets the \
                          {} of a node that uses the static `matrix` transform form — the \
                          Object Model leaves rotation/scale pointers undefined for \
                          matrix-form nodes (docs ObjectModel §\"Core Pointers\")",
-                        prop.unwrap_or_default()
-                    )));
-                }
-                _ => {}
+                    prop.unwrap_or_default()
+                )));
             }
+            _ => {}
         }
     }
 
@@ -1190,136 +1188,132 @@ fn validate_pointer_target_defined(
              property defined in the asset\")"
         ))
     };
-    if head == "cameras" {
-        if let Some(cam) = pointer_index_at(pointer, 1).and_then(|i| root.cameras.get(i)) {
-            let mut toks = pointer.strip_prefix('/').unwrap_or("").split('/').skip(2);
-            let block = toks.next();
-            let prop = toks.next();
-            match block {
-                Some("perspective") => {
-                    let Some(p) = cam.perspective.as_ref() else {
-                        return Err(undefined(
-                            "the camera defines no `perspective` object, so its \
-                             perspective properties are not present"
-                                .into(),
-                        ));
-                    };
-                    // `yfov` / `znear` are required properties;
-                    // `aspectRatio` / `zfar` have NO spec default and
-                    // MUST be explicitly present.
-                    if prop == Some("zfar") && p.zfar.is_none() {
-                        return Err(undefined(
-                            "`perspective.zfar` has no spec-defined default and is not \
-                             explicitly defined"
-                                .into(),
-                        ));
-                    }
-                    if prop == Some("aspectRatio") && p.aspect_ratio.is_none() {
-                        return Err(undefined(
-                            "`perspective.aspectRatio` has no spec-defined default and \
-                             is not explicitly defined"
-                                .into(),
-                        ));
-                    }
-                }
-                // All four orthographic properties are required, so
-                // the block's presence decides all rows.
-                Some("orthographic") if cam.orthographic.is_none() => {
+    if head == "cameras"
+        && let Some(cam) = pointer_index_at(pointer, 1).and_then(|i| root.cameras.get(i))
+    {
+        let mut toks = pointer.strip_prefix('/').unwrap_or("").split('/').skip(2);
+        let block = toks.next();
+        let prop = toks.next();
+        match block {
+            Some("perspective") => {
+                let Some(p) = cam.perspective.as_ref() else {
                     return Err(undefined(
-                        "the camera defines no `orthographic` object, so its \
-                         orthographic properties are not present"
+                        "the camera defines no `perspective` object, so its \
+                             perspective properties are not present"
+                            .into(),
+                    ));
+                };
+                // `yfov` / `znear` are required properties;
+                // `aspectRatio` / `zfar` have NO spec default and
+                // MUST be explicitly present.
+                if prop == Some("zfar") && p.zfar.is_none() {
+                    return Err(undefined(
+                        "`perspective.zfar` has no spec-defined default and is not \
+                             explicitly defined"
                             .into(),
                     ));
                 }
-                _ => {}
+                if prop == Some("aspectRatio") && p.aspect_ratio.is_none() {
+                    return Err(undefined(
+                        "`perspective.aspectRatio` has no spec-defined default and \
+                             is not explicitly defined"
+                            .into(),
+                    ));
+                }
             }
+            // All four orthographic properties are required, so
+            // the block's presence decides all rows.
+            Some("orthographic") if cam.orthographic.is_none() => {
+                return Err(undefined(
+                    "the camera defines no `orthographic` object, so its \
+                         orthographic properties are not present"
+                        .into(),
+                ));
+            }
+            _ => {}
         }
     }
-    if head == "materials" {
-        if let Some(mat) = pointer_index_at(pointer, 1).and_then(|i| root.materials.get(i)) {
-            let mut toks = pointer.strip_prefix('/').unwrap_or("").split('/').skip(2);
-            let slot = toks.next();
-            let sub = toks.next();
-            // Enclosing-object presence for the texture-slot and PBR
-            // rows (the leaf properties all carry spec defaults, so
-            // presence of the enclosing object is the deciding rule).
-            let missing_slot = match slot {
-                Some("normalTexture") => mat.normal_texture.is_none(),
-                Some("occlusionTexture") => mat.occlusion_texture.is_none(),
-                Some("emissiveTexture") => mat.emissive_texture.is_none(),
-                Some("pbrMetallicRoughness") => mat.pbr_metallic_roughness.is_none(),
+    if head == "materials"
+        && let Some(mat) = pointer_index_at(pointer, 1).and_then(|i| root.materials.get(i))
+    {
+        let mut toks = pointer.strip_prefix('/').unwrap_or("").split('/').skip(2);
+        let slot = toks.next();
+        let sub = toks.next();
+        // Enclosing-object presence for the texture-slot and PBR
+        // rows (the leaf properties all carry spec defaults, so
+        // presence of the enclosing object is the deciding rule).
+        let missing_slot = match slot {
+            Some("normalTexture") => mat.normal_texture.is_none(),
+            Some("occlusionTexture") => mat.occlusion_texture.is_none(),
+            Some("emissiveTexture") => mat.emissive_texture.is_none(),
+            Some("pbrMetallicRoughness") => mat.pbr_metallic_roughness.is_none(),
+            _ => false,
+        };
+        if missing_slot {
+            return Err(undefined(format!(
+                "the material defines no `{}` object, so its properties are not \
+                     present",
+                slot.unwrap_or_default()
+            )));
+        }
+        if slot == Some("pbrMetallicRoughness")
+            && let Some(pbr) = mat.pbr_metallic_roughness.as_ref()
+        {
+            let missing_tex = match sub {
+                Some("baseColorTexture") => pbr.base_color_texture.is_none(),
+                Some("metallicRoughnessTexture") => pbr.metallic_roughness_texture.is_none(),
                 _ => false,
             };
-            if missing_slot {
+            if missing_tex {
                 return Err(undefined(format!(
-                    "the material defines no `{}` object, so its properties are not \
-                     present",
-                    slot.unwrap_or_default()
+                    "the material's pbrMetallicRoughness defines no `{}` \
+                             object, so its properties are not present",
+                    sub.unwrap_or_default()
                 )));
             }
-            if slot == Some("pbrMetallicRoughness") {
-                if let Some(pbr) = mat.pbr_metallic_roughness.as_ref() {
-                    let missing_tex = match sub {
-                        Some("baseColorTexture") => pbr.base_color_texture.is_none(),
-                        Some("metallicRoughnessTexture") => {
-                            pbr.metallic_roughness_texture.is_none()
-                        }
-                        _ => false,
-                    };
-                    if missing_tex {
-                        return Err(undefined(format!(
-                            "the material's pbrMetallicRoughness defines no `{}` \
-                             object, so its properties are not present",
-                            sub.unwrap_or_default()
-                        )));
-                    }
+        }
+        if slot == Some("extensions") {
+            // Material-extension rows: the named extension block
+            // is the enclosing object — its leaf factors all have
+            // spec defaults, so block presence decides. Extension
+            // blocks this crate does not model (the ADOBE tables)
+            // are skipped as undecidable.
+            let ext_name = sub.unwrap_or_default();
+            let ext = mat.extensions.as_ref();
+            let missing = match ext_name {
+                "KHR_materials_anisotropy" => ext
+                    .and_then(|e| e.khr_materials_anisotropy.as_ref())
+                    .is_none(),
+                "KHR_materials_clearcoat" => ext
+                    .and_then(|e| e.khr_materials_clearcoat.as_ref())
+                    .is_none(),
+                "KHR_materials_dispersion" => ext
+                    .and_then(|e| e.khr_materials_dispersion.as_ref())
+                    .is_none(),
+                "KHR_materials_emissive_strength" => ext
+                    .and_then(|e| e.khr_materials_emissive_strength.as_ref())
+                    .is_none(),
+                "KHR_materials_ior" => ext.and_then(|e| e.khr_materials_ior.as_ref()).is_none(),
+                "KHR_materials_iridescence" => ext
+                    .and_then(|e| e.khr_materials_iridescence.as_ref())
+                    .is_none(),
+                "KHR_materials_sheen" => ext.and_then(|e| e.khr_materials_sheen.as_ref()).is_none(),
+                "KHR_materials_specular" => ext
+                    .and_then(|e| e.khr_materials_specular.as_ref())
+                    .is_none(),
+                "KHR_materials_transmission" => ext
+                    .and_then(|e| e.khr_materials_transmission.as_ref())
+                    .is_none(),
+                "KHR_materials_volume" => {
+                    ext.and_then(|e| e.khr_materials_volume.as_ref()).is_none()
                 }
-            }
-            if slot == Some("extensions") {
-                // Material-extension rows: the named extension block
-                // is the enclosing object — its leaf factors all have
-                // spec defaults, so block presence decides. Extension
-                // blocks this crate does not model (the ADOBE tables)
-                // are skipped as undecidable.
-                let ext_name = sub.unwrap_or_default();
-                let ext = mat.extensions.as_ref();
-                let missing = match ext_name {
-                    "KHR_materials_anisotropy" => ext
-                        .and_then(|e| e.khr_materials_anisotropy.as_ref())
-                        .is_none(),
-                    "KHR_materials_clearcoat" => ext
-                        .and_then(|e| e.khr_materials_clearcoat.as_ref())
-                        .is_none(),
-                    "KHR_materials_dispersion" => ext
-                        .and_then(|e| e.khr_materials_dispersion.as_ref())
-                        .is_none(),
-                    "KHR_materials_emissive_strength" => ext
-                        .and_then(|e| e.khr_materials_emissive_strength.as_ref())
-                        .is_none(),
-                    "KHR_materials_ior" => ext.and_then(|e| e.khr_materials_ior.as_ref()).is_none(),
-                    "KHR_materials_iridescence" => ext
-                        .and_then(|e| e.khr_materials_iridescence.as_ref())
-                        .is_none(),
-                    "KHR_materials_sheen" => {
-                        ext.and_then(|e| e.khr_materials_sheen.as_ref()).is_none()
-                    }
-                    "KHR_materials_specular" => ext
-                        .and_then(|e| e.khr_materials_specular.as_ref())
-                        .is_none(),
-                    "KHR_materials_transmission" => ext
-                        .and_then(|e| e.khr_materials_transmission.as_ref())
-                        .is_none(),
-                    "KHR_materials_volume" => {
-                        ext.and_then(|e| e.khr_materials_volume.as_ref()).is_none()
-                    }
-                    _ => false,
-                };
-                if missing {
-                    return Err(undefined(format!(
-                        "the material carries no `{ext_name}` extension object, so its \
+                _ => false,
+            };
+            if missing {
+                return Err(undefined(format!(
+                    "the material carries no `{ext_name}` extension object, so its \
                          properties are not present"
-                    )));
-                }
+                )));
             }
         }
     }
@@ -1337,14 +1331,14 @@ fn validate_pointer_target_defined(
                     .and_then(|e| e.khr_lights_punctual.as_ref())
                     .and_then(|l| l.lights.get(i))
             });
-            if let Some(light) = light {
-                if light.spot.is_none() {
-                    return Err(undefined(
-                        "the punctual light defines no `spot` object, so its cone-angle \
+            if let Some(light) = light
+                && light.spot.is_none()
+            {
+                return Err(undefined(
+                    "the punctual light defines no `spot` object, so its cone-angle \
                          properties are not present"
-                            .into(),
-                    ));
-                }
+                        .into(),
+                ));
             }
         }
     }
@@ -1584,24 +1578,24 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         else {
             continue;
         };
-        if let Some(s) = an.anisotropy_strength {
-            if !(s.is_finite() && (0.0..=1.0).contains(&s)) {
-                return Err(invalid(format!(
-                    "ExtensionStackAnisotropyStrengthRange: materials[{mi}] \
+        if let Some(s) = an.anisotropy_strength
+            && !(s.is_finite() && (0.0..=1.0).contains(&s))
+        {
+            return Err(invalid(format!(
+                "ExtensionStackAnisotropyStrengthRange: materials[{mi}] \
                      .extensions.KHR_materials_anisotropy.anisotropyStrength = \
                      {s} outside [0, 1] (KHR_materials_anisotropy §Anisotropy)"
-                )));
-            }
+            )));
         }
-        if let Some(r) = an.anisotropy_rotation {
-            if !r.is_finite() {
-                return Err(invalid(format!(
-                    "ExtensionStackAnisotropyRotationFinite: materials[{mi}] \
+        if let Some(r) = an.anisotropy_rotation
+            && !r.is_finite()
+        {
+            return Err(invalid(format!(
+                "ExtensionStackAnisotropyRotationFinite: materials[{mi}] \
                      .extensions.KHR_materials_anisotropy.anisotropyRotation = \
                      {r} is not finite \
                      (KHR_materials_anisotropy §Extending Materials)"
-                )));
-            }
+            )));
         }
     }
 
@@ -1635,15 +1629,15 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         else {
             continue;
         };
-        if let Some(d) = dp.dispersion {
-            if !(d.is_finite() && d >= 0.0) {
-                return Err(invalid(format!(
-                    "ExtensionStackDispersionRange: materials[{mi}] \
+        if let Some(d) = dp.dispersion
+            && !(d.is_finite() && d >= 0.0)
+        {
+            return Err(invalid(format!(
+                "ExtensionStackDispersionRange: materials[{mi}] \
                      .extensions.KHR_materials_dispersion.dispersion = \
                      {d} is not finite and >= 0 \
                      (KHR_materials_dispersion §Extending Materials)"
-                )));
-            }
+            )));
         }
     }
 
@@ -1679,16 +1673,16 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         else {
             continue;
         };
-        if let Some(f) = dt.diffuse_transmission_factor {
-            if !(f.is_finite() && (0.0..=1.0).contains(&f)) {
-                return Err(invalid(format!(
-                    "ExtensionStackDiffuseTransmissionFactorRange: \
+        if let Some(f) = dt.diffuse_transmission_factor
+            && !(f.is_finite() && (0.0..=1.0).contains(&f))
+        {
+            return Err(invalid(format!(
+                "ExtensionStackDiffuseTransmissionFactorRange: \
                      materials[{mi}].extensions.\
                      KHR_materials_diffuse_transmission.diffuseTransmissionFactor \
                      = {f} is not finite and within [0, 1] \
                      (KHR_materials_diffuse_transmission §Diffuse Transmission)"
-                )));
-            }
+            )));
         }
         if let Some(cf) = dt.diffuse_transmission_color_factor {
             for (ci, c) in cf.iter().enumerate() {
@@ -1801,17 +1795,17 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
                 // Schema Updates"). A bare image (uri-only, no mimeType)
                 // is permitted — the spec only constrains the value
                 // *when present*.
-                if let Some(mime) = root.images[src as usize].mime_type.as_deref() {
-                    if mime != "image/ktx2" {
-                        return Err(invalid(format!(
-                            "ExtensionStackTextureBasisuMimeType: texture {ti} \
+                if let Some(mime) = root.images[src as usize].mime_type.as_deref()
+                    && mime != "image/ktx2"
+                {
+                    return Err(invalid(format!(
+                        "ExtensionStackTextureBasisuMimeType: texture {ti} \
                              KHR_texture_basisu.source = {src} targets image \
                              {src} whose mimeType is {mime:?}, but a KTX v2 \
                              Basis Universal image MUST declare mimeType \
                              \"image/ktx2\" when a mimeType is present (spec \
                              §\"glTF Schema Updates\")"
-                        )));
-                    }
+                    )));
                 }
             }
         }
@@ -1952,14 +1946,14 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
                         mc.byte_stride
                     )));
                 }
-                if let Some(f) = mc.filter.as_deref() {
-                    if f != "NONE" {
-                        return Err(invalid(format!(
-                            "ExtensionStackMeshoptFilter: bufferView[{bvi}] mode \"TRIANGLES\" \
+                if let Some(f) = mc.filter.as_deref()
+                    && f != "NONE"
+                {
+                    return Err(invalid(format!(
+                        "ExtensionStackMeshoptFilter: bufferView[{bvi}] mode \"TRIANGLES\" \
                              requires filter omitted or \"NONE\" (got {:?})",
-                            f
-                        )));
-                    }
+                        f
+                    )));
                 }
             }
             "INDICES" => {
@@ -1970,14 +1964,14 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
                         mc.byte_stride
                     )));
                 }
-                if let Some(f) = mc.filter.as_deref() {
-                    if f != "NONE" {
-                        return Err(invalid(format!(
-                            "ExtensionStackMeshoptFilter: bufferView[{bvi}] mode \"INDICES\" \
+                if let Some(f) = mc.filter.as_deref()
+                    && f != "NONE"
+                {
+                    return Err(invalid(format!(
+                        "ExtensionStackMeshoptFilter: bufferView[{bvi}] mode \"INDICES\" \
                              requires filter omitted or \"NONE\" (got {:?})",
-                            f
-                        )));
-                    }
+                        f
+                    )));
                 }
             }
             other => {
@@ -2249,23 +2243,22 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
                     // data-type table. The `bool` lane's own SCALAR
                     // rule below keeps its historical error prefix;
                     // every other registered type is policed here.
-                    if entry.data_type != ObjectModelDataType::Bool {
-                        if let Some(s) = anim.samplers.get(ch.sampler as usize) {
-                            if let Some(out_acc) = root.accessors.get(s.output as usize) {
-                                let expected = entry.data_type.expected_accessor_kind();
-                                if out_acc.kind != expected {
-                                    return Err(invalid(format!(
-                                        "ExtensionStackAnimationPointerAccessorType: \
+                    if entry.data_type != ObjectModelDataType::Bool
+                        && let Some(s) = anim.samplers.get(ch.sampler as usize)
+                        && let Some(out_acc) = root.accessors.get(s.output as usize)
+                    {
+                        let expected = entry.data_type.expected_accessor_kind();
+                        if out_acc.kind != expected {
+                            return Err(invalid(format!(
+                                "ExtensionStackAnimationPointerAccessorType: \
                                          animations[{ai}].channels[{ci}] targets {:?} \
                                          whose Object Model Data Type maps to output \
                                          accessor type {expected:?}, but the output \
                                          accessor type is {:?} — \"The output accessor \
                                          MUST be compatible with the animated property \
                                          data type\" (KHR_animation_pointer §Operation)",
-                                        p.pointer, out_acc.kind
-                                    )));
-                                }
-                            }
+                                p.pointer, out_acc.kind
+                            )));
                         }
                     }
                 }
@@ -2278,44 +2271,43 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
                 // Model Data Types MUST use STEP interpolation".
                 // Out-of-range sampler / accessor indices are skipped
                 // here — `validate_animation_channels` owns those.
-                if pointer_data_type(&p.pointer) == Some(ObjectModelDataType::Bool) {
-                    if let Some(s) = anim.samplers.get(ch.sampler as usize) {
-                        if s.interpolation.as_deref() != Some("STEP") {
-                            return Err(invalid(format!(
-                                "ExtensionStackAnimationPointerBoolInterpolation: \
+                if pointer_data_type(&p.pointer) == Some(ObjectModelDataType::Bool)
+                    && let Some(s) = anim.samplers.get(ch.sampler as usize)
+                {
+                    if s.interpolation.as_deref() != Some("STEP") {
+                        return Err(invalid(format!(
+                            "ExtensionStackAnimationPointerBoolInterpolation: \
                                  animations[{ai}].channels[{ci}] targets the bool-typed \
                                  property {:?} but its sampler interpolation is {:?} — \
                                  samplers used with `int` or `bool` Object Model Data \
                                  Types MUST use STEP interpolation \
                                  (KHR_animation_pointer §\"Output Accessor Component Types\")",
-                                p.pointer,
-                                s.interpolation.as_deref().unwrap_or("LINEAR")
-                            )));
-                        }
-                        if let Some(out_acc) = root.accessors.get(s.output as usize) {
-                            if out_acc.kind != "SCALAR" {
-                                return Err(invalid(format!(
-                                    "ExtensionStackAnimationPointerBoolType: \
+                            p.pointer,
+                            s.interpolation.as_deref().unwrap_or("LINEAR")
+                        )));
+                    }
+                    if let Some(out_acc) = root.accessors.get(s.output as usize) {
+                        if out_acc.kind != "SCALAR" {
+                            return Err(invalid(format!(
+                                "ExtensionStackAnimationPointerBoolType: \
                                      animations[{ai}].channels[{ci}] targets the bool-typed \
                                      property {:?} but the output accessor type is {:?} — \
                                      the §Operation data-type table pins `bool` to SCALAR \
                                      (KHR_animation_pointer)",
-                                    p.pointer, out_acc.kind
-                                )));
-                            }
-                            if out_acc.component_type
-                                != crate::json_model::COMPONENT_TYPE_UNSIGNED_BYTE
-                            {
-                                return Err(invalid(format!(
-                                    "ExtensionStackAnimationPointerBoolComponentType: \
+                                p.pointer, out_acc.kind
+                            )));
+                        }
+                        if out_acc.component_type != crate::json_model::COMPONENT_TYPE_UNSIGNED_BYTE
+                        {
+                            return Err(invalid(format!(
+                                "ExtensionStackAnimationPointerBoolComponentType: \
                                      animations[{ai}].channels[{ci}] targets the bool-typed \
                                      property {:?} but the output accessor componentType is \
                                      {} — \"the output accessor component type MUST be \
                                      unsigned byte\" (5121) \
                                      (KHR_animation_pointer §\"Output Accessor Component Types\")",
-                                    p.pointer, out_acc.component_type
-                                )));
-                            }
+                                p.pointer, out_acc.component_type
+                            )));
                         }
                     }
                 }
@@ -2332,17 +2324,16 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
                 .extensions
                 .as_ref()
                 .and_then(|e| e.khr_animation_pointer.as_ref())
+                && !seen.insert(p.pointer.as_str())
             {
-                if !seen.insert(p.pointer.as_str()) {
-                    return Err(invalid(format!(
-                        "ExtensionStackAnimationPointerDuplicate: animations[{ai}].channels[{ci}] \
+                return Err(invalid(format!(
+                    "ExtensionStackAnimationPointerDuplicate: animations[{ai}].channels[{ci}] \
                          .target.extensions.KHR_animation_pointer.pointer = {:?} — \
                          the same pointer appears on more than one channel in this animation \
                          (spec §\"Operation\": \"different channels of the same animation MUST NOT \
                          have identical pointers\")",
-                        p.pointer
-                    )));
-                }
+                    p.pointer
+                )));
             }
         }
     }
@@ -2464,26 +2455,26 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
                     splat.color_space
                 )));
             }
-            if let Some(proj) = &splat.projection {
-                if !spec_or_extension(proj, SPLAT_PROJECTIONS) {
-                    return Err(invalid(format!(
-                        "ExtensionStackGaussianSplattingProjection: meshes[{mi}].primitives[{pi}] \
+            if let Some(proj) = &splat.projection
+                && !spec_or_extension(proj, SPLAT_PROJECTIONS)
+            {
+                return Err(invalid(format!(
+                    "ExtensionStackGaussianSplattingProjection: meshes[{mi}].primitives[{pi}] \
                          .extensions.KHR_gaussian_splatting.projection = {:?} is not \
                          \"perspective\" or a vendor-extension-prefixed identifier",
-                        proj
-                    )));
-                }
+                    proj
+                )));
             }
-            if let Some(sort) = &splat.sorting_method {
-                if !spec_or_extension(sort, SPLAT_SORTING) {
-                    return Err(invalid(format!(
-                        "ExtensionStackGaussianSplattingSortingMethod: meshes[{mi}] \
+            if let Some(sort) = &splat.sorting_method
+                && !spec_or_extension(sort, SPLAT_SORTING)
+            {
+                return Err(invalid(format!(
+                    "ExtensionStackGaussianSplattingSortingMethod: meshes[{mi}] \
                          .primitives[{pi}].extensions.KHR_gaussian_splatting.sortingMethod = \
                          {:?} is not \"cameraDistance\" or a vendor-extension-prefixed \
                          identifier",
-                        sort
-                    )));
-                }
+                    sort
+                )));
             }
             // §"Ellipse Kernel" §"Dependencies on glTF" — for the
             // `"ellipse"` kernel the primitive MUST be drawn as POINTS.
@@ -2740,37 +2731,37 @@ pub fn validate_extension_stack(root: &GltfRoot) -> Result<()> {
         .map(|r| r.packets.len())
         .unwrap_or(0);
     let mut refs: Vec<(String, u32)> = Vec::new();
-    if let Some(aext) = &root.asset.extensions {
-        if let Some(x) = &aext.khr_xmp_json_ld {
-            refs.push(("asset".to_owned(), x.packet));
-        }
+    if let Some(aext) = &root.asset.extensions
+        && let Some(x) = &aext.khr_xmp_json_ld
+    {
+        refs.push(("asset".to_owned(), x.packet));
     }
     for (i, s) in root.scenes.iter().enumerate() {
-        if let Some(sext) = &s.extensions {
-            if let Some(x) = &sext.khr_xmp_json_ld {
-                refs.push((format!("scenes[{i}]"), x.packet));
-            }
+        if let Some(sext) = &s.extensions
+            && let Some(x) = &sext.khr_xmp_json_ld
+        {
+            refs.push((format!("scenes[{i}]"), x.packet));
         }
     }
     for (i, n) in root.nodes.iter().enumerate() {
-        if let Some(next) = &n.extensions {
-            if let Some(x) = &next.khr_xmp_json_ld {
-                refs.push((format!("nodes[{i}]"), x.packet));
-            }
+        if let Some(next) = &n.extensions
+            && let Some(x) = &next.khr_xmp_json_ld
+        {
+            refs.push((format!("nodes[{i}]"), x.packet));
         }
     }
     for (i, mh) in root.meshes.iter().enumerate() {
-        if let Some(mext) = &mh.extensions {
-            if let Some(x) = &mext.khr_xmp_json_ld {
-                refs.push((format!("meshes[{i}]"), x.packet));
-            }
+        if let Some(mext) = &mh.extensions
+            && let Some(x) = &mext.khr_xmp_json_ld
+        {
+            refs.push((format!("meshes[{i}]"), x.packet));
         }
     }
     for (i, mt) in root.materials.iter().enumerate() {
-        if let Some(mext) = &mt.extensions {
-            if let Some(x) = &mext.khr_xmp_json_ld {
-                refs.push((format!("materials[{i}]"), x.packet));
-            }
+        if let Some(mext) = &mt.extensions
+            && let Some(x) = &mext.khr_xmp_json_ld
+        {
+            refs.push((format!("materials[{i}]"), x.packet));
         }
     }
     for (scope, packet) in refs {
@@ -3095,32 +3086,32 @@ fn validate_texture_transform(
     slot: &str,
     t: &crate::json_model::TextureTransform,
 ) -> Result<()> {
-    if let Some(r) = t.rotation {
-        if !r.is_finite() {
-            return Err(invalid(format!(
-                "ExtensionStackTextureTransformRotationFinite: materials[{mat_idx}] \
+    if let Some(r) = t.rotation
+        && !r.is_finite()
+    {
+        return Err(invalid(format!(
+            "ExtensionStackTextureTransformRotationFinite: materials[{mat_idx}] \
                  {slot} KHR_texture_transform.rotation = {r} is not finite \
                  (spec §Overview affine UV transform)"
-            )));
-        }
+        )));
     }
-    if let Some(o) = t.offset {
-        if !o[0].is_finite() || !o[1].is_finite() {
-            return Err(invalid(format!(
-                "ExtensionStackTextureTransformOffsetFinite: materials[{mat_idx}] \
+    if let Some(o) = t.offset
+        && (!o[0].is_finite() || !o[1].is_finite())
+    {
+        return Err(invalid(format!(
+            "ExtensionStackTextureTransformOffsetFinite: materials[{mat_idx}] \
                  {slot} KHR_texture_transform.offset = {o:?} has a non-finite \
                  component (spec §Overview affine UV transform)"
-            )));
-        }
+        )));
     }
-    if let Some(s) = t.scale {
-        if !s[0].is_finite() || !s[1].is_finite() {
-            return Err(invalid(format!(
-                "ExtensionStackTextureTransformScaleFinite: materials[{mat_idx}] \
+    if let Some(s) = t.scale
+        && (!s[0].is_finite() || !s[1].is_finite())
+    {
+        return Err(invalid(format!(
+            "ExtensionStackTextureTransformScaleFinite: materials[{mat_idx}] \
                  {slot} KHR_texture_transform.scale = {s:?} has a non-finite \
                  component (spec §Overview affine UV transform)"
-            )));
-        }
+        )));
     }
     Ok(())
 }
@@ -3265,25 +3256,23 @@ pub fn validate_animation_channels(
         // unresolvable node/mesh is left at 1 element/keyframe here;
         // `validate_extension_stack` rejects the undefined pointer
         // with `ExtensionStackAnimationPointerUndefined`.
-        if ch.target.path == "pointer" {
-            if let Some(p) = ch
+        if ch.target.path == "pointer"
+            && let Some(p) = ch
                 .target
                 .extensions
                 .as_ref()
                 .and_then(|e| e.khr_animation_pointer.as_ref())
-            {
-                if pointer_data_type(&p.pointer) == Some(ObjectModelDataType::FloatArray) {
-                    let target_count = pointer_index_at(&p.pointer, 1)
-                        .and_then(|ni| nodes.get(ni))
-                        .and_then(|n| n.mesh)
-                        .and_then(|mi| meshes.get(mi as usize))
-                        .and_then(|m| m.primitives.first())
-                        .map(|pr| pr.targets.len())
-                        .unwrap_or(0);
-                    if target_count > 0 {
-                        per_keyframe_elements = target_count as u32;
-                    }
-                }
+            && pointer_data_type(&p.pointer) == Some(ObjectModelDataType::FloatArray)
+        {
+            let target_count = pointer_index_at(&p.pointer, 1)
+                .and_then(|ni| nodes.get(ni))
+                .and_then(|n| n.mesh)
+                .and_then(|mi| meshes.get(mi as usize))
+                .and_then(|m| m.primitives.first())
+                .map(|pr| pr.targets.len())
+                .unwrap_or(0);
+            if target_count > 0 {
+                per_keyframe_elements = target_count as u32;
             }
         }
 
@@ -3397,17 +3386,17 @@ pub fn validate_animation_input_times(
     // timestamp, so non-finite timestamps are rejected here as well — the
     // value must compare Greater or Equal to zero, anything else (Less or
     // unordered) is a violation.
-    if let Some(&first) = times.first() {
-        if !matches!(
+    if let Some(&first) = times.first()
+        && !matches!(
             first.partial_cmp(&0.0),
             Some(Ordering::Greater | Ordering::Equal)
-        ) {
-            return Err(invalid(format!(
-                "AnimationSamplerInputTimeStart: animations[{anim_idx}].samplers[{sampler_idx}] \
+        )
+    {
+        return Err(invalid(format!(
+            "AnimationSamplerInputTimeStart: animations[{anim_idx}].samplers[{sampler_idx}] \
                  input accessor first keyframe time {first} MUST be >= 0.0 (spec §3.11: \
                  \"time[0] >= 0.0\")"
-            )));
-        }
+        )));
     }
     // `time[n + 1] > time[n]` — strictly increasing. Each successor must
     // compare strictly Greater than its predecessor; an Equal, Less, or
@@ -3624,7 +3613,7 @@ pub fn validate_accessor_fits_bufferview(
     let acc_off = accessor.byte_offset.unwrap_or(0) as u64;
     // "accessor.byteOffset MUST be a multiple of the size of the
     // accessor's component type."
-    if acc_off % csize64 != 0 {
+    if !acc_off.is_multiple_of(csize64) {
         return Err(invalid(format!(
             "AccessorByteOffsetAlignment: accessors[{accessor_idx}].byteOffset {acc_off} \
              MUST be a multiple of the component size {csize64} (spec §3.6.2.4)"
@@ -3648,14 +3637,14 @@ pub fn validate_accessor_fits_bufferview(
     }
     // "When byteStride is defined, it MUST be a multiple of the size of
     // the accessor's component type."
-    if let Some(stride) = bv.byte_stride {
-        if (stride as u64) % csize64 != 0 {
-            return Err(invalid(format!(
-                "AccessorStrideAlignment: bufferViews[{bv_idx}].byteStride {stride} (referenced \
+    if let Some(stride) = bv.byte_stride
+        && !(stride as u64).is_multiple_of(csize64)
+    {
+        return Err(invalid(format!(
+            "AccessorStrideAlignment: bufferViews[{bv_idx}].byteStride {stride} (referenced \
                  by accessors[{accessor_idx}]) MUST be a multiple of the component size \
                  {csize64} (spec §3.6.2.4)"
-            )));
-        }
+        )));
     }
 
     let effective_stride: u64 = bv.byte_stride.map(u64::from).unwrap_or(element_size);
@@ -3735,25 +3724,25 @@ pub fn validate_bufferview_fits_buffer(
             bv.buffer
         )));
     }
-    if let Some(stride) = bv.byte_stride {
-        if !(4..=252).contains(&stride) {
-            return Err(invalid(format!(
-                "BufferViewStrideRange: bufferViews[{bv_idx}].byteStride = {stride} \
+    if let Some(stride) = bv.byte_stride
+        && !(4..=252).contains(&stride)
+    {
+        return Err(invalid(format!(
+            "BufferViewStrideRange: bufferViews[{bv_idx}].byteStride = {stride} \
                  outside JSON-schema range [4, 252] (spec §5.11.4)"
-            )));
-        }
+        )));
     }
     // Spec §5.11.5 — `bufferView.target`, when present, is a hint whose
     // value is constrained to the closed enum { 34962 ARRAY_BUFFER,
     // 34963 ELEMENT_ARRAY_BUFFER }. Any other integer is not a legal
     // WebGL buffer-binding target and is a schema violation.
-    if let Some(target) = bv.target {
-        if !matches!(target, TARGET_ARRAY_BUFFER | TARGET_ELEMENT_ARRAY_BUFFER) {
-            return Err(invalid(format!(
-                "BufferViewTarget: bufferViews[{bv_idx}].target = {target} — when present MUST be \
+    if let Some(target) = bv.target
+        && !matches!(target, TARGET_ARRAY_BUFFER | TARGET_ELEMENT_ARRAY_BUFFER)
+    {
+        return Err(invalid(format!(
+            "BufferViewTarget: bufferViews[{bv_idx}].target = {target} — when present MUST be \
                  34962 (ARRAY_BUFFER) or 34963 (ELEMENT_ARRAY_BUFFER) (spec §5.11.5)"
-            )));
-        }
+        )));
     }
     Ok(())
 }
@@ -3987,13 +3976,13 @@ pub fn validate_cameras(cameras: &[Camera]) -> Result<()> {
                     p.znear
                 )));
             }
-            if let Some(ar) = p.aspect_ratio {
-                if !ar.is_finite() || ar <= 0.0 {
-                    return Err(invalid(format!(
-                        "CameraPerspectiveAspectRatio: cameras[{ci}].perspective.aspectRatio \
+            if let Some(ar) = p.aspect_ratio
+                && (!ar.is_finite() || ar <= 0.0)
+            {
+                return Err(invalid(format!(
+                    "CameraPerspectiveAspectRatio: cameras[{ci}].perspective.aspectRatio \
                          = {ar} — when defined, MUST be finite and > 0 (spec §5.14.1)"
-                    )));
-                }
+                )));
             }
             if let Some(zfar) = p.zfar {
                 if !zfar.is_finite() || zfar <= 0.0 {
@@ -4099,27 +4088,27 @@ pub fn validate_accessors(accessors: &[Accessor]) -> Result<()> {
         // bufferView-fit pass rejects that separately).
         if let Some(components) = type_components(&acc.kind) {
             let components = components as usize;
-            if let Some(min) = &acc.min {
-                if min.len() != components {
-                    return Err(invalid(format!(
-                        "AccessorMinMaxLength: accessors[{ai}].min has {} entries but type {} \
+            if let Some(min) = &acc.min
+                && min.len() != components
+            {
+                return Err(invalid(format!(
+                    "AccessorMinMaxLength: accessors[{ai}].min has {} entries but type {} \
                          has {} components — the arrays MUST be equal length (spec §3.6.2.5)",
-                        min.len(),
-                        acc.kind,
-                        components
-                    )));
-                }
+                    min.len(),
+                    acc.kind,
+                    components
+                )));
             }
-            if let Some(max) = &acc.max {
-                if max.len() != components {
-                    return Err(invalid(format!(
-                        "AccessorMinMaxLength: accessors[{ai}].max has {} entries but type {} \
+            if let Some(max) = &acc.max
+                && max.len() != components
+            {
+                return Err(invalid(format!(
+                    "AccessorMinMaxLength: accessors[{ai}].max has {} entries but type {} \
                          has {} components — the arrays MUST be equal length (spec §3.6.2.5)",
-                        max.len(),
-                        acc.kind,
-                        components
-                    )));
-                }
+                    max.len(),
+                    acc.kind,
+                    components
+                )));
             }
         }
     }
@@ -4156,16 +4145,16 @@ pub fn validate_samplers(samplers: &[crate::json_model::Sampler]) -> Result<()> 
         MIN_FILTER_NEAREST_MIPMAP_NEAREST, WRAP_CLAMP_TO_EDGE, WRAP_MIRRORED_REPEAT, WRAP_REPEAT,
     };
     for (si, s) in samplers.iter().enumerate() {
-        if let Some(v) = s.mag_filter {
-            if !matches!(v, MAG_FILTER_NEAREST | MAG_FILTER_LINEAR) {
-                return Err(invalid(format!(
-                    "SamplerMagFilter: samplers[{si}].magFilter = {v} — MUST be one of \
+        if let Some(v) = s.mag_filter
+            && !matches!(v, MAG_FILTER_NEAREST | MAG_FILTER_LINEAR)
+        {
+            return Err(invalid(format!(
+                "SamplerMagFilter: samplers[{si}].magFilter = {v} — MUST be one of \
                      9728 (NEAREST) or 9729 (LINEAR) (spec §5.26.1)"
-                )));
-            }
+            )));
         }
-        if let Some(v) = s.min_filter {
-            if !matches!(
+        if let Some(v) = s.min_filter
+            && !matches!(
                 v,
                 MIN_FILTER_NEAREST
                     | MIN_FILTER_LINEAR
@@ -4173,32 +4162,32 @@ pub fn validate_samplers(samplers: &[crate::json_model::Sampler]) -> Result<()> 
                     | MIN_FILTER_LINEAR_MIPMAP_NEAREST
                     | MIN_FILTER_NEAREST_MIPMAP_LINEAR
                     | MIN_FILTER_LINEAR_MIPMAP_LINEAR
-            ) {
-                return Err(invalid(format!(
-                    "SamplerMinFilter: samplers[{si}].minFilter = {v} — MUST be one of \
+            )
+        {
+            return Err(invalid(format!(
+                "SamplerMinFilter: samplers[{si}].minFilter = {v} — MUST be one of \
                      9728 (NEAREST), 9729 (LINEAR), 9984 (NEAREST_MIPMAP_NEAREST), \
                      9985 (LINEAR_MIPMAP_NEAREST), 9986 (NEAREST_MIPMAP_LINEAR), or \
                      9987 (LINEAR_MIPMAP_LINEAR) (spec §5.26.2)"
-                )));
-            }
+            )));
         }
-        if let Some(v) = s.wrap_s {
-            if !matches!(v, WRAP_CLAMP_TO_EDGE | WRAP_MIRRORED_REPEAT | WRAP_REPEAT) {
-                return Err(invalid(format!(
-                    "SamplerWrapS: samplers[{si}].wrapS = {v} — MUST be one of \
+        if let Some(v) = s.wrap_s
+            && !matches!(v, WRAP_CLAMP_TO_EDGE | WRAP_MIRRORED_REPEAT | WRAP_REPEAT)
+        {
+            return Err(invalid(format!(
+                "SamplerWrapS: samplers[{si}].wrapS = {v} — MUST be one of \
                      33071 (CLAMP_TO_EDGE), 33648 (MIRRORED_REPEAT), or 10497 (REPEAT) \
                      (spec §5.26.3)"
-                )));
-            }
+            )));
         }
-        if let Some(v) = s.wrap_t {
-            if !matches!(v, WRAP_CLAMP_TO_EDGE | WRAP_MIRRORED_REPEAT | WRAP_REPEAT) {
-                return Err(invalid(format!(
-                    "SamplerWrapT: samplers[{si}].wrapT = {v} — MUST be one of \
+        if let Some(v) = s.wrap_t
+            && !matches!(v, WRAP_CLAMP_TO_EDGE | WRAP_MIRRORED_REPEAT | WRAP_REPEAT)
+        {
+            return Err(invalid(format!(
+                "SamplerWrapT: samplers[{si}].wrapT = {v} — MUST be one of \
                      33071 (CLAMP_TO_EDGE), 33648 (MIRRORED_REPEAT), or 10497 (REPEAT) \
                      (spec §5.26.4)"
-                )));
-            }
+            )));
         }
     }
     Ok(())
@@ -4301,10 +4290,10 @@ pub fn validate_nodes(nodes: &[crate::json_model::Node], animations: &[Animation
     let mut animated = vec![false; n];
     for anim in animations {
         for ch in &anim.channels {
-            if let Some(ni) = ch.target.node {
-                if (ni as usize) < n {
-                    animated[ni as usize] = true;
-                }
+            if let Some(ni) = ch.target.node
+                && (ni as usize) < n
+            {
+                animated[ni as usize] = true;
             }
         }
     }
@@ -4355,23 +4344,23 @@ pub fn validate_nodes(nodes: &[crate::json_model::Node], animations: &[Animation
             }
         }
 
-        if let Some(t) = &node.translation {
-            if let Some(bad) = t.iter().position(|v| !v.is_finite()) {
-                return Err(invalid(format!(
-                    "NodeTranslationFinite: nodes[{i}].translation[{bad}] = {} is not finite \
+        if let Some(t) = &node.translation
+            && let Some(bad) = t.iter().position(|v| !v.is_finite())
+        {
+            return Err(invalid(format!(
+                "NodeTranslationFinite: nodes[{i}].translation[{bad}] = {} is not finite \
                      (spec §3.5.3)",
-                    t[bad]
-                )));
-            }
+                t[bad]
+            )));
         }
 
-        if let Some(s) = &node.scale {
-            if let Some(bad) = s.iter().position(|v| !v.is_finite()) {
-                return Err(invalid(format!(
-                    "NodeScaleFinite: nodes[{i}].scale[{bad}] = {} is not finite (spec §3.5.3)",
-                    s[bad]
-                )));
-            }
+        if let Some(s) = &node.scale
+            && let Some(bad) = s.iter().position(|v| !v.is_finite())
+        {
+            return Err(invalid(format!(
+                "NodeScaleFinite: nodes[{i}].scale[{bad}] = {} is not finite (spec §3.5.3)",
+                s[bad]
+            )));
         }
 
         if let Some(q) = &node.rotation {
@@ -4545,13 +4534,13 @@ pub fn validate_skins(
         }
 
         // §5.28.2 — skeleton node index in range.
-        if let Some(sk) = skin.skeleton {
-            if (sk as usize) >= node_count {
-                return Err(invalid(format!(
-                    "SkinSkeletonIndex: skins[{si}].skeleton references node {sk}, out of range \
+        if let Some(sk) = skin.skeleton
+            && (sk as usize) >= node_count
+        {
+            return Err(invalid(format!(
+                "SkinSkeletonIndex: skins[{si}].skeleton references node {sk}, out of range \
                      (document has {node_count} nodes) (spec §5.28.2)"
-                )));
-            }
+            )));
         }
 
         // §5.28.1 / §3.7.3.1 — inverseBindMatrices accessor format.
@@ -4688,21 +4677,21 @@ pub fn validate_textures(
     let texture_count = textures.len();
 
     for (ti, tex) in textures.iter().enumerate() {
-        if let Some(src) = tex.source {
-            if (src as usize) >= image_count {
-                return Err(invalid(format!(
-                    "TextureSourceIndex: textures[{ti}].source = {src} is out of range (document \
+        if let Some(src) = tex.source
+            && (src as usize) >= image_count
+        {
+            return Err(invalid(format!(
+                "TextureSourceIndex: textures[{ti}].source = {src} is out of range (document \
                      has {image_count} images) (spec §5.29.1)"
-                )));
-            }
+            )));
         }
-        if let Some(samp) = tex.sampler {
-            if (samp as usize) >= sampler_count {
-                return Err(invalid(format!(
-                    "TextureSamplerIndex: textures[{ti}].sampler = {samp} is out of range (document \
+        if let Some(samp) = tex.sampler
+            && (samp as usize) >= sampler_count
+        {
+            return Err(invalid(format!(
+                "TextureSamplerIndex: textures[{ti}].sampler = {samp} is out of range (document \
                      has {sampler_count} samplers) (spec §5.29.2)"
-                )));
-            }
+            )));
         }
     }
 
@@ -4793,21 +4782,21 @@ pub fn validate_materials(materials: &[Material]) -> Result<()> {
                     }
                 }
             }
-            if let Some(m) = pbr.metallic_factor {
-                if !in_unit(m) {
-                    return Err(invalid(format!(
-                        "MaterialMetallicFactorRange: materials[{mi}].pbrMetallicRoughness\
+            if let Some(m) = pbr.metallic_factor
+                && !in_unit(m)
+            {
+                return Err(invalid(format!(
+                    "MaterialMetallicFactorRange: materials[{mi}].pbrMetallicRoughness\
                          .metallicFactor = {m} MUST be in [0, 1] (spec §5.22.3)"
-                    )));
-                }
+                )));
             }
-            if let Some(r) = pbr.roughness_factor {
-                if !in_unit(r) {
-                    return Err(invalid(format!(
-                        "MaterialRoughnessFactorRange: materials[{mi}].pbrMetallicRoughness\
+            if let Some(r) = pbr.roughness_factor
+                && !in_unit(r)
+            {
+                return Err(invalid(format!(
+                    "MaterialRoughnessFactorRange: materials[{mi}].pbrMetallicRoughness\
                          .roughnessFactor = {r} MUST be in [0, 1] (spec §5.22.4)"
-                    )));
-                }
+                )));
             }
         }
         if let Some(ef) = mat.emissive_factor {
@@ -4835,38 +4824,36 @@ pub fn validate_materials(materials: &[Material]) -> Result<()> {
                 )));
             }
         }
-        if let Some(occ) = &mat.occlusion_texture {
-            if let Some(s) = occ.strength {
-                if !in_unit(s) {
-                    return Err(invalid(format!(
-                        "MaterialOcclusionStrengthRange: materials[{mi}].occlusionTexture\
+        if let Some(occ) = &mat.occlusion_texture
+            && let Some(s) = occ.strength
+            && !in_unit(s)
+        {
+            return Err(invalid(format!(
+                "MaterialOcclusionStrengthRange: materials[{mi}].occlusionTexture\
                          .strength = {s} MUST be in [0, 1] (spec §5.21.3)"
-                    )));
-                }
-            }
+            )));
         }
-        if let Some(nrm) = &mat.normal_texture {
-            if let Some(sc) = nrm.scale {
-                if !sc.is_finite() {
-                    return Err(invalid(format!(
-                        "MaterialNormalScaleFinite: materials[{mi}].normalTexture.scale = {sc} \
+        if let Some(nrm) = &mat.normal_texture
+            && let Some(sc) = nrm.scale
+            && !sc.is_finite()
+        {
+            return Err(invalid(format!(
+                "MaterialNormalScaleFinite: materials[{mi}].normalTexture.scale = {sc} \
                          MUST be finite (spec §5.20.3)"
-                    )));
-                }
-            }
+            )));
         }
         // §5.19.3 — `alphaMode` is an enum whose only legal values are
         // "OPAQUE", "MASK", and "BLEND". An absent field defaults to
         // "OPAQUE" and is conformant; any other string is a schema
         // violation. (The conversion path otherwise silently coerces an
         // unknown value to OPAQUE, hiding the malformed document.)
-        if let Some(am) = mat.alpha_mode.as_deref() {
-            if !matches!(am, "OPAQUE" | "MASK" | "BLEND") {
-                return Err(invalid(format!(
-                    "MaterialAlphaMode: materials[{mi}].alphaMode = {am:?} — MUST be one of \
+        if let Some(am) = mat.alpha_mode.as_deref()
+            && !matches!(am, "OPAQUE" | "MASK" | "BLEND")
+        {
+            return Err(invalid(format!(
+                "MaterialAlphaMode: materials[{mi}].alphaMode = {am:?} — MUST be one of \
                      \"OPAQUE\", \"MASK\", or \"BLEND\" (spec §5.19.3)"
-                )));
-            }
+            )));
         }
     }
     Ok(())
@@ -5077,16 +5064,16 @@ pub fn validate_morph_targets(
 
                     // "All morph target accessors MUST have the same
                     // count as the accessors of the original primitive."
-                    if let Some(base_acc) = accessors.get(base_idx as usize) {
-                        if acc.count != base_acc.count {
-                            return Err(invalid(format!(
-                                "MorphTargetCount: meshes[{mi}].primitives[{pi}].targets[{ti}] \
+                    if let Some(base_acc) = accessors.get(base_idx as usize)
+                        && acc.count != base_acc.count
+                    {
+                        return Err(invalid(format!(
+                            "MorphTargetCount: meshes[{mi}].primitives[{pi}].targets[{ti}] \
                                  {sem:?} accessor {acc_idx} has count {} but the base attribute \
                                  accessor {base_idx} has count {} — they MUST match \
                                  (spec §3.7.2.2)",
-                                acc.count, base_acc.count
-                            )));
-                        }
+                            acc.count, base_acc.count
+                        )));
                     }
 
                     // Standard semantics carry the §3.7.2.2 type table.
@@ -5264,13 +5251,13 @@ pub fn validate_index_references(root: &GltfRoot) -> Result<()> {
     let camera_count = root.cameras.len();
     let material_count = root.materials.len();
 
-    if let Some(scene) = root.scene {
-        if (scene as usize) >= scene_count {
-            return Err(invalid(format!(
-                "DefaultSceneIndex: glTF.scene = {scene} is out of range (document has \
+    if let Some(scene) = root.scene
+        && (scene as usize) >= scene_count
+    {
+        return Err(invalid(format!(
+            "DefaultSceneIndex: glTF.scene = {scene} is out of range (document has \
                  {scene_count} scenes) (spec §3.3)"
-            )));
-        }
+        )));
     }
 
     for (si, scene) in root.scenes.iter().enumerate() {
@@ -5285,34 +5272,34 @@ pub fn validate_index_references(root: &GltfRoot) -> Result<()> {
     }
 
     for (ni, node) in root.nodes.iter().enumerate() {
-        if let Some(mesh) = node.mesh {
-            if (mesh as usize) >= mesh_count {
-                return Err(invalid(format!(
-                    "NodeMeshIndex: nodes[{ni}].mesh = {mesh} is out of range (document has \
+        if let Some(mesh) = node.mesh
+            && (mesh as usize) >= mesh_count
+        {
+            return Err(invalid(format!(
+                "NodeMeshIndex: nodes[{ni}].mesh = {mesh} is out of range (document has \
                      {mesh_count} meshes) (spec §5.25.5)"
-                )));
-            }
+            )));
         }
-        if let Some(camera) = node.camera {
-            if (camera as usize) >= camera_count {
-                return Err(invalid(format!(
-                    "NodeCameraIndex: nodes[{ni}].camera = {camera} is out of range (document \
+        if let Some(camera) = node.camera
+            && (camera as usize) >= camera_count
+        {
+            return Err(invalid(format!(
+                "NodeCameraIndex: nodes[{ni}].camera = {camera} is out of range (document \
                      has {camera_count} cameras) (spec §5.25.1)"
-                )));
-            }
+            )));
         }
     }
 
     for (mi, mesh) in root.meshes.iter().enumerate() {
         for (pi, prim) in mesh.primitives.iter().enumerate() {
-            if let Some(material) = prim.material {
-                if (material as usize) >= material_count {
-                    return Err(invalid(format!(
-                        "PrimitiveMaterialIndex: meshes[{mi}].primitives[{pi}].material = \
+            if let Some(material) = prim.material
+                && (material as usize) >= material_count
+            {
+                return Err(invalid(format!(
+                    "PrimitiveMaterialIndex: meshes[{mi}].primitives[{pi}].material = \
                          {material} is out of range (document has {material_count} materials) \
                          (spec §5.24.3)"
-                    )));
-                }
+                )));
             }
         }
     }
@@ -5376,13 +5363,14 @@ pub fn validate_structural_minimums(root: &GltfRoot) -> Result<()> {
         // It is only a GPU-binding hint (SHOULD be set on vertex / index
         // bufferViews per §5.11), so an absent value stays valid, but an
         // out-of-set integer is a schema violation.
-        if let Some(target) = bv.target {
-            if target != TARGET_ARRAY_BUFFER && target != TARGET_ELEMENT_ARRAY_BUFFER {
-                return Err(invalid(format!(
-                    "BufferViewTargetEnum: bufferViews[{bvi}].target = {target} MUST be \
+        if let Some(target) = bv.target
+            && target != TARGET_ARRAY_BUFFER
+            && target != TARGET_ELEMENT_ARRAY_BUFFER
+        {
+            return Err(invalid(format!(
+                "BufferViewTargetEnum: bufferViews[{bvi}].target = {target} MUST be \
                      34962 (ARRAY_BUFFER) or 34963 (ELEMENT_ARRAY_BUFFER) (spec §5.11.5)"
-                )));
-            }
+            )));
         }
     }
 
@@ -5551,14 +5539,14 @@ pub fn validate_bufferview_data_kind(root: &GltfRoot) -> Result<()> {
             if is_draco {
                 continue;
             }
-            if let Some(idx_acc) = prim.indices {
-                if let Some(bv) = bv_of(idx_acc) {
-                    mark(
-                        bv,
-                        BufferViewKind::VertexIndex,
-                        format!("meshes[{mi}].primitives[{pi}].indices"),
-                    )?;
-                }
+            if let Some(idx_acc) = prim.indices
+                && let Some(bv) = bv_of(idx_acc)
+            {
+                mark(
+                    bv,
+                    BufferViewKind::VertexIndex,
+                    format!("meshes[{mi}].primitives[{pi}].indices"),
+                )?;
             }
             let attr_sets = std::iter::once(&prim.attributes).chain(prim.targets.iter());
             for attrs in attr_sets {
@@ -5580,14 +5568,14 @@ pub fn validate_bufferview_data_kind(root: &GltfRoot) -> Result<()> {
 
     // Skins: inverseBindMatrices (InverseBindMatrix).
     for (si, skin) in root.skins.iter().enumerate() {
-        if let Some(ibm_acc) = skin.inverse_bind_matrices {
-            if let Some(bv) = bv_of(ibm_acc) {
-                mark(
-                    bv,
-                    BufferViewKind::InverseBindMatrix,
-                    format!("skins[{si}].inverseBindMatrices"),
-                )?;
-            }
+        if let Some(ibm_acc) = skin.inverse_bind_matrices
+            && let Some(bv) = bv_of(ibm_acc)
+        {
+            mark(
+                bv,
+                BufferViewKind::InverseBindMatrix,
+                format!("skins[{si}].inverseBindMatrices"),
+            )?;
         }
     }
 
@@ -5722,11 +5710,11 @@ mod tests {
     use crate::json_model::{
         Accessor, AccessorSparse, AccessorSparseIndices, AccessorSparseValues, Animation,
         AnimationChannel, AnimationChannelTarget, AnimationSampler, Asset, Buffer, BufferView,
-        KhrLightsPunctualRoot, Material, MaterialAnisotropy, MaterialClearcoat,
-        MaterialDiffuseTransmission, MaterialDispersion, MaterialEmissiveStrength,
-        MaterialExtensions, MaterialIor, MaterialIridescence, MaterialSheen, MaterialSpecular,
-        MaterialTransmission, MaterialUnlit, MaterialVolume, Mesh, Node, NodeExtensions,
-        NodeLightRef, Primitive, RootExtensions, COMPONENT_TYPE_FLOAT,
+        COMPONENT_TYPE_FLOAT, KhrLightsPunctualRoot, Material, MaterialAnisotropy,
+        MaterialClearcoat, MaterialDiffuseTransmission, MaterialDispersion,
+        MaterialEmissiveStrength, MaterialExtensions, MaterialIor, MaterialIridescence,
+        MaterialSheen, MaterialSpecular, MaterialTransmission, MaterialUnlit, MaterialVolume, Mesh,
+        Node, NodeExtensions, NodeLightRef, Primitive, RootExtensions,
     };
     use std::collections::HashMap;
 
@@ -7922,7 +7910,7 @@ mod tests {
     // --- §5.26 sampler filter / wrap mode validation ---
 
     use crate::json_model::{
-        Sampler, MAG_FILTER_LINEAR, MAG_FILTER_NEAREST, MIN_FILTER_LINEAR_MIPMAP_LINEAR,
+        MAG_FILTER_LINEAR, MAG_FILTER_NEAREST, MIN_FILTER_LINEAR_MIPMAP_LINEAR, Sampler,
         WRAP_CLAMP_TO_EDGE, WRAP_MIRRORED_REPEAT, WRAP_REPEAT,
     };
 

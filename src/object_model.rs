@@ -496,10 +496,7 @@ const MUTABLE_TEMPLATES: &[(&str, ObjectModelDataType)] = &[
         T::Float2,
     ),
     // --- KHR_node_visibility ---
-    (
-        "/nodes/{}/extensions/KHR_node_visibility/visible",
-        T::Bool,
-    ),
+    ("/nodes/{}/extensions/KHR_node_visibility/visible", T::Bool),
     // --- KHR_audio_emitter (mutable table) ---
     ("/extensions/KHR_audio_emitter/emitters/{}/gain", T::Float),
     (

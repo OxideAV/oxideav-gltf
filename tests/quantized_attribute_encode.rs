@@ -15,7 +15,7 @@
 //! extensionsRequired array - the extension is not optional").
 
 use base64::Engine as _;
-use oxideav_gltf::{json_encoder, GltfDecoder};
+use oxideav_gltf::{GltfDecoder, json_encoder};
 use oxideav_mesh3d::{Mesh3DDecoder, Mesh3DEncoder};
 
 fn build_doc(

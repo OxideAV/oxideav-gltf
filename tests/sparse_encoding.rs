@@ -100,19 +100,20 @@ fn sparse_threshold_emits_sparse_for_morph_weights() {
     // a `sparse` block with count == 2 (the two non-zero weights).
     let mut found_sparse = false;
     for acc in accessors {
-        if acc["type"] == "SCALAR" && acc["componentType"] == 5126 {
-            if let Some(s) = acc.get("sparse") {
-                assert_eq!(
-                    s["count"], 2,
-                    "expected exactly 2 sparse override slots, got {s}"
-                );
-                // sparse-base accessor should have NO bufferView.
-                assert!(
-                    acc.get("bufferView").is_none(),
-                    "sparse + zero base should drop bufferView"
-                );
-                found_sparse = true;
-            }
+        if acc["type"] == "SCALAR"
+            && acc["componentType"] == 5126
+            && let Some(s) = acc.get("sparse")
+        {
+            assert_eq!(
+                s["count"], 2,
+                "expected exactly 2 sparse override slots, got {s}"
+            );
+            // sparse-base accessor should have NO bufferView.
+            assert!(
+                acc.get("bufferView").is_none(),
+                "sparse + zero base should drop bufferView"
+            );
+            found_sparse = true;
         }
     }
     assert!(

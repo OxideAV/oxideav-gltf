@@ -17,7 +17,7 @@ use oxideav_gltf::{GltfDecoder, GltfEncoder};
 use oxideav_mesh3d::{
     Material, Mesh, Mesh3DDecoder, Mesh3DEncoder, Node, NodeId, Primitive, Scene3D, Topology,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Build a minimal `Scene3D` with `material_count` materials, one mesh
 /// with one triangle primitive, and an instancing node — sufficient

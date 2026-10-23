@@ -59,15 +59,16 @@ fn ibm_sparse_threshold_emits_sparse_accessor() {
     // count == 2 (the two non-zero matrices) and no base bufferView.
     let mut found = false;
     for acc in accessors {
-        if acc["type"] == "MAT4" && acc["componentType"] == 5126 {
-            if let Some(s) = acc.get("sparse") {
-                assert_eq!(s["count"], 2, "expected 2 sparse override slots");
-                assert!(
-                    acc.get("bufferView").is_none(),
-                    "sparse zero-base must drop bufferView"
-                );
-                found = true;
-            }
+        if acc["type"] == "MAT4"
+            && acc["componentType"] == 5126
+            && let Some(s) = acc.get("sparse")
+        {
+            assert_eq!(s["count"], 2, "expected 2 sparse override slots");
+            assert!(
+                acc.get("bufferView").is_none(),
+                "sparse zero-base must drop bufferView"
+            );
+            found = true;
         }
     }
     assert!(found, "expected a MAT4 FLOAT accessor with sparse storage");

@@ -66,7 +66,7 @@ fn build_glb_or_json_with_animation(
     let key_max = (key_count - 1) as f32;
 
     // Pad to alignment of the integer width.
-    while bin.len() % bytes_per_component.max(4) != 0 {
+    while !bin.len().is_multiple_of(bytes_per_component.max(4)) {
         bin.push(0);
     }
     let out_offset = bin.len();
@@ -293,7 +293,7 @@ fn missing_normalized_flag_on_int_output_errors() {
     let key_offset = bin.len();
     bin.extend_from_slice(&0.0f32.to_le_bytes());
     bin.extend_from_slice(&1.0f32.to_le_bytes());
-    while bin.len() % 4 != 0 {
+    while !bin.len().is_multiple_of(4) {
         bin.push(0);
     }
     let out_offset = bin.len();

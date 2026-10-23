@@ -36,7 +36,7 @@
 //! encoder integration itself is not yet wired; see the crate README.
 
 use crate::accessor::AccessorView;
-use crate::error::{invalid, Result};
+use crate::error::{Result, invalid};
 use crate::json_model::{
     Accessor, COMPONENT_TYPE_BYTE, COMPONENT_TYPE_FLOAT, COMPONENT_TYPE_SHORT,
     COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_SHORT,
@@ -103,7 +103,7 @@ pub fn quantize_normalized(component_type: u32, f: f32) -> Result<i32> {
         other => {
             return Err(invalid(format!(
                 "KHR_mesh_quantization: componentType {other} is not a quantisable integer type"
-            )))
+            )));
         }
     };
     Ok(r)
@@ -394,7 +394,7 @@ pub fn write_quantized_vec2(
         other => {
             return Err(invalid(format!(
                 "KHR_mesh_quantization encode: VEC2 componentType {other} not allowed"
-            )))
+            )));
         }
     };
     let pad = stride - csize * 2;
@@ -432,7 +432,7 @@ pub fn write_quantized_vec3(
         other => {
             return Err(invalid(format!(
                 "KHR_mesh_quantization encode: VEC3 componentType {other} not allowed"
-            )))
+            )));
         }
     };
     let pad = stride - csize * 3;
@@ -470,7 +470,7 @@ pub fn write_quantized_vec4(
         other => {
             return Err(invalid(format!(
                 "KHR_mesh_quantization encode: VEC4 componentType {other} not allowed"
-            )))
+            )));
         }
     };
     let pad = stride - csize * 4;
@@ -579,10 +579,10 @@ fn base_attr_key(name: &str) -> &str {
             return "TEXCOORD";
         }
     }
-    if let Some(rest) = name.strip_prefix("COLOR_") {
-        if rest.chars().all(|c| c.is_ascii_digit()) {
-            return "COLOR";
-        }
+    if let Some(rest) = name.strip_prefix("COLOR_")
+        && rest.chars().all(|c| c.is_ascii_digit())
+    {
+        return "COLOR";
     }
     name
 }

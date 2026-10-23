@@ -13,7 +13,7 @@
 //! * `KHR_meshopt_compression` is declared in `extensionsUsed` (the
 //!   document stays readable without it, so not `extensionsRequired`).
 
-use oxideav_gltf::{json_encoder, GltfDecoder, GltfEncoder, OutputFlavour};
+use oxideav_gltf::{GltfDecoder, GltfEncoder, OutputFlavour, json_encoder};
 use oxideav_mesh3d::{
     Indices, Mesh, Mesh3DDecoder, Mesh3DEncoder, Node, Primitive, Scene3D, Topology,
 };

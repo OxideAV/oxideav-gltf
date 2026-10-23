@@ -21,11 +21,11 @@ use oxideav_mesh3d::{
 };
 
 use crate::accessor::{
-    pad_to_4, smallest_index_component, write_indices, write_mat4_f32, write_vec4_u16,
-    write_vec_f32,
+    pad_to_4, smallest_index_component, write_indices, write_mat4_f32, write_vec_f32,
+    write_vec4_u16,
 };
 use crate::encoder::QuantizeMode;
-use crate::error::{invalid, Result};
+use crate::error::{Result, invalid};
 use crate::json_model::{self as gj, GltfRoot};
 
 /// Emitted glTF root + the single packed binary buffer.
@@ -407,21 +407,21 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     // mapping survives the round-trip (the per-primitive walk below
     // records the latter via `emitted_primitive_variants`).
     let mut emitted_root_variants = false;
-    if let Some(serde_json::Value::Object(obj)) = scene.extras.get("KHR_materials_variants") {
-        if let Some(serde_json::Value::Array(arr)) = obj.get("variants") {
-            let variants: Vec<gj::MaterialVariant> = arr
-                .iter()
-                .filter_map(|v| {
-                    let o = v.as_object()?;
-                    let name = o.get("name").and_then(|v| v.as_str())?.to_owned();
-                    let extras = o.get("extras").cloned();
-                    Some(gj::MaterialVariant { name, extras })
-                })
-                .collect();
-            let ext = root.extensions.get_or_insert(gj::RootExtensions::default());
-            ext.khr_materials_variants = Some(gj::KhrMaterialsVariantsRoot { variants });
-            emitted_root_variants = true;
-        }
+    if let Some(serde_json::Value::Object(obj)) = scene.extras.get("KHR_materials_variants")
+        && let Some(serde_json::Value::Array(arr)) = obj.get("variants")
+    {
+        let variants: Vec<gj::MaterialVariant> = arr
+            .iter()
+            .filter_map(|v| {
+                let o = v.as_object()?;
+                let name = o.get("name").and_then(|v| v.as_str())?.to_owned();
+                let extras = o.get("extras").cloned();
+                Some(gj::MaterialVariant { name, extras })
+            })
+            .collect();
+        let ext = root.extensions.get_or_insert(gj::RootExtensions::default());
+        ext.khr_materials_variants = Some(gj::KhrMaterialsVariantsRoot { variants });
+        emitted_root_variants = true;
     }
     if emitted_root_variants || emitted_primitive_variants {
         root.extensions_used
@@ -495,24 +495,24 @@ pub fn convert_with_options(scene: &Scene3D, opts: &EncodeOptions) -> Result<Enc
     // and `target.extensions.KHR_animation_pointer.pointer` carries
     // the JSON Pointer string.
     let mut pointer_channels_by_anim: HashMap<u32, Vec<PointerChannelData>> = HashMap::new();
-    if let Some(serde_json::Value::Object(top)) = scene.extras.get("KHR_animation_pointer") {
-        if let Some(serde_json::Value::Array(anims)) = top.get("animations") {
-            for entry in anims {
-                let obj = match entry {
-                    serde_json::Value::Object(o) => o,
-                    _ => continue,
-                };
-                let ai = obj.get("animation").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                let channels = obj
-                    .get("channels")
-                    .and_then(|v| v.as_array())
-                    .cloned()
-                    .unwrap_or_default();
-                let parsed: Vec<PointerChannelData> =
-                    channels.iter().filter_map(parse_pointer_channel).collect();
-                if !parsed.is_empty() {
-                    pointer_channels_by_anim.insert(ai, parsed);
-                }
+    if let Some(serde_json::Value::Object(top)) = scene.extras.get("KHR_animation_pointer")
+        && let Some(serde_json::Value::Array(anims)) = top.get("animations")
+    {
+        for entry in anims {
+            let obj = match entry {
+                serde_json::Value::Object(o) => o,
+                _ => continue,
+            };
+            let ai = obj.get("animation").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let channels = obj
+                .get("channels")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let parsed: Vec<PointerChannelData> =
+                channels.iter().filter_map(parse_pointer_channel).collect();
+            if !parsed.is_empty() {
+                pointer_channels_by_anim.insert(ai, parsed);
             }
         }
     }
@@ -891,7 +891,7 @@ pub fn compress_meshopt(root: &mut GltfRoot, bin: &[u8]) -> Result<()> {
         let len = bv.byte_length as usize;
         // Element stride = byteLength / count (the encoder emits tightly
         // packed, non-interleaved views).
-        if len % count != 0 {
+        if !len.is_multiple_of(count) {
             continue;
         }
         let stride = len / count;
@@ -919,7 +919,7 @@ pub fn compress_meshopt(root: &mut GltfRoot, bin: &[u8]) -> Result<()> {
                 if acc.sparse.is_some() {
                     continue;
                 }
-                if stride == 0 || stride % 4 != 0 || stride > 256 {
+                if stride == 0 || !stride.is_multiple_of(4) || stride > 256 {
                     continue;
                 }
                 targets.push(Target {
@@ -1908,10 +1908,10 @@ fn primitive_emits_quantization(p: &Primitive) -> bool {
             return true;
         }
     }
-    if let Some(sentinel) = p.extras.get(crate::quantization::MORPH_ATTR_QUANT_KEY) {
-        if morph_quant_has_non_float_entry(sentinel) {
-            return true;
-        }
+    if let Some(sentinel) = p.extras.get(crate::quantization::MORPH_ATTR_QUANT_KEY)
+        && morph_quant_has_non_float_entry(sentinel)
+    {
+        return true;
     }
     false
 }
@@ -2420,7 +2420,7 @@ fn encode_image(tex: &Texture, root: &mut GltfRoot, bin: &mut Vec<u8>) -> Result
                 byte_stride: None,
                 target: None,
                 name: Some("image_view".into()),
-            extensions: None,
+                extensions: None,
             });
             Ok(gj::Image {
                 uri: None,
@@ -3583,10 +3583,10 @@ fn push_pointer_output_accessor(
         other => {
             return Err(invalid(format!(
                 "KHR_animation_pointer output_kind {other:?} not in spec table"
-            )))
+            )));
         }
     };
-    if data.len() % arity != 0 {
+    if !data.len().is_multiple_of(arity) {
         return Err(invalid(format!(
             "KHR_animation_pointer output: data length {} not a multiple of arity {arity} (kind {output_kind:?})",
             data.len()
@@ -4054,24 +4054,22 @@ fn push_vec4_accessor_maybe_sparse(
     opts: &EncodeOptions,
     allow_sparse: bool,
 ) -> Result<u32> {
-    if allow_sparse {
-        if let Some(nonzero) = maybe_sparse_indices_vec4(data, opts) {
-            let sparse = build_sparse_block_vec4(root, bin, &nonzero, data);
-            let acc_idx = root.accessors.len() as u32;
-            root.accessors.push(gj::Accessor {
-                buffer_view: None,
-                byte_offset: None,
-                component_type: gj::COMPONENT_TYPE_FLOAT,
-                count: data.len() as u32,
-                kind: "VEC4".into(),
-                normalized: false,
-                min: None,
-                max: None,
-                name: Some(name.into()),
-                sparse: Some(sparse),
-            });
-            return Ok(acc_idx);
-        }
+    if allow_sparse && let Some(nonzero) = maybe_sparse_indices_vec4(data, opts) {
+        let sparse = build_sparse_block_vec4(root, bin, &nonzero, data);
+        let acc_idx = root.accessors.len() as u32;
+        root.accessors.push(gj::Accessor {
+            buffer_view: None,
+            byte_offset: None,
+            component_type: gj::COMPONENT_TYPE_FLOAT,
+            count: data.len() as u32,
+            kind: "VEC4".into(),
+            normalized: false,
+            min: None,
+            max: None,
+            name: Some(name.into()),
+            sparse: Some(sparse),
+        });
+        return Ok(acc_idx);
     }
     push_vec4_accessor(root, bin, data, name)
 }
@@ -4094,11 +4092,7 @@ fn maybe_sparse_indices_mat4(data: &[[[f32; 4]; 4]], opts: &EncodeOptions) -> Op
         .enumerate()
         .filter_map(|(i, m)| {
             let any_nonzero = m.iter().any(|row| row.iter().any(|&c| c != 0.0));
-            if any_nonzero {
-                Some(i as u32)
-            } else {
-                None
-            }
+            if any_nonzero { Some(i as u32) } else { None }
         })
         .collect();
     let zero_fraction = 1.0 - (nonzero.len() as f32 / data.len() as f32);
@@ -4472,25 +4466,23 @@ fn push_scalar_f32_accessor_maybe_sparse(
     opts: &EncodeOptions,
     allow_sparse: bool,
 ) -> Result<u32> {
-    if allow_sparse {
-        if let Some(nonzero) = maybe_sparse_indices_scalar(data, opts) {
-            let nz_values: Vec<f32> = nonzero.iter().map(|&i| data[i as usize]).collect();
-            let sparse = build_sparse_block_scalar(root, bin, &nonzero, &nz_values);
-            let acc_idx = root.accessors.len() as u32;
-            root.accessors.push(gj::Accessor {
-                buffer_view: None,
-                byte_offset: None,
-                component_type: gj::COMPONENT_TYPE_FLOAT,
-                count: data.len() as u32,
-                kind: "SCALAR".into(),
-                normalized: false,
-                min: None,
-                max: None,
-                name: Some(name.into()),
-                sparse: Some(sparse),
-            });
-            return Ok(acc_idx);
-        }
+    if allow_sparse && let Some(nonzero) = maybe_sparse_indices_scalar(data, opts) {
+        let nz_values: Vec<f32> = nonzero.iter().map(|&i| data[i as usize]).collect();
+        let sparse = build_sparse_block_scalar(root, bin, &nonzero, &nz_values);
+        let acc_idx = root.accessors.len() as u32;
+        root.accessors.push(gj::Accessor {
+            buffer_view: None,
+            byte_offset: None,
+            component_type: gj::COMPONENT_TYPE_FLOAT,
+            count: data.len() as u32,
+            kind: "SCALAR".into(),
+            normalized: false,
+            min: None,
+            max: None,
+            name: Some(name.into()),
+            sparse: Some(sparse),
+        });
+        return Ok(acc_idx);
     }
     push_scalar_f32_accessor(root, bin, data, name)
 }
@@ -4511,44 +4503,42 @@ fn push_vec3_accessor_maybe_sparse(
     opts: &EncodeOptions,
     allow_sparse: bool,
 ) -> Result<u32> {
-    if allow_sparse {
-        if let Some(nonzero) = maybe_sparse_indices_vec3(data, opts) {
-            let sparse = build_sparse_block_vec3(root, bin, &nonzero, data);
-            // Compute min/max from the *post-overlay* data (which is
-            // exactly `data` itself — zero base + overrides reproduces
-            // the dense values). POSITION attributes need them per spec.
-            let (min, max) = if with_minmax && !data.is_empty() {
-                let mut mn = data[0];
-                let mut mx = data[0];
-                for v in &data[1..] {
-                    for c in 0..3 {
-                        if v[c] < mn[c] {
-                            mn[c] = v[c];
-                        }
-                        if v[c] > mx[c] {
-                            mx[c] = v[c];
-                        }
+    if allow_sparse && let Some(nonzero) = maybe_sparse_indices_vec3(data, opts) {
+        let sparse = build_sparse_block_vec3(root, bin, &nonzero, data);
+        // Compute min/max from the *post-overlay* data (which is
+        // exactly `data` itself — zero base + overrides reproduces
+        // the dense values). POSITION attributes need them per spec.
+        let (min, max) = if with_minmax && !data.is_empty() {
+            let mut mn = data[0];
+            let mut mx = data[0];
+            for v in &data[1..] {
+                for c in 0..3 {
+                    if v[c] < mn[c] {
+                        mn[c] = v[c];
+                    }
+                    if v[c] > mx[c] {
+                        mx[c] = v[c];
                     }
                 }
-                (Some(mn.to_vec()), Some(mx.to_vec()))
-            } else {
-                (None, None)
-            };
-            let acc_idx = root.accessors.len() as u32;
-            root.accessors.push(gj::Accessor {
-                buffer_view: None,
-                byte_offset: None,
-                component_type: gj::COMPONENT_TYPE_FLOAT,
-                count: data.len() as u32,
-                kind: "VEC3".into(),
-                normalized: false,
-                min,
-                max,
-                name: Some(name.into()),
-                sparse: Some(sparse),
-            });
-            return Ok(acc_idx);
-        }
+            }
+            (Some(mn.to_vec()), Some(mx.to_vec()))
+        } else {
+            (None, None)
+        };
+        let acc_idx = root.accessors.len() as u32;
+        root.accessors.push(gj::Accessor {
+            buffer_view: None,
+            byte_offset: None,
+            component_type: gj::COMPONENT_TYPE_FLOAT,
+            count: data.len() as u32,
+            kind: "VEC3".into(),
+            normalized: false,
+            min,
+            max,
+            name: Some(name.into()),
+            sparse: Some(sparse),
+        });
+        return Ok(acc_idx);
     }
     push_vec3_accessor(root, bin, data, name, with_minmax)
 }

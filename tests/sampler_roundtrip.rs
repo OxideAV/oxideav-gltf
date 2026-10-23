@@ -9,7 +9,7 @@
 //! The wrap modes DO default (REPEAT, §5.26.3 / §5.26.4), so REPEAT is
 //! omitted on the wire and everything else is explicit.
 
-use oxideav_gltf::{json_encoder, GltfDecoder, GltfEncoder};
+use oxideav_gltf::{GltfDecoder, GltfEncoder, json_encoder};
 use oxideav_mesh3d::{
     MagFilter, Mesh3DDecoder, Mesh3DEncoder, MinFilter, Sampler, Scene3D, Texture, WrapMode,
 };

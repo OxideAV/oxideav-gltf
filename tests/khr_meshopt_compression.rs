@@ -81,7 +81,7 @@ fn meshopt_attr_v0_constant(count: usize, byte_stride: usize, baseline: &[u8]) -
     let mut s = vec![0xa0u8];
     for _ in 0..byte_stride {
         // header bits: all groups hb=0 → v0 delta-mode 0 (all-zero).
-        s.extend(std::iter::repeat(0u8).take(header_bytes));
+        s.extend(std::iter::repeat_n(0u8, header_bytes));
     }
     s.extend_from_slice(baseline);
     s
@@ -717,7 +717,7 @@ fn doc_without_extension_does_not_grow_sidecar() {
 
 #[test]
 fn encoded_attributes_feed_position_accessor() {
-    use oxideav_gltf::meshopt::{encode, Filter, Mode};
+    use oxideav_gltf::meshopt::{Filter, Mode, encode};
 
     // Three distinct VEC3 f32 positions → genuine non-zero deltas.
     let positions: [[f32; 3]; 3] = [[1.5, -2.0, 3.25], [1.75, -1.0, 3.0], [0.0, 0.5, 10.0]];
@@ -765,7 +765,7 @@ fn encoded_attributes_feed_position_accessor() {
 
 #[test]
 fn encoded_indices_feed_index_accessor() {
-    use oxideav_gltf::meshopt::{encode, Filter, Mode};
+    use oxideav_gltf::meshopt::{Filter, Mode, encode};
 
     // Two triangles' worth of u16 indices with a backwards delta.
     let idx: [u16; 6] = [0, 1, 2, 2, 1, 3];
@@ -820,7 +820,7 @@ fn encoded_indices_feed_index_accessor() {
 
 #[test]
 fn encoded_triangles_feed_index_accessor() {
-    use oxideav_gltf::meshopt::{encode, Filter, Mode};
+    use oxideav_gltf::meshopt::{Filter, Mode, encode};
 
     // TRIANGLES mode: two triangles sharing an edge, u32 indices.
     let idx: [u32; 6] = [0, 1, 2, 2, 1, 3];

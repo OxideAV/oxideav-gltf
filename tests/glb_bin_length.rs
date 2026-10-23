@@ -6,7 +6,7 @@
 //! 4 or more bytes is a genuine mismatch, not padding, and MUST be
 //! rejected. A deficit (BIN shorter than declared) is likewise invalid.
 
-use oxideav_gltf::{glb, GltfDecoder};
+use oxideav_gltf::{GltfDecoder, glb};
 use oxideav_mesh3d::Mesh3DDecoder;
 
 /// Build a `.glb` whose single uri-less `buffer[0]` declares

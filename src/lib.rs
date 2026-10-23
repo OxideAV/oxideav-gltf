@@ -62,7 +62,7 @@ pub mod validation;
 
 pub use asset_source::BufferViewAsset;
 pub use decoder::GltfDecoder;
-pub use encoder::{json_encoder, GltfEncoder, OutputFlavour, QuantizeMode};
+pub use encoder::{GltfEncoder, OutputFlavour, QuantizeMode, json_encoder};
 pub use error::{Error, Result};
 
 /// Register the `.gltf` + `.glb` decoder and encoder factories with

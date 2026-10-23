@@ -12,8 +12,8 @@
 use std::io::{Cursor, Result as IoResult};
 use std::sync::Arc;
 
-use oxideav_mesh3d::asset::ReadSeek;
 use oxideav_mesh3d::AssetSource;
+use oxideav_mesh3d::asset::ReadSeek;
 
 /// Lazy view into a shared byte buffer.
 ///

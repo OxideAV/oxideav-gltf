@@ -244,8 +244,8 @@ fn scene_with_signed_rotation() -> Scene3D {
 
     let mut anim = Animation::new(Some("a".to_owned()));
     let s = std::f32::consts::FRAC_1_SQRT_2; // ~0.7071
-                                             // Quaternions intentionally include negative components so the
-                                             // signed quantizers actually have signed work to do.
+    // Quaternions intentionally include negative components so the
+    // signed quantizers actually have signed work to do.
     anim.channels.push(AnimationChannel {
         target: AnimationTarget {
             node: n,

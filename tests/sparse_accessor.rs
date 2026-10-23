@@ -122,7 +122,7 @@ fn sparse_with_no_base_buffer_view_initialises_to_zero() {
         pack_u16_le(&mut bin, i);
     }
     // Pad to 4 (already at 6 bytes; pad to 8).
-    while bin.len() % 4 != 0 {
+    while !bin.len().is_multiple_of(4) {
         bin.push(0);
     }
     let val_off = bin.len();

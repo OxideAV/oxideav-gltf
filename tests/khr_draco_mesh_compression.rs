@@ -50,7 +50,7 @@ use oxideav_gltf::{GltfDecoder, GltfEncoder};
 use oxideav_mesh3d::{
     Mesh, Mesh3DDecoder, Mesh3DEncoder, Node, NodeId, Primitive, Scene3D, Topology,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Build a minimal `Scene3D` with one TRIANGLES primitive (the default
 /// mode the spec permits alongside this extension) attached through a
@@ -329,9 +329,11 @@ fn draco_accepts_triangles_mode() {
         4, // TRIANGLES
     )
     .unwrap();
-    assert!(scene.meshes[0].primitives[0]
-        .extras
-        .contains_key("KHR_draco_mesh_compression"));
+    assert!(
+        scene.meshes[0].primitives[0]
+            .extras
+            .contains_key("KHR_draco_mesh_compression")
+    );
 }
 
 #[test]
@@ -342,9 +344,11 @@ fn draco_accepts_triangle_strip_mode() {
         5, // TRIANGLE_STRIP
     )
     .unwrap();
-    assert!(scene.meshes[0].primitives[0]
-        .extras
-        .contains_key("KHR_draco_mesh_compression"));
+    assert!(
+        scene.meshes[0].primitives[0]
+            .extras
+            .contains_key("KHR_draco_mesh_compression")
+    );
 }
 
 #[test]

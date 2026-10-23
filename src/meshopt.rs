@@ -28,7 +28,7 @@
 //! truncated stream, a bad header byte, an out-of-range FIFO read, or
 //! leftover tail bytes all surface as `Err`.
 
-use crate::error::{invalid, unsupported, Error, Result};
+use crate::error::{Error, Result, invalid, unsupported};
 
 /// Compression mode (`mode` descriptor property, §"Specifying
 /// compressed views").
@@ -175,7 +175,7 @@ fn err_eos() -> Error {
 // ---------------------------------------------------------------------------
 
 fn decode_attributes(data: &[u8], count: usize, byte_stride: usize) -> Result<Vec<u8>> {
-    if byte_stride == 0 || byte_stride % 4 != 0 {
+    if byte_stride == 0 || !byte_stride.is_multiple_of(4) {
         // §"Specifying compressed views": ATTRIBUTES byteStride is a
         // multiple of 4 (also enforced by the §3.12 stack validator).
         return Err(invalid(format!(
@@ -191,7 +191,7 @@ fn decode_attributes(data: &[u8], count: usize, byte_stride: usize) -> Result<Ve
         other => {
             return Err(invalid(format!(
                 "KHR_meshopt_compression: ATTRIBUTES header byte 0x{other:02x} not 0xa0/0xa1"
-            )))
+            )));
         }
     };
 
@@ -298,7 +298,7 @@ fn encode_attributes(raw: &[u8], count: usize, byte_stride: usize) -> Result<Vec
 /// byte-delta `deltas` array. A subsequent
 /// `decode(.., NONE, count, byte_stride)` reproduces `raw` exactly.
 fn encode_attributes_v1(raw: &[u8], count: usize, byte_stride: usize) -> Result<Vec<u8>> {
-    if byte_stride == 0 || byte_stride % 4 != 0 {
+    if byte_stride == 0 || !byte_stride.is_multiple_of(4) {
         return Err(invalid(format!(
             "KHR_meshopt_compression: ATTRIBUTES byteStride {byte_stride} must be a positive multiple of 4"
         )));
@@ -459,7 +459,7 @@ fn encode_group_v1(grp: &[u8; 16], cmode: u8) -> (u8, Vec<u8>) {
 /// compatibility coverage; the production path emits v1.
 #[cfg(test)]
 fn encode_attributes_v0(raw: &[u8], count: usize, byte_stride: usize) -> Result<Vec<u8>> {
-    if byte_stride == 0 || byte_stride % 4 != 0 {
+    if byte_stride == 0 || !byte_stride.is_multiple_of(4) {
         return Err(invalid(format!(
             "KHR_meshopt_compression: ATTRIBUTES byteStride {byte_stride} must be a positive multiple of 4"
         )));
@@ -614,7 +614,7 @@ fn pack_delta(packed: &mut [u8], bits: u32, i: usize, small: u8) {
         }
         4 => {
             // even i → high nibble, odd → low nibble.
-            if i % 2 == 0 {
+            if i.is_multiple_of(2) {
                 packed[i / 2] |= (small & 0x0f) << 4;
             } else {
                 packed[i / 2] |= small & 0x0f;
@@ -779,7 +779,7 @@ fn unpack_delta(packed: &[u8], bits: u8, i: usize) -> u8 {
         4 => {
             // (d1<<0)|(d0<<4): even index → high nibble.
             let byte = packed[i / 2];
-            if i % 2 == 0 {
+            if i.is_multiple_of(2) {
                 (byte >> 4) & 0x0f
             } else {
                 byte & 0x0f
@@ -878,11 +878,7 @@ fn rotate_left(v: u32, r: u32) -> u32 {
 }
 
 fn zigzag_decode_u8(v: u8) -> u8 {
-    if v & 1 != 0 {
-        !(v >> 1)
-    } else {
-        v >> 1
-    }
+    if v & 1 != 0 { !(v >> 1) } else { v >> 1 }
 }
 
 /// Inverse of [`zigzag_decode_u8`]: map a signed byte delta (as a `u8`
@@ -898,11 +894,7 @@ fn zigzag_encode_u8(d: u8) -> u8 {
 }
 
 fn zigzag_decode_u16(v: u16) -> u16 {
-    if v & 1 != 0 {
-        !(v >> 1)
-    } else {
-        v >> 1
-    }
+    if v & 1 != 0 { !(v >> 1) } else { v >> 1 }
 }
 
 // ---------------------------------------------------------------------------
@@ -915,7 +907,7 @@ fn decode_triangles(data: &[u8], count: usize, byte_stride: usize) -> Result<Vec
             "KHR_meshopt_compression: TRIANGLES byteStride {byte_stride} must be 2 or 4"
         )));
     }
-    if count % 3 != 0 {
+    if !count.is_multiple_of(3) {
         return Err(invalid(
             "KHR_meshopt_compression: TRIANGLES count must be divisible by 3",
         ));
@@ -1130,7 +1122,7 @@ fn encode_triangles(raw: &[u8], count: usize, byte_stride: usize) -> Result<Vec<
             "KHR_meshopt_compression: TRIANGLES byteStride {byte_stride} must be 2 or 4"
         )));
     }
-    if count % 3 != 0 {
+    if !count.is_multiple_of(3) {
         return Err(invalid(
             "KHR_meshopt_compression: TRIANGLES count must be divisible by 3",
         ));
@@ -1456,7 +1448,7 @@ fn apply_forward_filter(buf: &mut [u8], filter: Filter, byte_stride: usize) -> R
 /// round-trip is lossless. Sub-normals, zero, and the `e` clamp to
 /// `[-100, 100]` are all handled.
 fn forward_exponential(buf: &mut [u8], byte_stride: usize) -> Result<()> {
-    if byte_stride == 0 || byte_stride % 4 != 0 {
+    if byte_stride == 0 || !byte_stride.is_multiple_of(4) {
         return Err(invalid(
             "KHR_meshopt_compression: EXPONENTIAL filter requires byteStride a multiple of 4",
         ));
@@ -1639,11 +1631,7 @@ fn forward_octahedral(buf: &mut [u8], byte_stride: usize) -> Result<()> {
 /// `copysign(1.0, v)` but treating +0.0 as positive (the octahedral wrap
 /// needs a sign even for a zero component).
 fn sign_nonneg(v: f32) -> f32 {
-    if v >= 0.0 {
-        1.0
-    } else {
-        -1.0
-    }
+    if v >= 0.0 { 1.0 } else { -1.0 }
 }
 
 /// Forward QUATERNION filter (§"Filter 2: quaternion", inverse).
@@ -1895,7 +1883,7 @@ fn filter_quaternion(buf: &mut [u8], byte_stride: usize) -> Result<()> {
 
 /// §"Filter 3: exponential".
 fn filter_exponential(buf: &mut [u8], byte_stride: usize) -> Result<()> {
-    if byte_stride == 0 || byte_stride % 4 != 0 {
+    if byte_stride == 0 || !byte_stride.is_multiple_of(4) {
         return Err(invalid(
             "KHR_meshopt_compression: EXPONENTIAL filter requires byteStride a multiple of 4",
         ));
@@ -2205,7 +2193,9 @@ mod tests {
         stream.extend_from_slice(&[0, 0, 0, 0]); // 4-byte tail padding
         let out = decode(&stream, Mode::Indices, Filter::None, 4, 4).unwrap();
         let got: Vec<u32> = out
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         assert_eq!(got, vec![0, 1, 2, 3]);
@@ -2219,7 +2209,9 @@ mod tests {
         stream.extend_from_slice(&[0, 0, 0, 0]);
         let out = decode(&stream, Mode::Indices, Filter::None, 2, 2).unwrap();
         let got: Vec<u16> = out
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .collect();
         assert_eq!(got, vec![0, 1]);
@@ -2234,9 +2226,9 @@ mod tests {
         let count = 3usize;
         let baseline = [0x11u8, 0x22, 0x33, 0x44];
         let mut stream = vec![0xa0u8]; // v0 header
-                                       // For each of 4 byte positions: header bits for 1 group.
-                                       // groupCount=1 → 1 header byte, bits hb=0 → mode 0 (all zero,
-                                       // 0 data bytes). 0x00 selects hb=0 for group 0.
+        // For each of 4 byte positions: header bits for 1 group.
+        // groupCount=1 → 1 header byte, bits hb=0 → mode 0 (all zero,
+        // 0 data bytes). 0x00 selects hb=0 for group 0.
         stream.resize(1 + byte_stride, 0x00);
         // Tail padding to 32 bytes minimum for v0, then tail block
         // (baseline only for v0). Compute current body length.

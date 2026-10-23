@@ -27,11 +27,11 @@ use oxideav_mesh3d::{
 use serde_json::Value;
 
 use crate::accessor::{
-    materialise_accessor, read_indices_u32, read_mat4_f32, read_scalar_f32, read_vec4_u16,
-    read_vec_f32, view_from_materialised, AccessorView,
+    AccessorView, materialise_accessor, read_indices_u32, read_mat4_f32, read_scalar_f32,
+    read_vec_f32, read_vec4_u16, view_from_materialised,
 };
 use crate::asset_source::BufferViewAsset;
-use crate::error::{invalid, unsupported, Error, Result};
+use crate::error::{Error, Result, invalid, unsupported};
 use crate::json_model::{self as gj, GltfRoot};
 use crate::quantization::{self, ATTR_QUANT_KEY, EXTENSION_NAME};
 use crate::validation::{
@@ -346,13 +346,13 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
         // `validate_morph_target_names`); anything else under that key
         // is not the convention and stays opaque in `extras`.
         let mut mesh_extras = m.extras.clone();
-        if let Some(Value::Object(obj)) = mesh_extras.as_mut() {
-            if let Some(names) = obj.get("targetNames").and_then(target_names_from_value) {
-                mesh.target_names = names;
-                obj.remove("targetNames");
-                if obj.is_empty() {
-                    mesh_extras = None;
-                }
+        if let Some(Value::Object(obj)) = mesh_extras.as_mut()
+            && let Some(names) = obj.get("targetNames").and_then(target_names_from_value)
+        {
+            mesh.target_names = names;
+            obj.remove("targetNames");
+            if obj.is_empty() {
+                mesh_extras = None;
             }
         }
         // Remaining mesh-level `extras` (glTF allows it but mesh3d's
@@ -378,13 +378,13 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
         // indirection uses a Mesh. mesh3d's `Mesh` has no `extensions`
         // field, so stash on primitive[0].extras["__mesh_xmp_packet"]
         // as a bare JSON number.
-        if let (Some(ext), Some(prim0)) = (&m.extensions, mesh.primitives.first_mut()) {
-            if let Some(xmp) = &ext.khr_xmp_json_ld {
-                prim0.extras.insert(
-                    "__mesh_xmp_packet".to_owned(),
-                    serde_json::Value::Number(xmp.packet.into()),
-                );
-            }
+        if let (Some(ext), Some(prim0)) = (&m.extensions, mesh.primitives.first_mut())
+            && let Some(xmp) = &ext.khr_xmp_json_ld
+        {
+            prim0.extras.insert(
+                "__mesh_xmp_packet".to_owned(),
+                serde_json::Value::Number(xmp.packet.into()),
+            );
         }
         let id = scene.add_mesh(mesh);
         mesh_id_map.insert(i as u32, id);
@@ -399,12 +399,12 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
 
     // Lights — KHR_lights_punctual root extension.
     let mut light_id_map: HashMap<u32, oxideav_mesh3d::LightId> = HashMap::new();
-    if let Some(ext) = &root.extensions {
-        if let Some(lp) = &ext.khr_lights_punctual {
-            for (i, l) in lp.lights.iter().enumerate() {
-                let id = scene.add_light(convert_light(l)?);
-                light_id_map.insert(i as u32, id);
-            }
+    if let Some(ext) = &root.extensions
+        && let Some(lp) = &ext.khr_lights_punctual
+    {
+        for (i, l) in lp.lights.iter().enumerate() {
+            let id = scene.add_light(convert_light(l)?);
+            light_id_map.insert(i as u32, id);
         }
     }
 
@@ -628,28 +628,27 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
     // metadata "applies to the entire glTF asset" (spec §Overview).
     // Surfaced under `scene.extras["__asset_xmp_packet"]` because
     // the typed `Scene3D` has no first-class asset field.
-    if let Some(aext) = &root.asset.extensions {
-        if let Some(xmp) = &aext.khr_xmp_json_ld {
-            scene.extras.insert(
-                "__asset_xmp_packet".to_owned(),
-                serde_json::Value::Number(xmp.packet.into()),
-            );
-        }
+    if let Some(aext) = &root.asset.extensions
+        && let Some(xmp) = &aext.khr_xmp_json_ld
+    {
+        scene.extras.insert(
+            "__asset_xmp_packet".to_owned(),
+            serde_json::Value::Number(xmp.packet.into()),
+        );
     }
     // Primary-scene KHR_xmp_json_ld packet reference. The active scene
     // (`root.scene` index, defaulting to 0) carries through the same
     // typed `extensions.KHR_xmp_json_ld` block per `docs/3d/gltf/
     // extensions/KHR_xmp_json_ld.md` §"Instantiating XMP metadata".
     // Surfaced under `scene.extras["__primary_scene_xmp_packet"]`.
-    if let Some(primary) = root.scenes.get(root.scene.unwrap_or(0) as usize) {
-        if let Some(sext) = &primary.extensions {
-            if let Some(xmp) = &sext.khr_xmp_json_ld {
-                scene.extras.insert(
-                    "__primary_scene_xmp_packet".to_owned(),
-                    serde_json::Value::Number(xmp.packet.into()),
-                );
-            }
-        }
+    if let Some(primary) = root.scenes.get(root.scene.unwrap_or(0) as usize)
+        && let Some(sext) = &primary.extensions
+        && let Some(xmp) = &sext.khr_xmp_json_ld
+    {
+        scene.extras.insert(
+            "__primary_scene_xmp_packet".to_owned(),
+            serde_json::Value::Number(xmp.packet.into()),
+        );
     }
 
     Ok(scene)
@@ -1065,7 +1064,7 @@ fn read_pointer_output_floats(acc: &gj::Accessor, view: &AccessorView<'_>) -> Re
         other => {
             return Err(unsupported(format!(
                 "KHR_animation_pointer: output accessor type {other:?} not in spec table"
-            )))
+            )));
         }
     };
     let csize = match acc.component_type {
@@ -1075,7 +1074,7 @@ fn read_pointer_output_floats(acc: &gj::Accessor, view: &AccessorView<'_>) -> Re
         other => {
             return Err(unsupported(format!(
                 "KHR_animation_pointer: output componentType {other} not in spec table"
-            )))
+            )));
         }
     };
     let expected = arity * csize;
@@ -1124,19 +1123,11 @@ fn decode_pointer_output_component(
         }
         COMPONENT_TYPE_BYTE => {
             let c = i8::from_le_bytes([bytes[0]]) as f32;
-            if normalized {
-                (c / 127.0).max(-1.0)
-            } else {
-                c
-            }
+            if normalized { (c / 127.0).max(-1.0) } else { c }
         }
         COMPONENT_TYPE_UNSIGNED_BYTE => {
             let c = bytes[0] as f32;
-            if normalized {
-                c / 255.0
-            } else {
-                c
-            }
+            if normalized { c / 255.0 } else { c }
         }
         COMPONENT_TYPE_SHORT => {
             let c = i16::from_le_bytes([bytes[0], bytes[1]]) as f32;
@@ -1148,11 +1139,7 @@ fn decode_pointer_output_component(
         }
         COMPONENT_TYPE_UNSIGNED_SHORT => {
             let c = u16::from_le_bytes([bytes[0], bytes[1]]) as f32;
-            if normalized {
-                c / 65535.0
-            } else {
-                c
-            }
+            if normalized { c / 65535.0 } else { c }
         }
         COMPONENT_TYPE_UNSIGNED_INT => {
             // Spec line 93 covers non-normalized integers generally;
@@ -1171,7 +1158,7 @@ fn decode_pointer_output_component(
         other => {
             return Err(unsupported(format!(
                 "KHR_animation_pointer: output componentType {other} not in spec table"
-            )))
+            )));
         }
     })
 }
@@ -2039,10 +2026,10 @@ fn convert_material(
             // Only emit `attenuationDistance` when the source provided
             // a value; the `+Infinity` default cannot round-trip through
             // JSON, so absence carries the spec default.
-            if let Some(d) = vol.attenuation_distance {
-                if let Some(n) = serde_json::Number::from_f64(d as f64) {
-                    obj.insert("attenuationDistance".to_owned(), Value::Number(n));
-                }
+            if let Some(d) = vol.attenuation_distance
+                && let Some(n) = serde_json::Number::from_f64(d as f64)
+            {
+                obj.insert("attenuationDistance".to_owned(), Value::Number(n));
             }
             let ac = vol.attenuation_color.unwrap_or([1.0, 1.0, 1.0]);
             let ac_arr: Vec<Value> = ac
@@ -2492,11 +2479,10 @@ fn convert_primitive(
             // these arrays. A vendor-prefixed kernel defers the whole
             // attribute contract to the kernel-defining extension, so we
             // only decode for the base `"ellipse"` kernel.
-            if splat.kernel == "ellipse" {
-                if let Some(record) = read_gaussian_splat_attributes(root, buffers, &p.attributes)?
-                {
-                    prim.extras.insert("__gaussian_splats".to_owned(), record);
-                }
+            if splat.kernel == "ellipse"
+                && let Some(record) = read_gaussian_splat_attributes(root, buffers, &p.attributes)?
+            {
+                prim.extras.insert("__gaussian_splats".to_owned(), record);
             }
         }
         // KHR_draco_mesh_compression — per-primitive extension object
@@ -2796,12 +2782,11 @@ fn read_gaussian_splat_attributes(
     // evaluate order (degree ascending, m ascending within a degree).
     let mut max_degree = 0u32;
     for name in attributes.keys() {
-        if let Some(rest) = name.strip_prefix("KHR_gaussian_splatting:SH_DEGREE_") {
-            if let Some((deg_str, _)) = rest.split_once("_COEF_") {
-                if let Ok(l) = deg_str.parse::<u32>() {
-                    max_degree = max_degree.max(l);
-                }
-            }
+        if let Some(rest) = name.strip_prefix("KHR_gaussian_splatting:SH_DEGREE_")
+            && let Some((deg_str, _)) = rest.split_once("_COEF_")
+            && let Ok(l) = deg_str.parse::<u32>()
+        {
+            max_degree = max_degree.max(l);
         }
     }
     let mut sh: Vec<Value> = Vec::new();
@@ -3089,7 +3074,9 @@ fn require_quantization_combo(
     ) {
         return Err(unsupported(format!(
             "{} {attr_name} accessor: componentType {} (normalized={}) not in the extension's allowed set",
-            quantization::EXTENSION_NAME, acc.component_type, acc.normalized
+            quantization::EXTENSION_NAME,
+            acc.component_type,
+            acc.normalized
         )));
     }
     Ok(())
@@ -3207,10 +3194,10 @@ fn texture_info_to_json(t: &gj::TextureInfo) -> Value {
     if let Some(tc) = t.tex_coord {
         m.insert("texCoord".to_owned(), Value::from(tc));
     }
-    if let Some(ext) = &t.extensions {
-        if let Some(ext_json) = texture_info_extensions_to_json(ext) {
-            m.insert("extensions".to_owned(), ext_json);
-        }
+    if let Some(ext) = &t.extensions
+        && let Some(ext_json) = texture_info_extensions_to_json(ext)
+    {
+        m.insert("extensions".to_owned(), ext_json);
     }
     Value::Object(m)
 }
@@ -3230,15 +3217,15 @@ fn normal_texture_info_to_json(t: &gj::NormalTextureInfo) -> Value {
     if let Some(tc) = t.tex_coord {
         m.insert("texCoord".to_owned(), Value::from(tc));
     }
-    if let Some(s) = t.scale {
-        if let Some(n) = serde_json::Number::from_f64(s as f64) {
-            m.insert("scale".to_owned(), Value::Number(n));
-        }
+    if let Some(s) = t.scale
+        && let Some(n) = serde_json::Number::from_f64(s as f64)
+    {
+        m.insert("scale".to_owned(), Value::Number(n));
     }
-    if let Some(ext) = &t.extensions {
-        if let Some(ext_json) = texture_info_extensions_to_json(ext) {
-            m.insert("extensions".to_owned(), ext_json);
-        }
+    if let Some(ext) = &t.extensions
+        && let Some(ext_json) = texture_info_extensions_to_json(ext)
+    {
+        m.insert("extensions".to_owned(), ext_json);
     }
     Value::Object(m)
 }
@@ -3279,10 +3266,10 @@ pub(crate) fn texture_transform_to_json(t: &gj::TextureTransform) -> Value {
             obj.insert("offset".to_owned(), Value::Array(arr));
         }
     }
-    if let Some(r) = t.rotation {
-        if let Some(n) = serde_json::Number::from_f64(r as f64) {
-            obj.insert("rotation".to_owned(), Value::Number(n));
-        }
+    if let Some(r) = t.rotation
+        && let Some(n) = serde_json::Number::from_f64(r as f64)
+    {
+        obj.insert("rotation".to_owned(), Value::Number(n));
     }
     if let Some(s) = t.scale {
         let arr: Vec<Value> = s

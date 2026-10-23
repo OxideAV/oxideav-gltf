@@ -760,7 +760,7 @@ fn legacy_sidecar_without_component_type_keys_defaults_to_float() {
     // Scene3D from scratch, drop a sidecar that only carries the
     // r218-era fields, and confirm encode picks FLOAT.
     use oxideav_mesh3d::Scene3D;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     let mut scene = Scene3D::new();
     let channel = json!({
         "channel": 0u32,

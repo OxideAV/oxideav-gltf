@@ -6,10 +6,10 @@
 //! data: URI we decoded), then walks `acc.count` elements at
 //! `bv.byte_offset + acc.byte_offset` with stride `bv.byte_stride.unwrap_or(elementSize)`.
 
-use crate::error::{invalid, Result};
+use crate::error::{Result, invalid};
 use crate::json_model::{
-    component_size, type_components, Accessor, BufferView, COMPONENT_TYPE_UNSIGNED_BYTE,
-    COMPONENT_TYPE_UNSIGNED_INT, COMPONENT_TYPE_UNSIGNED_SHORT,
+    Accessor, BufferView, COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_INT,
+    COMPONENT_TYPE_UNSIGNED_SHORT, component_size, type_components,
 };
 use std::sync::Arc;
 
@@ -198,7 +198,7 @@ pub fn index_component_size(component_type: u32) -> usize {
 /// Pad the running buffer to a 4-byte boundary so subsequent
 /// accessors stay aligned.
 pub fn pad_to_4(buf: &mut Vec<u8>) {
-    while buf.len() % 4 != 0 {
+    while !buf.len().is_multiple_of(4) {
         buf.push(0);
     }
 }

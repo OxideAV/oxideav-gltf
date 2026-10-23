@@ -3,7 +3,7 @@
 
 use oxideav_mesh3d::{Mesh3DDecoder, Scene3D};
 
-use crate::error::{invalid, Result};
+use crate::error::{Result, invalid};
 use crate::glb;
 use crate::json_model::GltfRoot;
 use crate::json_to_scene;
