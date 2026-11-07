@@ -115,6 +115,7 @@ pub fn diffuse_color(sh0: Rgb) -> Rgb {
 /// Spaces". Only the two base-extension values affect the `COLOR_0`
 /// fallback transfer function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ColorSpace {
     /// `"srgb_rec709_display"` — the diffuse colour is sRGB-encoded, so
     /// the `COLOR_0` fallback (which carries linear values per the glTF

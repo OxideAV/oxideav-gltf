@@ -46,18 +46,30 @@ pub mod asset_source;
 pub mod decoder;
 pub mod encoder;
 pub mod error;
+// internal — decoder/encoder plumbing; not part of the stable API
+#[doc(hidden)]
 pub mod glb;
+// internal — decoder/encoder plumbing; not part of the stable API
+#[doc(hidden)]
 pub mod json_model;
 // internal — decoder/encoder plumbing; not part of the stable API
 #[doc(hidden)]
 pub mod json_to_scene;
+// internal — decoder/encoder plumbing; not part of the stable API
+#[doc(hidden)]
 pub mod meshopt;
+// internal — decoder/encoder plumbing; not part of the stable API
+#[doc(hidden)]
 pub mod object_model;
+// internal — decoder/encoder plumbing; not part of the stable API
+#[doc(hidden)]
 pub mod quantization;
 // internal — decoder/encoder plumbing; not part of the stable API
 #[doc(hidden)]
 pub mod scene_to_json;
 pub mod splatting;
+// internal — decoder/encoder plumbing; not part of the stable API
+#[doc(hidden)]
 pub mod validation;
 
 pub use asset_source::BufferViewAsset;

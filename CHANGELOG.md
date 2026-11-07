@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `#[non_exhaustive]` on the `OutputFlavour` and `splatting::ColorSpace` enums and on the `GltfEncoder` record (build it with `GltfEncoder::new` / `with_output` / `json_encoder` and the `with_*` builders). `QuantizeMode`, `meshopt::Mode` / `Filter` and `ObjectModelDataType` stay exhaustive: the glTF 2.0 component types and the extension specs fix their values.
+- `#[doc(hidden)]` on the internal `glb`, `json_model`, `meshopt`, `object_model`, `quantization` and `validation` modules (decoder / encoder plumbing).
+
 ## [0.0.5](https://github.com/OxideAV/oxideav-gltf/compare/v0.0.4...v0.0.5) - 2026-10-23
 
 ### Other

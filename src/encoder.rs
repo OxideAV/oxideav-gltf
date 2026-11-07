@@ -17,6 +17,7 @@ use crate::scene_to_json::{EncodeOptions, EncodedScene, convert_with_options};
 
 /// Container flavour for [`GltfEncoder::encode`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum OutputFlavour {
     /// `.glb` — self-contained binary container, JSON chunk + BIN chunk.
     #[default]
@@ -57,6 +58,7 @@ pub enum QuantizeMode {
 
 /// Serialise a [`Scene3D`] into glTF bytes.
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct GltfEncoder {
     pub output: OutputFlavour,
     /// When set, FLOAT vec/scalar accessors whose zero-element fraction

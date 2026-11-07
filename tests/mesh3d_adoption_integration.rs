@@ -176,6 +176,7 @@ fn semantic_parts(flavour: OutputFlavour, bytes: &[u8]) -> (serde_json::Value, V
             (json, bin)
         }
         OutputFlavour::JsonEmbedded => (serde_json::from_slice(bytes).unwrap(), Vec::new()),
+        other => panic!("no semantic split for {other:?}"),
     }
 }
 
