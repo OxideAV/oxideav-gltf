@@ -692,45 +692,45 @@ framework but usable standalone.
   delegating to the SH evaluator. A vendor-prefixed kernel defers the
   attribute contract to the kernel-defining extension and produces no
   `__gaussian_splats` sidecar
-- KHR_draco_mesh_compression extension (Khronos ratified) — the
-  per-primitive descriptor that redirects a mesh primitive's
-  `attributes` + `indices` to a Draco-compressed `bufferView`
-  payload, per
-  `docs/3d/gltf/extensions/KHR_draco_mesh_compression.md` §"glTF
-  Schema Updates". The descriptor carries a `bufferView` indirection
-  plus an `attributes` map pairing the parent primitive's attribute
-  names (POSITION, NORMAL, …) with the Draco-side unique attribute
-  IDs. This crate is a pass-through engine — the Draco bitstream
-  inflate path is out of scope for this round — so the decoder
-  surfaces the descriptor through
-  `Primitive::extras["KHR_draco_mesh_compression"]` as a JSON object
-  while reading the parent primitive's uncompressed-fallback
-  accessors through the usual accessor pipeline (per §"accessors"
-  the parent accessors describe the decompressed data). The encoder
-  lifts the sidecar back into the typed `PrimitiveExtensions` block
-  and appends `KHR_draco_mesh_compression` to `extensionsUsed` once
-  per document. The §3.12 + §Conformance validators cover seven
-  failure modes with stable `ExtensionStackDraco…` prefixes:
-  descriptor present without the `extensionsUsed` entry
-  (`ExtensionStackUsedNotDeclared`); descriptor `bufferView` out of
-  range (`ExtensionStackDracoBufferView`); descriptor `bufferView`
-  refers to a bufferView that defines `byteStride` — forbidden per
-  glTF 2.0 §5.11.4 because the Draco payload is opaque compressed
-  bytes, not vertex attribute data, and the extension does not
-  enable a strided payload layout (`ExtensionStackDracoByteStride`,
-  the same shape as the §5.3.1 sparse-indices `MUST NOT` rule);
-  descriptor `attributes` key that is not present in the parent
-  primitive's own attributes map (`ExtensionStackDracoAttributes`,
-  per §"attributes" subset rule); duplicate Draco-side attribute IDs
-  within one descriptor (`ExtensionStackDracoAttributeId`); primitive
-  `mode` outside `{TRIANGLES (4), TRIANGLE_STRIP (5)}` per
-  §"Restrictions on geometry type" (`ExtensionStackDracoMode`); and
-  a compressed-only shape (parent primitive carries no uncompressed
-  attributes alongside the descriptor) without
-  `KHR_draco_mesh_compression` listed in `extensionsRequired` per
-  §Conformance (`ExtensionStackDracoRequired`). The compressed-
-  payload inflation remains a follow-up; the descriptor handshake is
-  in place for any Draco-aware consumer layered above this crate
+- KHR_draco_mesh_compression extension (Khronos ratified) — a
+  primitive carrying the extension is **decoded**: the payload in the
+  descriptor's `bufferView` goes through the crate's own Draco
+  bitstream decoder (see "Draco mesh decoder" below) and the primitive
+  loads exactly like an uncompressed one — indices plus attributes by
+  semantic — following
+  `docs/3d/gltf/extensions/KHR_draco_mesh_compression.md` §Conformance
+  and `docs/3d/gltf/draco/spec/09-gltf-join.md`. The extension's
+  `attributes` values are resolved as payload unique ids; accessor
+  element `j` is the value of point `j`; the `indices` accessor
+  receives the faces' point indices in its declared `componentType`
+  (a primitive without one gets the faces anyway); integer payload
+  data is converted exactly to a different integer accessor width;
+  attributes outside the extension's map load from their own
+  accessors as usual. Declared accessor `min` / `max` are not
+  enforced on decoded data (they describe the geometry before lossy
+  compression). A decoded primitive carries no
+  `extras["KHR_draco_mesh_compression"]` and re-encodes as plain
+  geometry. **Fallback:** when the payload cannot be decoded (corrupt,
+  or a feature the bitstream specification does not cover) and every
+  mapped accessor plus `indices` has its own `bufferView`, the
+  primitive loads from that uncompressed copy and keeps the descriptor
+  under `Primitive::extras["KHR_draco_mesh_compression"]`, which the
+  encoder lifts back into the typed extension block; without a copy
+  the load fails with the decoder's error. Not decoded: `mode` 5
+  (TRIANGLE_STRIP) primitives and float ↔ integer conversions between
+  payload and accessor (neither mapping is specified). The §3.12 +
+  §Conformance validators cover seven failure modes with stable
+  `ExtensionStackDraco…` prefixes: descriptor present without the
+  `extensionsUsed` entry (`ExtensionStackUsedNotDeclared`); descriptor
+  `bufferView` out of range (`ExtensionStackDracoBufferView`);
+  descriptor `bufferView` defines `byteStride`
+  (`ExtensionStackDracoByteStride`); descriptor `attributes` key
+  absent from the parent primitive (`ExtensionStackDracoAttributes`);
+  duplicate payload attribute ids (`ExtensionStackDracoAttributeId`);
+  primitive `mode` outside `{TRIANGLES (4), TRIANGLE_STRIP (5)}`
+  (`ExtensionStackDracoMode`); and a compressed-only shape without
+  `KHR_draco_mesh_compression` in `extensionsRequired`
+  (`ExtensionStackDracoRequired`)
 - Skins + skeletons (joint roster, inverseBindMatrices accessor,
   optional skeleton root) per spec §3.7.3 — `node.skin` round-trips
 - Animations (channels + samplers) per spec §3.11 — translation /
@@ -1215,6 +1215,48 @@ framework but usable standalone.
   type contract to the application and are checked only for
   base-attribute presence + count
 - `extras` round-trip on root, scenes, nodes, materials, primitives
+
+## Draco mesh decoder
+
+`oxideav_gltf::draco` decodes the Draco compressed-mesh bitstream
+(version 2.2, triangle meshes) — standalone `.drc` payloads and the
+payloads of `KHR_draco_mesh_compression` primitives. It is written from
+the observer specification under `docs/3d/gltf/draco/spec/` and checked
+against that directory's fixture corpus: all 38 fixtures reproduce the
+staged `expected.txt` byte for byte (counts, attribute descriptors,
+per-point value indices, float bit patterns, faces).
+
+```rust,no_run
+let bytes = std::fs::read("mesh.drc")?;
+let mesh = oxideav_gltf::draco::decode(&bytes)?;
+println!("{} points, {} faces", mesh.num_points, mesh.faces.len());
+for a in &mesh.attributes {
+    println!("{:?} id {} x{}", a.semantic, a.unique_id, a.value_count());
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+| Area | Decoded |
+|---|---|
+| Container | header, metadata block (surfaced as `DracoMesh::metadata`), trailing bytes ignored |
+| Connectivity, method 0 | plain indices (u8 / u16 / varint / u32), entropy-coded index differences |
+| Connectivity, method 1 | standard and valence-coded symbols, split events, interior / boundary start faces, several components, seam sets with per-corner groups and point splitting |
+| Entropy coding | rANS symbol decoder at precision 12–20, tagged and raw symbol sequences, binary decoder |
+| Attribute kinds | verbatim, integer, quantised float, octahedral normal |
+| Prediction | none, difference, parallelogram, constrained multi-parallelogram, texture-coordinate, geometric normal; wrap and canonicalised octahedral transforms |
+| Entry order | depth-first and prediction-degree traversal |
+
+Rejected as unsupported, because the specification does not cover them:
+point clouds, bitstream versions before 2.2, prediction methods 2 and 3,
+and integer-coded attributes of 64-bit or boolean type.
+
+Hostile input: every count is checked against the remaining payload or
+against `draco::Limits` (default 2^24 points and 2^24 faces; the glTF
+loader passes the accessor counts) before anything is allocated, and
+malformed streams return `Err`. The entropy coder can describe a symbol
+in zero bytes, so declared counts are not bounded by the payload size —
+the limits are what bounds memory. `fuzz/fuzz_targets/draco.rs` drives
+the raw decoder.
 
 ## Extension roadmap (next-round work)
 

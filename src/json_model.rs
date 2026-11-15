@@ -316,11 +316,10 @@ pub struct PrimitiveExtensions {
 /// primitive attribute name (POSITION, NORMAL, …) paired with the
 /// Draco-side attribute identifier. Per the spec §"attributes" the
 /// extension's `attributes` keys MUST be a subset of the parent
-/// primitive's `attributes` keys. This crate is a pass-through engine —
-/// the Draco bitstream decoder is out of scope for this round — so the
-/// descriptor round-trips through the JSON model + a primitive-level
-/// extras sidecar (`primitive.extras["KHR_draco_mesh_compression"]`)
-/// without an attempt to inflate the compressed bytes.
+/// primitive's `attributes` keys. The loader decodes the payload
+/// (`draco_primitive`); the descriptor only reaches the scene, as the
+/// extras sidecar `primitive.extras["KHR_draco_mesh_compression"]`, for
+/// a primitive that had to load from its uncompressed copy.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct KhrDracoMeshCompression {
     /// Index of the `bufferView` containing the Draco-compressed

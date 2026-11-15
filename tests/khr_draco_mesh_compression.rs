@@ -3,18 +3,18 @@
 //! parent-attribute-to-Draco-attribute-id map, per
 //! `docs/3d/gltf/extensions/KHR_draco_mesh_compression.md`.
 //!
-//! This crate is a pass-through engine: the Draco bitstream inflate
-//! path is out of scope for this round. We handle the extension at the
-//! JSON descriptor level:
+//! This file covers the JSON descriptor level and the uncompressed-copy
+//! lane; payload decoding is covered by `draco_fixtures.rs` and
+//! `draco_gltf_loading.rs`. None of the descriptors below points at a
+//! decodable payload, so every primitive here loads from its
+//! uncompressed copy:
 //!
-//! * **Decode**: each primitive carrying
-//!   `extensions.KHR_draco_mesh_compression` surfaces the descriptor
-//!   (bufferView + attributes map + optional extras) through
-//!   `Primitive::extras["KHR_draco_mesh_compression"]`. The parent
-//!   primitive's uncompressed-fallback accessors are read through the
-//!   usual accessor pipeline — per §"accessors" the spec mandates that
-//!   the parent accessors describe the decompressed data, so the
-//!   fallback lane is authoritative whenever it is present.
+//! * **Decode**: a primitive carrying
+//!   `extensions.KHR_draco_mesh_compression` whose payload cannot be
+//!   decoded, and whose accessors have their own bufferViews, surfaces
+//!   the descriptor (bufferView + attributes map + optional extras)
+//!   through `Primitive::extras["KHR_draco_mesh_compression"]` and reads
+//!   the uncompressed accessors through the usual accessor pipeline.
 //!
 //! * **Encode**: the encoder lifts the sidecar back into the typed
 //!   `PrimitiveExtensions` block and appends `KHR_draco_mesh_compression`

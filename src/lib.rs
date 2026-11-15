@@ -45,6 +45,7 @@ pub mod accessor;
 pub mod asset_source;
 pub mod decoder;
 pub mod draco;
+mod draco_primitive;
 pub mod encoder;
 pub mod error;
 // internal — decoder/encoder plumbing; not part of the stable API

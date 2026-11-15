@@ -209,6 +209,14 @@ pub fn convert(root: &GltfRoot, glb_bin: Option<&[u8]>) -> Result<Scene3D> {
     // fallback buffer view"). After this pass the standard accessor
     // pipeline reads the real attribute / index data unchanged.
     inflate_meshopt_buffer_views(root, &mut buffers)?;
+    // `KHR_draco_mesh_compression` inflate pass — per
+    // `docs/3d/gltf/extensions/KHR_draco_mesh_compression.md` §Conformance
+    // the extension is processed first: each compressed primitive's payload
+    // is decoded and the primitive is redirected to accessors over the
+    // decoded data (see `draco_primitive`). From here on `root` is the
+    // patched document, in which an inflated primitive is a plain one.
+    let inflated_root = crate::draco_primitive::inflate(root, &mut buffers)?;
+    let root = inflated_root.as_ref().unwrap_or(root);
     let mut scene = Scene3D::new();
 
     // `KHR_meshopt_compression` sidecar — per
@@ -2317,11 +2325,11 @@ fn convert_primitive(
     // *rendered index count* of a standard mesh primitive. Two extension
     // families re-define what the parent accessors mean and are exempt:
     //
-    // * `KHR_draco_mesh_compression` — the index stream lives inside the
-    //   opaque compressed payload (which this pass-through engine does
-    //   not inflate), so the parent attribute `count` is the *vertex*
-    //   count, not the rendered *index* count, and there is no glTF
-    //   `indices` accessor to measure.
+    // * `KHR_draco_mesh_compression` — only reached when the payload was
+    //   NOT inflated (the inflate pass removes the extension block from
+    //   every primitive it decodes, which then gets the full checks). A
+    //   primitive still carrying the block loads from its uncompressed
+    //   copy, whose counts are the generator's business.
     // * `KHR_gaussian_splatting` — the primitive is a splat field, not a
     //   triangle/line/point list in the rasterisation sense; the base
     //   `ellipse` kernel pins `mode` to POINTS (validated by the
@@ -2487,20 +2495,13 @@ fn convert_primitive(
         }
         // KHR_draco_mesh_compression — per-primitive extension object
         // per `docs/3d/gltf/extensions/KHR_draco_mesh_compression.md`
-        // §"glTF Schema Updates". The typed `oxideav_mesh3d::Primitive`
-        // has no compressed-payload slot and this crate is a pass-
-        // through engine (no Draco bitstream inflate path), so the
-        // bufferView indirection + Draco-side attribute-id map are
+        // §"glTF Schema Updates". A primitive whose payload was decoded
+        // by the inflate pass no longer carries this block. What reaches
+        // this point is a primitive loaded from its uncompressed copy
+        // because the payload could not be decoded; its descriptor
+        // (bufferView indirection + payload attribute-id map) is
         // surfaced through `primitive.extras["KHR_draco_mesh_compression"]`
-        // for round-trip preservation. The parent primitive's own
-        // `attributes` + `indices` accessors are processed normally
-        // (per spec §"accessors": the accessors describe the
-        // decompressed data and remain authoritative for the
-        // uncompressed-fallback lane). Per §Conformance step 4 a Draco-
-        // aware consumer would inflate the compressed payload first
-        // and rebuild the accessor data from it; we surface enough of
-        // the descriptor that such a consumer (layered over this
-        // crate) can do so.
+        // for round-trip preservation.
         if let Some(draco) = &ext.khr_draco_mesh_compression {
             let mut obj = serde_json::Map::new();
             obj.insert(

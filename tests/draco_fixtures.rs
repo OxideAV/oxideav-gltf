@@ -177,7 +177,10 @@ fn every_fixture_reproduces_expected_txt() {
     let mut failures = Vec::new();
     for name in FIXTURES {
         let drc = read_fixture(name, "input.drc");
-        let expected = String::from_utf8(read_fixture(name, "expected.txt")).unwrap();
+        // Tolerate a checkout that rewrote line endings.
+        let expected = String::from_utf8(read_fixture(name, "expected.txt"))
+            .unwrap()
+            .replace("\r\n", "\n");
         match draco::decode(&drc) {
             Ok(mesh) => {
                 let got = to_expected(&mesh);
