@@ -366,8 +366,8 @@ fn decode_inner(
             let topology = attributes::Topology::Edgebreaker(&conn);
             let attrs =
                 attributes::read_attributes(&mut r, &topology, limits, &mut scratch, trace)?;
-            let faces = conn.point.as_chunks::<3>().0.to_vec();
-            debug_assert_eq!(conn.num_faces * 3, conn.point.len());
+            let faces = conn.points().as_chunks::<3>().0.to_vec();
+            debug_assert_eq!(conn.num_faces * 3, conn.points().len());
             (conn.num_points, faces, attrs)
         }
     };

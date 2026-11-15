@@ -11,6 +11,7 @@ use super::reader::{Reader, unfold};
 use super::sequencing::{Sequence, View, sequence};
 use super::{DataType, DracoAttribute, Limits, Semantic};
 use crate::error::{Result, invalid, unsupported};
+use std::cell::OnceCell;
 
 const KIND_VERBATIM: u8 = 0;
 const KIND_INTEGER: u8 = 1;
@@ -346,11 +347,17 @@ fn finish_attribute(r: &mut Reader<'_>, desc: &Descriptor, block: &Block<'_>) ->
             }
             let max_q = (1u32 << bits) - 1;
             let delta = range / max_q as f32;
-            let mut out = Vec::with_capacity(d.len() * 4);
-            for tuple in d.chunks_exact(c) {
-                for (&v, &lo) in tuple.iter().zip(&min_value) {
+            let mut out = vec![0u8; d.len() * 4];
+            for (dst, tuple) in out.chunks_exact_mut(4 * c).zip(d.chunks_exact(c)) {
+                for ((bytes, &v), &lo) in dst
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .zip(tuple)
+                    .zip(&min_value)
+                {
                     let scaled = v as f32 * delta;
-                    out.extend_from_slice(&(scaled + lo).to_le_bytes());
+                    *bytes = (scaled + lo).to_le_bytes();
                 }
             }
             Ok(out)
@@ -362,10 +369,16 @@ fn finish_attribute(r: &mut Reader<'_>, desc: &Descriptor, block: &Block<'_>) ->
             }
             let m = (1u32 << bits) - 2;
             let scale = 2.0f32 / m as f32;
-            let mut out = Vec::with_capacity(d.len() / 2 * 12);
-            for st in d.as_chunks::<2>().0 {
-                for v in octahedral_to_unit(st[0], st[1], scale) {
-                    out.extend_from_slice(&v.to_le_bytes());
+            let mut out = vec![0u8; d.len() / 2 * 12];
+            for (dst, st) in out
+                .as_chunks_mut::<12>()
+                .0
+                .iter_mut()
+                .zip(d.as_chunks::<2>().0)
+            {
+                let unit = octahedral_to_unit(st[0], st[1], scale);
+                for (bytes, v) in dst.as_chunks_mut::<4>().0.iter_mut().zip(unit) {
+                    *bytes = v.to_le_bytes();
                 }
             }
             Ok(out)
@@ -465,7 +478,7 @@ pub(crate) fn read_attributes(
     // §4 group data.
     for (g, descs) in groups.iter().enumerate() {
         // Entry order and point-to-value map of the group.
-        let seq: Option<(View<'_>, Sequence)>;
+        let seq: Option<(View<'_>, Sequence, Vec<u32>)>;
         let point_to_value: Vec<u32>;
         let entries: usize;
         match conn {
@@ -490,23 +503,29 @@ pub(crate) fn read_attributes(
                         first_corner: &conn.first_corner,
                     }
                 };
-                let s = sequence(view, &conn.point, t.traversal_order, section.trace)?;
+                let s = sequence(view, conn.points(), t.traversal_order, section.trace)?;
                 entries = s.len();
-                // Ch. 07 §4.
+                // Ch. 07 §4, and the entry of every corner for the predictors.
                 let mut map = vec![NIL; num_points as usize];
-                for (&p, &v) in conn.point.iter().zip(view.vertex) {
-                    map[p as usize] = s.vertex_entry[v as usize];
+                let mut corner_entry = Vec::with_capacity(view.vertex.len());
+                for (&p, &v) in conn.points().iter().zip(view.vertex) {
+                    let e = s.vertex_entry[v as usize];
+                    map[p as usize] = e;
+                    corner_entry.push(e);
                 }
                 if map.contains(&NIL) {
                     return Err(invalid("draco: point without an attribute value"));
                 }
                 point_to_value = map;
-                seq = Some((view, s));
+                seq = Some((view, s, corner_entry));
             }
         }
-        let mesh = seq
-            .as_ref()
-            .map(|(view, seq)| MeshRefs { view: *view, seq });
+        let mesh = seq.as_ref().map(|(view, seq, corner_entry)| MeshRefs {
+            view: *view,
+            seq,
+            corner_entry,
+        });
+        let position_table = OnceCell::new();
 
         // Value blocks of every attribute, in order.
         let mut blocks: Vec<Block<'_>> = Vec::with_capacity(descs.len());
@@ -526,6 +545,7 @@ pub(crate) fn read_attributes(
                                 Some(Positions {
                                     values: d,
                                     point_to_value: &point_to_value,
+                                    table: &position_table,
                                 })
                             }
                             _ => None,
@@ -534,6 +554,7 @@ pub(crate) fn read_attributes(
                         saved_positions.as_ref().map(|(d, map)| Positions {
                             values: d,
                             point_to_value: map,
+                            table: &position_table,
                         })
                     }
                 }

@@ -101,10 +101,18 @@ pub(crate) struct Connectivity {
     pub(crate) opp: Vec<u32>,
     /// `first_corner(v)` per mesh vertex.
     pub(crate) first_corner: Vec<u32>,
-    /// `point(c)` per corner (§9).
-    pub(crate) point: Vec<u32>,
+    /// `point(c)` per corner (§9) when seam sets split vertices into
+    /// points; `None` when points are the vertices.
+    split_points: Option<Vec<u32>>,
     pub(crate) num_points: u32,
     pub(crate) seams: Vec<SeamSet>,
+}
+
+impl Connectivity {
+    /// `point(c)` per corner (§9).
+    pub(crate) fn points(&self) -> &[u32] {
+        self.split_points.as_deref().unwrap_or(&self.vertex)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -564,14 +572,15 @@ pub(crate) fn read_connectivity(
             return Err(invalid("draco: face refers to a removed vertex"));
         }
         first_corner.truncate(nv);
-        (vertex.clone(), nv as u32, Vec::new())
+        (None, nv as u32, Vec::new())
     } else {
         let seams = build_seam_sets(&opp, &vertex, &first_corner, &mut seam_decoders, trace)?;
         let (point, num_points) = number_points(&opp, &first_corner, &boundary, &seams)?;
-        (point, num_points, seams)
+        (Some(point), num_points, seams)
     };
 
     if let Some(t) = trace.as_mut() {
+        let point = point.as_deref().unwrap_or(&vertex);
         let show = |v: u32| if v == NIL { -1 } else { i64::from(v) };
         for face in 0..f {
             let c = 3 * face;
@@ -595,7 +604,7 @@ pub(crate) fn read_connectivity(
         vertex,
         opp,
         first_corner,
-        point,
+        split_points: point,
         num_points,
         seams,
     })

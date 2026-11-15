@@ -1258,6 +1258,53 @@ in zero bytes, so declared counts are not bounded by the payload size —
 the limits are what bounds memory. `fuzz/fuzz_targets/draco.rs` drives
 the raw decoder.
 
+Beyond the corpus, `tests/draco_synthetic.rs` carries a small test-side
+encoder derived from the same specification and round-trips what the
+corpus cannot stage: rANS precisions 13–20 (the corpus is precision 12
+only), frequency tokens with two extra bytes, 4-byte initial states,
+varint and u32 plain indices, and million-face meshes. Those are
+self-consistency checks, not conformance evidence.
+
+### Decode speed
+
+The decoder is single-threaded and allocates per section, never per
+symbol or per entry: frequency tables and symbol buffers are reused
+across sequences, predictors work in place on the residual array, and
+flags are decoded on demand from their streams.
+
+Release build, Apple silicon, wall clock, **minimum of 2 × 15 runs** on
+a machine shared with other builds (medians ran 5–40 % higher);
+`DRACO_SYNTH_FACES=1000000 cargo test --release --test draco_synthetic
+-- --test-threads=1 --nocapture large_ staged`. "Before" is the first
+complete decoder, "after" adds: the entry of every corner and the
+integer position of every entry flattened once per attribute group
+(the predictors' lookups went from five chained reads to two), an
+exact integer square root seeded from the floating-point one,
+frequency and cumulative frequency stored side by side, the symbol
+decoder inlined into block-buffered sequence loops, bulk float output,
+and no copy of the corner-to-point table when points are the vertices.
+Output is bit-identical (all 38 fixtures still match byte for byte).
+
+| Payload | Before | After |
+|---|---:|---:|
+| synthetic strip, 1 000 000 faces, positions + texture coordinates + normals (parallelogram / texture-coordinate / geometric-normal prediction), depth-first order, 4.07 MB | 172.7 ms | 131.3 ms (7.6 M faces/s) |
+| same, prediction-degree order | 160.3 ms | 127.1 ms |
+| same with a seam set on every edge (3 000 000 points, per-corner group), 7.04 MB | 328.4 ms | 274.2 ms |
+| synthetic sequential mesh, 524 287 faces, index differences in the raw scheme at precision 20, 2.73 MB | 82.8 ms | 55.4 ms |
+| same, tagged scheme | 13.9 ms | 13.8 ms |
+| same, plain varint indices | 7.3 ms | 6.8 ms |
+| all 38 staged fixtures, one decode each (sum) | 261.9 µs | 250.3 µs |
+| `eb-grid17` (largest staged mesh: 272 points, 480 faces, 1003 bytes) | 17.9 µs | 18.1 µs |
+| `seq-grid17-idxdiff` (272 points, 480 faces, 1727 bytes) | 21.8 µs | 18.1 µs |
+| `lvl-grid7-cl10` (42 points, 60 faces, three attributes, every mesh predictor) | 16.2 µs | 15.7 µs |
+| `eb-quad` (4 points, 2 faces) | 0.79 µs | 0.67 µs |
+
+The flattened per-group tables cost 4 bytes per corner and 12 bytes per
+entry while a group is being decoded; they are released with the group.
+The remaining profile is flat: entropy decoding (about a fifth), the
+normal and texture-coordinate predictors (integer divisions), float
+output.
+
 ## Extension roadmap (next-round work)
 
 The KHR extension registry is now staged under

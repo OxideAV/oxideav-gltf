@@ -9,6 +9,7 @@ use super::entropy::BitDecoder;
 use super::reader::Reader;
 use super::sequencing::{Sequence, View};
 use crate::error::{Result, invalid};
+use std::cell::OnceCell;
 
 /// Wrap transform parameters (ch. 05 §6.4).
 #[derive(Clone, Copy, Debug)]
@@ -105,6 +106,7 @@ impl Octahedral {
     }
 
     /// Combine a prediction with a (non-negative) residual (§6.2).
+    #[inline]
     fn combine(&self, pred: [i32; 2], res: [i32; 2]) -> [i32; 2] {
         let mut ps = pred[0].wrapping_sub(self.center);
         let mut pt = pred[1].wrapping_sub(self.center);
@@ -176,13 +178,16 @@ impl Transform {
 pub(crate) struct MeshRefs<'a> {
     pub(crate) view: View<'a>,
     pub(crate) seq: &'a Sequence,
+    /// `vertex_entry[V(c)]` per corner, flattened once per group so the
+    /// predictors' `entry_of` is a single lookup.
+    pub(crate) corner_entry: &'a [u32],
 }
 
 impl MeshRefs<'_> {
     /// `vertex_entry[V(c)]`; `NIL` (greater than any entry) when unvisited.
     #[inline]
     fn entry_of(&self, c: u32) -> u32 {
-        self.seq.vertex_entry[self.view.vertex[c as usize] as usize]
+        self.corner_entry[c as usize]
     }
 }
 
@@ -193,17 +198,60 @@ pub(crate) struct Positions<'a> {
     pub(crate) values: &'a [i32],
     /// Point-to-value map of the position attribute.
     pub(crate) point_to_value: &'a [u32],
+    /// Per-group cache of [`Positions::entry_table`].
+    pub(crate) table: &'a OnceCell<Vec<i32>>,
 }
 
-impl Positions<'_> {
-    /// `pos_of_entry(e)` for an entry of the group described by `seq`.
+impl<'a> Positions<'a> {
+    /// `pos_of_entry(e)` for every entry of the group described by `seq`,
+    /// three integers per entry. Resolving entry → point → value once per
+    /// group turns the predictors' position lookups into one indexed read.
+    fn entry_table(&self, seq: &Sequence) -> Result<EntryPositions<'a>> {
+        if self.table.get().is_none() {
+            let mut table = Vec::with_capacity(seq.len() * 3);
+            for &p in &seq.entry_point {
+                let v = self
+                    .point_to_value
+                    .get(p as usize)
+                    .and_then(|&i| (i as usize).checked_mul(3))
+                    .and_then(|i| self.values.get(i..i + 3))
+                    .ok_or_else(missing_position)?;
+                table.extend_from_slice(v);
+            }
+            let _ = self.table.set(table);
+        }
+        Ok(EntryPositions(self.table.get().map_or(&[], Vec::as_slice)))
+    }
+}
+
+/// Integer positions indexed by entry.
+#[derive(Clone, Copy)]
+struct EntryPositions<'a>(&'a [i32]);
+
+impl EntryPositions<'_> {
+    /// Position of entry `e`; `None` for an entry that does not exist
+    /// (such as the `NIL` of an unvisited vertex).
     #[inline]
-    fn of_entry(&self, seq: &Sequence, e: u32) -> Option<[i64; 3]> {
-        let p = *seq.entry_point.get(e as usize)?;
-        let i = *self.point_to_value.get(p as usize)? as usize * 3;
-        let v = self.values.get(i..i + 3)?;
+    fn get(&self, e: u32) -> Option<[i64; 3]> {
+        let i = (e as usize).checked_mul(3)?;
+        let v = self.0.get(i..i + 3)?;
         Some([i64::from(v[0]), i64::from(v[1]), i64::from(v[2])])
     }
+}
+
+/// Integer square root rounded down.
+#[inline]
+fn isqrt(n: u64) -> u64 {
+    // The binary64 estimate is within one of the exact root; settle it with
+    // exact comparisons.
+    let mut x = (n as f64).sqrt() as u64;
+    while u128::from(x) * u128::from(x) > u128::from(n) {
+        x -= 1;
+    }
+    while u128::from(x + 1) * u128::from(x + 1) <= u128::from(n) {
+        x += 1;
+    }
+    x
 }
 
 fn missing_position() -> crate::error::Error {
@@ -410,6 +458,7 @@ pub(crate) fn texture_coordinates(
     trace: &mut Option<Vec<String>>,
 ) -> Result<()> {
     let seq = mesh.seq;
+    let pos = positions.entry_table(seq)?;
     for e in 0..d.len() / 2 {
         let corner = seq.entry_corner[e];
         let en = mesh.entry_of(next(corner));
@@ -426,11 +475,9 @@ pub(crate) fn texture_coordinates(
             if n == pv {
                 pred = Some(pv);
             } else {
-                let pos_n = positions.of_entry(seq, en).ok_or_else(missing_position)?;
-                let pos_p = positions.of_entry(seq, ep).ok_or_else(missing_position)?;
-                let pos_e = positions
-                    .of_entry(seq, e as u32)
-                    .ok_or_else(missing_position)?;
+                let pos_n = pos.get(en).ok_or_else(missing_position)?;
+                let pos_p = pos.get(ep).ok_or_else(missing_position)?;
+                let pos_e = pos.get(e as u32).ok_or_else(missing_position)?;
                 let pn = sub3(pos_p, pos_n);
                 let len2 = dot3(pn, pn);
                 if len2 != 0 {
@@ -450,7 +497,7 @@ pub(crate) fn texture_coordinates(
                     ];
                     let height = sub3(pos_e, foot);
                     let h2 = dot3(height, height);
-                    let k = (h2.wrapping_mul(len2) as u64).isqrt() as i64;
+                    let k = isqrt(h2.wrapping_mul(len2) as u64) as i64;
                     let w = [uv[1].wrapping_mul(k), uv[0].wrapping_neg().wrapping_mul(k)];
                     let orientation = orientations
                         .pop()
@@ -530,19 +577,18 @@ pub(crate) fn geometric_normals(
 ) -> Result<()> {
     const REDUCE_ABOVE: i64 = 1 << 29;
     let seq = mesh.seq;
+    let pos = positions.entry_table(seq)?;
     let center = i64::from(oct.center);
     let m = oct.m;
     for e in 0..d.len() / 2 {
         let corner = seq.entry_corner[e];
-        let pc = positions
-            .of_entry(seq, e as u32)
-            .ok_or_else(missing_position)?;
+        let pc = pos.get(e as u32).ok_or_else(missing_position)?;
         // Step 1: area-weighted normal over the fan of the entry's vertex.
         let mut nrm = [0i64; 3];
         let mut complete = true;
         for_each_corner_of_vertex(mesh.view.opp, corner, |k| {
-            let a = positions.of_entry(seq, mesh.entry_of(next(k)));
-            let b = positions.of_entry(seq, mesh.entry_of(prev(k)));
+            let a = pos.get(mesh.entry_of(next(k)));
+            let b = pos.get(mesh.entry_of(prev(k)));
             match (a, b) {
                 (Some(a), Some(b)) => {
                     let x = cross3(sub3(a, pc), sub3(b, pc));
@@ -619,4 +665,46 @@ pub(crate) fn geometric_normals(
         d[e * 2..e * 2 + 2].copy_from_slice(&out);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn isqrt_is_the_floor_root() {
+        let mut probes = vec![0u64, 1, 2, 3, 4, 15, 16, 17, u64::MAX, u64::MAX - 1];
+        for k in 1..64 {
+            let p = 1u64 << k;
+            probes.extend([p - 1, p, p + 1]);
+        }
+        for r in [
+            3u64,
+            1000,
+            65_535,
+            65_536,
+            94_906_265,
+            3_037_000_499,
+            4_294_967_295,
+        ] {
+            probes.extend([r * r - 1, r * r, r * r + 1]);
+        }
+        for n in probes {
+            assert_eq!(isqrt(n), n.isqrt(), "{n}");
+        }
+    }
+
+    #[test]
+    fn wrap_examples() {
+        // ch. 05 §6.4, `eb-quad`: min 0, max 2047.
+        let w = Wrap {
+            min: 0,
+            max: 2047,
+            span: 2048,
+        };
+        assert_eq!(w.combine(0, -1), 2047);
+        assert_eq!(w.combine(2047, 1), 0);
+        assert_eq!(w.combine(-5, 0), 0);
+        assert_eq!(w.combine(9000, -1024), 1023);
+    }
 }

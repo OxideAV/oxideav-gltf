@@ -117,7 +117,7 @@ impl<'a> BitRun<'a> {
 
     /// Read an `n`-bit field, `n <= 32`. Fails when the field reaches past
     /// the end of the backing bytes.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn bits(&mut self, n: u32) -> Result<u32> {
         if n == 0 {
             return Ok(0);

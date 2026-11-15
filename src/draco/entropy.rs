@@ -12,14 +12,17 @@ use crate::error::{Result, invalid};
 /// Precision of the tag decoder of the tagged scheme (§2).
 const TAG_PRECISION: u32 = 12;
 
+/// Values decoded between two appends to the output of a symbol sequence;
+/// at least the largest tuple size (255 components).
+const BLOCK: usize = 1024;
+
 /// Reusable buffers for frequency tables, so decoding a symbol sequence
 /// allocates nothing once the buffers have grown to their working size.
 #[derive(Debug, Default)]
 pub(crate) struct EntropyScratch {
-    /// `freq[s]` of the current table.
-    freq: Vec<u32>,
-    /// `cum[s]` of the current table (same length as `freq`).
-    cum: Vec<u32>,
+    /// `(freq[s], cum[s])` of the current table, side by side so decoding
+    /// a symbol touches one cache line for both.
+    symbols: Vec<(u32, u32)>,
     /// Direct map from the low `precision_bits` of the state to the symbol;
     /// empty when the sequence is too short to amortise building it.
     slot: Vec<u32>,
@@ -36,8 +39,8 @@ impl EntropyScratch {
         if n > r.remaining().saturating_mul(64) {
             return Err(invalid("draco: frequency table larger than the payload"));
         }
-        self.freq.clear();
-        self.freq.resize(n, 0);
+        self.symbols.clear();
+        self.symbols.resize(n, (0, 0));
         let mut i = 0usize;
         while i < n {
             let b = r.u8()?;
@@ -56,16 +59,14 @@ impl EntropyScratch {
                 if low == 2 {
                     f |= u32::from(r.u8()?) << 14;
                 }
-                self.freq[i] = f;
+                self.symbols[i].0 = f;
                 i += 1;
             }
         }
-        self.cum.clear();
-        self.cum.reserve(n);
         let mut acc = 0u64;
-        for &f in &self.freq {
-            self.cum.push(acc as u32);
-            acc += u64::from(f);
+        for (f, cum) in &mut self.symbols {
+            *cum = acc as u32;
+            acc += u64::from(*f);
             if acc > u64::from(total) {
                 return Err(invalid("draco: frequencies exceed the rANS total"));
             }
@@ -76,7 +77,7 @@ impl EntropyScratch {
         self.slot.clear();
         if values.saturating_mul(16) >= total as usize {
             self.slot.resize(total as usize, 0);
-            for (s, (&f, &c)) in self.freq.iter().zip(&self.cum).enumerate() {
+            for (s, &(f, c)) in self.symbols.iter().enumerate() {
                 if f != 0 {
                     self.slot[c as usize..(c + f) as usize].fill(s as u32);
                 }
@@ -86,13 +87,13 @@ impl EntropyScratch {
     }
 
     /// The symbol the residue `r` belongs to.
-    #[inline]
+    #[inline(always)]
     fn symbol_of(&self, r: u32) -> usize {
         if self.slot.is_empty() {
             // Last symbol whose cumulative frequency is <= r; zero-frequency
             // symbols share their successor's value and are skipped by taking
             // the last match.
-            self.cum.partition_point(|&c| c <= r) - 1
+            self.symbols.partition_point(|&(_, c)| c <= r) - 1
         } else {
             self.slot[r as usize] as usize
         }
@@ -148,7 +149,8 @@ impl<'a> SymbolDecoder<'a> {
         })
     }
 
-    #[inline]
+    // Inlined into the per-sequence loops so the state lives in registers.
+    #[inline(always)]
     fn symbol(&mut self, table: &EntropyScratch) -> u32 {
         let low = 4u32 << self.precision_bits;
         while self.state < low && self.rem > 0 {
@@ -161,10 +163,8 @@ impl<'a> SymbolDecoder<'a> {
         // q * freq + r - cum <= state for a table summing to the total, so
         // none of this can overflow; wrapping keeps a corrupted state from
         // panicking in debug builds.
-        self.state = q
-            .wrapping_mul(table.freq[s])
-            .wrapping_add(r)
-            .wrapping_sub(table.cum[s]);
+        let (freq, cum) = table.symbols[s];
+        self.state = q.wrapping_mul(freq).wrapping_add(r).wrapping_sub(cum);
         s as u32
     }
 }
@@ -183,24 +183,33 @@ pub(crate) fn read_symbols(
         return Ok(());
     }
     debug_assert!(c > 0 && n.is_multiple_of(c));
-    // Grow as values arrive rather than trusting `n` for one big reservation:
-    // a symbol can cost zero stream bytes, so `n` is not bounded by the
-    // payload size (callers bound it by their own limits).
-    out.reserve(n.min(1 << 16));
+    // Values are decoded into a small block and appended block by block:
+    // the hot loops write into fixed storage, and `out` grows as values
+    // arrive rather than trusting `n` for one big reservation (a symbol can
+    // cost zero stream bytes, so `n` is not bounded by the payload size;
+    // callers bound it by their own limits).
+    let mut block = [0u32; BLOCK];
     match r.u8()? {
         0 => {
             scratch.read_table(r, TAG_PRECISION, n / c)?;
             let mut dec = SymbolDecoder::read(r, TAG_PRECISION)?;
             let mut run = BitRun::new(r.rest());
+            let mut filled = 0usize;
             for _ in 0..n / c {
                 let t = dec.symbol(scratch);
                 if t > 32 {
                     return Err(invalid("draco: tagged bit length above 32"));
                 }
-                for _ in 0..c {
-                    out.push(run.bits(t)?);
+                if filled + c > BLOCK {
+                    out.extend_from_slice(&block[..filled]);
+                    filled = 0;
                 }
+                for slot in &mut block[filled..filled + c] {
+                    *slot = run.bits(t)?;
+                }
+                filled += c;
             }
+            out.extend_from_slice(&block[..filled]);
             r.take(run.bytes_used())?;
         }
         1 => {
@@ -211,8 +220,14 @@ pub(crate) fn read_symbols(
             let precision_bits = (3 * b / 2).clamp(12, 20);
             scratch.read_table(r, precision_bits, n)?;
             let mut dec = SymbolDecoder::read(r, precision_bits)?;
-            for _ in 0..n {
-                out.push(dec.symbol(scratch));
+            let mut left = n;
+            while left > 0 {
+                let k = left.min(BLOCK);
+                for slot in &mut block[..k] {
+                    *slot = dec.symbol(scratch);
+                }
+                out.extend_from_slice(&block[..k]);
+                left -= k;
             }
         }
         _ => return Err(invalid("draco: unknown symbol-sequence scheme")),
@@ -282,8 +297,7 @@ mod tests {
         let mut s = EntropyScratch::default();
         let mut r = Reader::new(&TAGGED[1..]);
         s.read_table(&mut r, 12, 6).unwrap();
-        assert_eq!(s.freq, [0, 683, 2048, 1365]);
-        assert_eq!(s.cum, [0, 0, 683, 2731]);
+        assert_eq!(s.symbols, [(0, 0), (683, 0), (2048, 683), (1365, 2731)]);
         let mut d = SymbolDecoder::read(&mut r, 12).unwrap();
         assert_eq!((d.state, d.rem), (28677, 1));
         assert_eq!(d.symbol(&s), 1);
