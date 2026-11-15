@@ -459,8 +459,7 @@ pub(crate) fn texture_coordinates(
 ) -> Result<()> {
     let seq = mesh.seq;
     let pos = positions.entry_table(seq)?;
-    for e in 0..d.len() / 2 {
-        let corner = seq.entry_corner[e];
+    for (e, &corner) in seq.entry_corner.iter().enumerate().take(d.len() / 2) {
         let en = mesh.entry_of(next(corner));
         let ep = mesh.entry_of(prev(corner));
         let (before, rest) = d.split_at_mut(e * 2);
@@ -580,8 +579,7 @@ pub(crate) fn geometric_normals(
     let pos = positions.entry_table(seq)?;
     let center = i64::from(oct.center);
     let m = oct.m;
-    for e in 0..d.len() / 2 {
-        let corner = seq.entry_corner[e];
+    for (e, &corner) in seq.entry_corner.iter().enumerate().take(d.len() / 2) {
         let pc = pos.get(e as u32).ok_or_else(missing_position)?;
         // Step 1: area-weighted normal over the fan of the entry's vertex.
         let mut nrm = [0i64; 3];
