@@ -1251,12 +1251,18 @@ point clouds, bitstream versions before 2.2, prediction methods 2 and 3,
 and integer-coded attributes of 64-bit or boolean type.
 
 Hostile input: every count is checked against the remaining payload or
-against `draco::Limits` (default 2^24 points and 2^24 faces; the glTF
-loader passes the accessor counts) before anything is allocated, and
-malformed streams return `Err`. The entropy coder can describe a symbol
+against `draco::Limits` (default 2^24 points, 2^24 faces and 32 coded
+integers per point; the glTF loader passes the accessor counts) before
+anything is allocated, and malformed streams return `Err`. The entropy coder can describe a symbol
 in zero bytes, so declared counts are not bounded by the payload size —
 the limits are what bounds memory. `fuzz/fuzz_targets/draco.rs` drives
 the raw decoder.
+
+`tests/draco_verdicts.rs` rebuilds the single-byte edits of
+`docs/3d/gltf/draco/spec/01-container.md` §4 and checks the decoder
+gives the recorded accept / reject verdict on each, that every
+truncation of every staged payload is an error, and that no single-byte
+substitution in a staged payload panics or yields an ill-formed mesh.
 
 Beyond the corpus, `tests/draco_synthetic.rs` carries a small test-side
 encoder derived from the same specification and round-trips what the

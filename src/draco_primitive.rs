@@ -204,7 +204,14 @@ fn decode_primitive(
 
     // The accessors already state the decoded sizes; use them as limits so a
     // payload cannot make the decoder allocate more than the document asks.
+    // Room for every mapped attribute plus as much again for payload
+    // attributes the extension does not map.
+    let mapped_components: u32 = mapped
+        .iter()
+        .map(|m| u32::from(accessor_components(&m.2.kind).unwrap_or(0)))
+        .sum();
     let mut limits = Limits::new().with_max_points(point_count);
+    limits = limits.with_max_values_per_point(limits.max_values_per_point + mapped_components);
     if let Some(a) = index_accessor {
         limits = limits.with_max_faces(a.count / 3);
     }

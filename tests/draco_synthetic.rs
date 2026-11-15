@@ -612,3 +612,143 @@ fn staged_fixture_decode_times() {
         );
     }
 }
+
+// ---------------------------------------------------------------------
+// Attribute paths no staged fixture executes (`spec/10-roadmap.md` §4):
+// integer attributes of other widths, blocks without prediction, raw
+// integers of width 4, and a mesh prediction code inside a method 0
+// stream.
+
+/// `(descriptor bytes, coding kind, value block, transform parameters)`.
+type ExtraAttribute<'a> = (&'a [u8], u8, Vec<u8>, Vec<u8>);
+
+/// Method 0 payload with `points` points, one degenerate face, a verbatim
+/// position attribute (padding the stream so the face count passes the
+/// ch. 04 §1 bound) and the given extra attributes: `(descriptor bytes,
+/// coding kind, value block bytes, transform parameter bytes)`.
+fn sequential_with_attributes(points: u32, extra: &[ExtraAttribute<'_>]) -> Vec<u8> {
+    let mut out = header(0);
+    varint(&mut out, 1);
+    varint(&mut out, u64::from(points));
+    out.push(1);
+    out.extend_from_slice(&[0, 0, 0]);
+    out.push(1);
+    varint(&mut out, extra.len() as u64 + 1);
+    out.extend_from_slice(&[0, 9, 3, 0, 0]);
+    for (descriptor, ..) in extra {
+        out.extend_from_slice(descriptor);
+    }
+    out.push(0);
+    for (_, kind, ..) in extra {
+        out.push(*kind);
+    }
+    for p in 0..points {
+        for k in 1..=3u32 {
+            out.extend_from_slice(&((p * k) as f32).to_le_bytes());
+        }
+    }
+    for (_, _, values, _) in extra {
+        out.extend_from_slice(values);
+    }
+    for (.., parameters) in extra {
+        out.extend_from_slice(parameters);
+    }
+    out
+}
+
+#[test]
+fn integer_attributes_without_prediction_and_wide_raw_integers() {
+    const POINTS: u32 = 6;
+    // uint8 × 4, no prediction, tagged scheme.
+    let bytes: Vec<i32> = (0..POINTS as i32 * 4).map(|i| (i * 37) % 256).collect();
+    let mut block_u8 = vec![0xfe, 1]; // method -2, entropy coded
+    let folded: Vec<u32> = bytes.iter().map(|&v| fold(v)).collect();
+    write_tagged_sequence(&mut block_u8, &folded, 4);
+
+    // int16 × 2, no prediction, raw integers of width 4.
+    let shorts: Vec<i32> = (0..POINTS as i32 * 2).map(|i| i * 5000 - 30_000).collect();
+    let mut block_i16 = vec![0xfe, 0, 4];
+    for &v in &shorts {
+        block_i16.extend_from_slice(&fold(v).to_le_bytes());
+    }
+
+    // uint32 × 1, difference + wrap, raw integers of width 2.
+    let words: Vec<i32> = vec![1000, 1003, 990, 990, 2047, 0];
+    let mut block_u32 = vec![0, 1, 0, 2];
+    let mut previous = 0i32;
+    for &v in &words {
+        block_u32.extend_from_slice(&(fold(v - previous) as u16).to_le_bytes());
+        previous = v;
+    }
+    block_u32.extend_from_slice(&0i32.to_le_bytes());
+    block_u32.extend_from_slice(&2047i32.to_le_bytes());
+
+    let payload = sequential_with_attributes(
+        POINTS,
+        &[
+            (&[2, 2, 4, 1, 1], 1, block_u8, Vec::new()),
+            (&[4, 3, 2, 0, 2], 1, block_i16, Vec::new()),
+            (&[4, 6, 1, 0, 3], 1, block_u32, Vec::new()),
+        ],
+    );
+    let mesh = draco::decode(&payload).unwrap();
+    assert_eq!(mesh.bytes_consumed, payload.len());
+    assert_eq!(mesh.attributes.len(), 4);
+
+    let a = mesh.attribute_by_unique_id(1).unwrap();
+    assert!(a.normalized);
+    let want: Vec<u8> = bytes.iter().map(|&v| v as u8).collect();
+    assert_eq!(a.values, want);
+
+    let a = mesh.attribute_by_unique_id(2).unwrap();
+    let want: Vec<u8> = shorts
+        .iter()
+        .flat_map(|&v| (v as i16).to_le_bytes())
+        .collect();
+    assert_eq!(a.values, want);
+
+    let a = mesh.attribute_by_unique_id(3).unwrap();
+    let want: Vec<u8> = words
+        .iter()
+        .flat_map(|&v| (v as u32).to_le_bytes())
+        .collect();
+    assert_eq!(a.values, want);
+}
+
+#[test]
+fn mesh_prediction_code_in_a_sequential_stream_is_difference() {
+    // Ch. 05 §6.3: a method 0 stream that carries a mesh prediction code is
+    // decoded with difference prediction.
+    const POINTS: u32 = 5;
+    let residuals: Vec<u32> = [3, 0, 7, -2, 1, 1, 0, -5, 4, 2, 2, -1, 0, 0, 9]
+        .iter()
+        .map(|&v| fold(v))
+        .collect();
+    let mut parameters = Vec::new();
+    for v in [-1.0f32, 0.0, 2.0, 8.0] {
+        parameters.extend_from_slice(&v.to_le_bytes());
+    }
+    parameters.push(10);
+    let build = |method: u8| {
+        let mut block = vec![method, 1, 1];
+        write_raw_sequence(&mut block, &residuals, 5);
+        block.extend_from_slice(&0i32.to_le_bytes());
+        block.extend_from_slice(&1023i32.to_le_bytes());
+        sequential_with_attributes(POINTS, &[(&[4, 9, 3, 0, 1], 2, block, parameters.clone())])
+    };
+    let reference = draco::decode(&build(0)).unwrap();
+    for method in [1u8, 4, 5, 6] {
+        let mesh = draco::decode(&build(method)).unwrap();
+        assert_eq!(
+            mesh.attributes[1].values, reference.attributes[1].values,
+            "method {method}"
+        );
+    }
+    // Difference prediction with the wrap transform, by hand: entry 0 is
+    // (3, 0, 7); entry 1 adds (-2, 1, 1).
+    let delta = 8.0f32 / 1023.0;
+    let first = reference.attributes[1].point_f32(0).unwrap();
+    assert_eq!(first, [3.0 * delta - 1.0, 0.0, 7.0 * delta + 2.0]);
+    let second = reference.attributes[1].point_f32(1).unwrap();
+    assert_eq!(second, [delta - 1.0, delta, 8.0 * delta + 2.0]);
+}

@@ -467,7 +467,7 @@ pub(crate) fn read_attributes(
         scratch,
         symbols: Vec::new(),
         trace,
-        budget: u64::from(limits.max_points).saturating_mul(16),
+        budget: u64::from(limits.max_points) * u64::from(limits.max_values_per_point),
         edgebreaker: conn.is_some(),
     };
     let mut out = Vec::new();

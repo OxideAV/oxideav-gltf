@@ -284,14 +284,21 @@ pub struct Limits {
     pub max_points: u32,
     /// Largest accepted face count.
     pub max_faces: u32,
+    /// Largest accepted number of entropy-coded integers per point, summed
+    /// over all attributes (an attribute stores one integer per component
+    /// and entry, two for an octahedral normal). Together with
+    /// `max_points` this bounds the attribute section's working memory.
+    pub max_values_per_point: u32,
 }
 
 impl Limits {
-    /// The default limits: 2^24 points and 2^24 faces.
+    /// The default limits: 2^24 points, 2^24 faces and 32 coded integers
+    /// per point.
     pub fn new() -> Self {
         Self {
             max_points: 1 << 24,
             max_faces: 1 << 24,
+            max_values_per_point: 32,
         }
     }
 
@@ -302,6 +309,11 @@ impl Limits {
 
     pub fn with_max_faces(mut self, max_faces: u32) -> Self {
         self.max_faces = max_faces;
+        self
+    }
+
+    pub fn with_max_values_per_point(mut self, max_values_per_point: u32) -> Self {
+        self.max_values_per_point = max_values_per_point;
         self
     }
 }

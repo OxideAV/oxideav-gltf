@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `tests/draco_synthetic.rs`: a test-side Draco encoder derived from the specification (rANS symbol encoder, both symbol-sequence schemes, sequential and strip connectivity) round-trips what the staged corpus cannot hold — rANS precisions 13–20, three-byte frequency tokens, 4-byte initial states, varint / u32 plain indices — and builds million-face meshes with all three mesh predictors for timing.
 
+- `tests/draco_verdicts.rs`: the accept / reject verdicts of the specification's edited-header table, truncation of every staged payload at every length, and a single-byte substitution sweep over the corpus.
+- `draco::Limits::max_values_per_point` (default 32): bound on entropy-coded integers per point summed over all attributes.
+
 ### Performance
 
 - Draco decode: per-group flattening of corner → entry and entry → integer position (predictor lookups from five chained reads to two), exact integer square root seeded from the floating-point root, frequency / cumulative frequency stored side by side, symbol decoder inlined into block-buffered loops, bulk float output, no copy of the corner-to-point table without seam sets. Synthetic 1 000 000-face strip with three predicted attributes 172.7 → 131.3 ms; with a seam set on every edge 328.4 → 274.2 ms; 524 287-face sequential mesh with precision-20 raw-scheme indices 82.8 → 55.4 ms (minimum of 2 × 15 runs, release, shared machine). Output unchanged.
