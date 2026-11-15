@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `draco` module: a decoder for the Draco compressed-mesh bitstream (version 2.2, triangle meshes), the payload format of `KHR_draco_mesh_compression`, written from the observer specification under `docs/3d/gltf/draco/spec/`. `draco::decode` / `decode_with_limits` return a `DracoMesh` (point count, faces, attributes with a value table and a point-to-value map, optional metadata block). Covers both mesh encoding methods (stored indices as u8 / u16 / varint / u32 or entropy-coded differences; the symbol-string method with standard and valence symbol coding, split events, interior start faces, seam sets and point splitting), all four attribute coding kinds (verbatim, integer, quantised float, octahedral normal), both symbol-sequence schemes on the rANS decoder, the binary decoder, and difference / parallelogram / constrained multi-parallelogram / texture-coordinate / geometric-normal prediction with the wrap and canonicalised octahedral transforms, in both traversal orders. All 38 staged fixtures reproduce their `expected.txt` byte for byte (`tests/draco_fixtures.rs`), and the derived-value events of the staged traces are replayed when the documentation tree is present. Every count is checked against the payload size or the caller's `draco::Limits` before allocation. Point clouds, bitstream versions before 2.2, prediction methods 2 / 3 and integer-coded attributes of 64-bit or boolean type are rejected as unsupported (the specification does not cover them).
+
 ### Changed
 
 - `#[non_exhaustive]` on the `OutputFlavour` and `splatting::ColorSpace` enums and on the `GltfEncoder` record (build it with `GltfEncoder::new` / `with_output` / `json_encoder` and the `with_*` builders). `QuantizeMode`, `meshopt::Mode` / `Filter` and `ObjectModelDataType` stay exhaustive: the glTF 2.0 component types and the extension specs fix their values.
