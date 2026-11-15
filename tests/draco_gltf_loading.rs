@@ -73,6 +73,10 @@ fn attribute_accessor(mesh: &DracoMesh, i: usize) -> Value {
         "count": mesh.num_points,
         "type": accessor_type(a.num_components),
     });
+    if a.data_type == DataType::Uint8 {
+        // 8-bit colours: normalized unsigned byte (glTF 2.0 §3.7.2.1).
+        acc["normalized"] = json!(true);
+    }
     if a.semantic == Semantic::Position {
         let values = point_values(mesh, i);
         let fold = |f: fn(f32, f32) -> f32, init: f32| -> Vec<f32> {
@@ -448,4 +452,81 @@ fn primitive_without_an_indices_accessor_still_gets_the_faces() {
         .remove("indices");
     let scene = load(&doc).unwrap();
     assert_primitive_is_mesh(&scene.meshes[0].primitives[0], &mesh);
+}
+
+#[test]
+fn eight_bit_colours_load_as_normalized_unsigned_bytes() {
+    // `seq-colors` / `eb-colors`: positions plus a 3-component uint8 colour
+    // attribute, mapped to a normalized UNSIGNED_BYTE VEC3 COLOR_0 accessor.
+    for name in ["seq-colors", "eb-colors"] {
+        let drc = fixture(name, "input.drc");
+        let mesh = draco::decode(&drc).unwrap();
+        let colour = mesh
+            .attributes
+            .iter()
+            .find(|a| a.semantic == Semantic::Color)
+            .expect("colour attribute");
+        assert_eq!(
+            (colour.data_type, colour.num_components),
+            (DataType::Uint8, 3)
+        );
+
+        let compressed = load(&compressed_document(&drc, &mesh, 5121)).unwrap();
+        let plain = load(&uncompressed_document(&mesh)).unwrap();
+        let c = &compressed.meshes[0].primitives[0];
+        let u = &plain.meshes[0].primitives[0];
+        assert_primitive_is_mesh(c, &mesh);
+        assert_eq!(c.colors, u.colors, "{name}");
+        assert_eq!(c.colors.len(), 1);
+        for (p, rgba) in c.colors[0].iter().enumerate() {
+            let raw = colour.point_bytes(p);
+            let want = [
+                f32::from(raw[0]) / 255.0,
+                f32::from(raw[1]) / 255.0,
+                f32::from(raw[2]) / 255.0,
+                1.0,
+            ];
+            assert_eq!(*rgba, want, "{name} point {p}");
+        }
+    }
+}
+
+#[test]
+fn normalized_unsigned_short_colours_load() {
+    // The third COLOR_n storage form of §3.7.2.1, on a plain primitive.
+    let positions: [[f32; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+    let colours: [[u16; 4]; 3] = [[0, 65535, 32768, 65535], [65535, 0, 0, 0], [1, 2, 3, 4]];
+    let mut bin: Vec<u8> = positions
+        .iter()
+        .flatten()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    bin.extend(colours.iter().flatten().flat_map(|v| v.to_le_bytes()));
+    let doc = json!({
+        "asset": { "version": "2.0" },
+        "buffers": [ { "byteLength": bin.len(), "uri": data_uri(&bin) } ],
+        "bufferViews": [
+            { "buffer": 0, "byteOffset": 0, "byteLength": 36 },
+            { "buffer": 0, "byteOffset": 36, "byteLength": 24 },
+        ],
+        "accessors": [
+            { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+              "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0] },
+            { "bufferView": 1, "componentType": 5123, "normalized": true, "count": 3,
+              "type": "VEC4" },
+        ],
+        "meshes": [ { "primitives": [ { "attributes": { "POSITION": 0, "COLOR_0": 1 } } ] } ],
+    });
+    let scene = load(&doc).unwrap();
+    let got = &scene.meshes[0].primitives[0].colors[0];
+    for (rgba, raw) in got.iter().zip(&colours) {
+        let want = raw.map(|c| f32::from(c) / 65535.0);
+        assert_eq!(*rgba, want);
+    }
+
+    // An integer colour accessor that is not normalized is not a valid
+    // COLOR_n storage form.
+    let mut bad = doc.clone();
+    bad["accessors"][1]["normalized"] = json!(false);
+    assert!(load(&bad).is_err());
 }

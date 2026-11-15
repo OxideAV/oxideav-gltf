@@ -31,7 +31,8 @@ framework but usable standalone.
   `alphaMode` and `doubleSided`)
 - Multi-primitive meshes, all 7 topologies (POINTS through TRIANGLE_FAN)
 - Vertex attributes: POSITION, NORMAL, TANGENT, TEXCOORD_n (all sets),
-  COLOR_n (VEC3 promoted to RGBA), JOINTS_0, WEIGHTS_0
+  COLOR_n (VEC3 promoted to RGBA; float, normalized unsigned byte or
+  normalized unsigned short per §3.7.2.1), JOINTS_0, WEIGHTS_0
 - Indices in any of the three spec-allowed widths
   (UNSIGNED_BYTE / UNSIGNED_SHORT / UNSIGNED_INT) — encoder picks the
   narrowest representable

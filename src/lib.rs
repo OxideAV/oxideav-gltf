@@ -24,6 +24,13 @@
 //! `b"glTF"` (0x46 0x54 0x6C 0x67) → `.glb` binary container,
 //! anything else is parsed as JSON.
 //!
+//! ## Draco-compressed meshes
+//!
+//! Primitives using `KHR_draco_mesh_compression` are decoded on load by
+//! the crate's own bitstream decoder and arrive as ordinary primitives.
+//! The decoder is also usable on its own for `.drc` payloads: see
+//! [`draco`].
+//!
 //! ## Standalone build
 //!
 //! `oxideav-core` is gated behind the default-on `registry` cargo

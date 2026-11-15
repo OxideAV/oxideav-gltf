@@ -3117,23 +3117,56 @@ fn read_attr_color(
         .accessors
         .get(accessor_idx as usize)
         .ok_or_else(|| invalid(format!("accessor {accessor_idx} out of range")))?;
-    if acc.component_type != gj::COMPONENT_TYPE_FLOAT {
+    // Spec §3.7.2.1 attribute table: COLOR_n is VEC3 / VEC4 of float,
+    // normalized unsigned byte or normalized unsigned short.
+    let components = match acc.kind.as_str() {
+        "VEC3" => 3,
+        "VEC4" => 4,
+        other => {
+            return Err(unsupported(format!(
+                "COLOR accessor: type {other:?} not supported"
+            )));
+        }
+    };
+    let normalized_unsigned = acc.normalized
+        && matches!(
+            acc.component_type,
+            gj::COMPONENT_TYPE_UNSIGNED_BYTE | gj::COMPONENT_TYPE_UNSIGNED_SHORT
+        );
+    if acc.component_type != gj::COMPONENT_TYPE_FLOAT && !normalized_unsigned {
         return Err(unsupported(format!(
-            "COLOR accessor: only FLOAT supported in r1, got {}",
-            acc.component_type
+            "COLOR accessor: componentType {} (normalized = {}) is not one of float, \
+             normalized unsigned byte, normalized unsigned short",
+            acc.component_type, acc.normalized
         )));
     }
     let bytes = materialise_accessor(acc, &root.buffer_views, buffers)?;
     let view = view_from_materialised(acc, &bytes)?;
-    match acc.kind.as_str() {
-        "VEC3" => {
-            let raw = read_vec_f32::<3>(&view)?;
-            Ok(raw.into_iter().map(|c| [c[0], c[1], c[2], 1.0]).collect())
+    if normalized_unsigned {
+        // §3.6.2.2 dequantisation; a VEC3 colour has alpha 1.0.
+        let size = component_byte_size(acc.component_type)?;
+        if view.element_size != components * size {
+            return Err(invalid(format!(
+                "COLOR accessor: element size {} != {}",
+                view.element_size,
+                components * size
+            )));
         }
-        "VEC4" => read_vec_f32::<4>(&view),
-        other => Err(unsupported(format!(
-            "COLOR accessor: type {other:?} not supported"
-        ))),
+        let mut out = Vec::with_capacity(view.count);
+        for elem in view.elements() {
+            let mut rgba = [0.0, 0.0, 0.0, 1.0f32];
+            for (slot, raw) in rgba.iter_mut().zip(elem.chunks_exact(size)) {
+                *slot = decode_normalized_component(acc.component_type, raw)?;
+            }
+            out.push(rgba);
+        }
+        return Ok(out);
+    }
+    if components == 3 {
+        let raw = read_vec_f32::<3>(&view)?;
+        Ok(raw.into_iter().map(|c| [c[0], c[1], c[2], 1.0]).collect())
+    } else {
+        read_vec_f32::<4>(&view)
     }
 }
 
