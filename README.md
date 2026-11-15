@@ -1385,6 +1385,21 @@ cargo +nightly fuzz run parse
 (no externally-staged corpus; the JSON depth + byte-length caps from
 `validation` keep iterations bounded).
 
+`fuzz/fuzz_targets/draco.rs` drives the raw Draco bitstream decoder
+(`draco::decode_with_limits`) on the input as given and behind a
+well-formed header for each mesh encoding method, under small decoder
+limits. Besides panic-freedom it asserts that a successful decode is
+well formed (face indices and point-to-value maps in range, whole
+entries in every value table). Seed it with the staged payloads:
+
+```bash
+mkdir -p fuzz/corpus/draco
+for d in tests/fixtures/draco/*/; do
+    cp "$d/input.drc" "fuzz/corpus/draco/$(basename "$d").drc"
+done
+cargo +nightly fuzz run draco -- -max_total_time=300
+```
+
 ## License
 
 [MIT](LICENSE)

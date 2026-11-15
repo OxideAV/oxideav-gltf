@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `KHR_draco_mesh_compression` primitives are now decoded on load: the payload is inflated through the `draco` module and the primitive is presented to the accessor pipeline as ordinary accessors over the decoded data (extension attribute ids resolved as payload unique ids, per-point expansion, faces written in the `indices` accessor's declared `componentType`, exact integer-width conversion, attributes outside the extension's map loaded as usual). Works for `.gltf` and `.glb`; `tests/draco_gltf_loading.rs` proves a compressed primitive equals the uncompressed primitive built from the same data, and loads the staged transcoder-written GLB.
 
+- `fuzz/fuzz_targets/draco.rs`: fuzz target for the raw Draco bitstream decoder (panic-freedom plus well-formed output under small `draco::Limits`).
+
+### Fixed
+
+- `fuzz/Cargo.lock` pinned `oxideav-mesh3d` 0.0.2 / `oxideav-core` 0.1.26, against which the crate no longer builds; refreshed to the current releases so the fuzz targets compile again.
+
 ### Changed
 
 - A decoded `KHR_draco_mesh_compression` primitive no longer carries `extras["KHR_draco_mesh_compression"]` and gets the full §3.7.2.1 index checks; declared accessor `min` / `max` are not enforced on its decoded data. A primitive whose payload cannot be decoded still loads from its uncompressed copy with the descriptor in `extras` (previous behaviour); without such a copy the load now fails instead of yielding zero-filled attributes.

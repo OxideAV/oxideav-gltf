@@ -84,3 +84,12 @@ name = "parse"
 path = "fuzz_targets/parse.rs"
 test = false
 doc = false
+
+# Panic-freedom + output well-formedness of the raw Draco compressed-mesh
+# bitstream decoder (`oxideav_gltf::draco`), under small decoder limits so
+# zero-cost entropy-coded counts cannot buy unbounded work.
+[[bin]]
+name = "draco"
+path = "fuzz_targets/draco.rs"
+test = false
+doc = false
