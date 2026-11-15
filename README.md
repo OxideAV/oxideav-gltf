@@ -934,10 +934,10 @@ framework but usable standalone.
   attribute accessors' `count`. The companion §3.7.2.1 rule is also
   enforced: when `indices` is defined every index value MUST be strictly
   less than the attribute accessors' `count` (`PrimitiveIndexBound`).
-  Both checks are skipped for primitives carrying
-  `KHR_draco_mesh_compression` (the rendered index stream lives inside
-  the opaque compressed payload this pass-through engine does not
-  inflate) or `KHR_gaussian_splatting` (a splat field, not a
+  Both checks apply to a `KHR_draco_mesh_compression` primitive once
+  its payload has been decoded (it is then a plain primitive); they are
+  skipped for one that had to load from its uncompressed copy, and for
+  `KHR_gaussian_splatting` (a splat field, not a
   triangle/line/point list — the base ellipse kernel pins `mode` to
   POINTS through its own validator and a vendor kernel defers geometry
   semantics to the kernel-defining extension)
